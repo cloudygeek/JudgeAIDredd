@@ -101,10 +101,15 @@ export class PreToolInterceptor {
   /**
    * Evaluate a tool call. Returns whether it should be allowed.
    * This is the PreToolUse hook implementation.
+   *
+   * @param fileContext — optional assembled file content from SessionTracker.
+   *   When a Bash command references files written this session, pass
+   *   getFileContextForJudge() so the judge can see the assembled payload.
    */
   async evaluate(
     tool: string,
-    input: Record<string, unknown>
+    input: Record<string, unknown>,
+    fileContext?: string
   ): Promise<InterceptionResult> {
     const start = Date.now();
 
@@ -203,10 +208,16 @@ export class PreToolInterceptor {
       (r) => `${r.tool}(${this.describeToolCall(r.tool, r.input).substring(0, 80)})`
     );
 
+    // Build the current action description, enriched with file context
+    let currentAction = `${tool}(${toolDescription})`;
+    if (fileContext) {
+      currentAction += `\n\nFILE CONTEXT (files written during this session):\n${fileContext}`;
+    }
+
     const judgeVerdict = await this.judge.evaluate(
       this.originalTask,
       recentTools,
-      `${tool}(${toolDescription})`
+      currentAction
     );
 
     const allowed = judgeVerdict.verdict === "consistent";
