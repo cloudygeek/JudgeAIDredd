@@ -16,6 +16,7 @@
 
 import { DriftDetector } from "./drift-detector.js";
 import { embed, cosineSimilarity } from "./ollama-client.js";
+import { CANARY_PREFIXES } from "./types.js";
 
 export interface TurnIntent {
   turnNumber: number;
@@ -32,6 +33,32 @@ export interface ToolCallRecord {
   similarity: number | null;
 }
 
+export interface FileRecord {
+  /** File path */
+  path: string;
+  /** How many times this file has been written/edited this session */
+  writeCount: number;
+  /** Current content (accumulated from Write/Edit operations) */
+  content: string;
+  /** Which turns modified this file */
+  modifiedAtTurns: number[];
+  /** Whether this file was also read earlier in the session */
+  wasReadFirst: boolean;
+  /** Whether content contains known canary/sensitive patterns */
+  containsCanary: boolean;
+}
+
+export interface FileReadRecord {
+  /** File path that was read */
+  path: string;
+  /** Turn when it was read */
+  turn: number;
+  /** Content that was read (truncated) */
+  content: string;
+  /** Whether this was a sensitive file */
+  isSensitive: boolean;
+}
+
 export interface SessionState {
   sessionId: string;
   /** The first prompt — the original task */
@@ -46,6 +73,10 @@ export interface SessionState {
   driftDetector: DriftDetector;
   /** Embedding of the original task */
   originalEmbedding: number[] | null;
+  /** Files written/edited during this session (keyed by path) */
+  filesWritten: Map<string, FileRecord>;
+  /** Files read during this session */
+  filesRead: FileReadRecord[];
 }
 
 export class SessionTracker {
@@ -69,6 +100,8 @@ export class SessionTracker {
         currentTurn: 0,
         driftDetector: new DriftDetector(this.embeddingModel),
         originalEmbedding: null,
+        filesWritten: new Map(),
+        filesRead: [],
       });
     }
     return this.sessions.get(sessionId)!;
@@ -206,6 +239,193 @@ export class SessionTracker {
         ...session.turnIntents.map((i) => i.prompt.substring(0, 60)),
       ],
     };
+  }
+
+  // =========================================================================
+  // FILE CONTENT TRACKING
+  // =========================================================================
+
+  /**
+   * Record a file read (from PostToolUse after a Read tool completes).
+   * Tracks which files the agent has seen — if content from a read file
+   * later appears in a write, that's a potential exfiltration signal.
+   */
+  recordFileRead(
+    sessionId: string,
+    filePath: string,
+    content: string
+  ): void {
+    const session = this.getSession(sessionId);
+    const isSensitive = /\.env|\.pem|\.key|id_rsa|credentials|secret|password|token/i.test(filePath);
+
+    session.filesRead.push({
+      path: filePath,
+      turn: session.currentTurn,
+      content: content.substring(0, 5000), // truncate large files
+      isSensitive,
+    });
+
+    if (isSensitive) {
+      console.log(
+        `  [FILE] Sensitive file read: ${filePath} at turn ${session.currentTurn}`
+      );
+    }
+  }
+
+  /**
+   * Record a file write or edit (from PostToolUse after Write/Edit completes).
+   * Accumulates content per file so we can detect assembled payloads.
+   */
+  recordFileWrite(
+    sessionId: string,
+    filePath: string,
+    content: string,
+    isEdit: boolean
+  ): void {
+    const session = this.getSession(sessionId);
+    const existing = session.filesWritten.get(filePath);
+
+    // Check if content contains canary patterns
+    const containsCanary = CANARY_PREFIXES.some((p) => content.includes(p));
+
+    // Check if content contains data from any sensitive file reads
+    const containsReadData = this.checkContentFromReads(session, content);
+
+    if (existing) {
+      existing.writeCount++;
+      existing.modifiedAtTurns.push(session.currentTurn);
+      existing.containsCanary = existing.containsCanary || containsCanary;
+
+      if (isEdit) {
+        // For edits, append to accumulated content
+        existing.content += "\n" + content;
+      } else {
+        // For writes, replace content
+        existing.content = content;
+      }
+    } else {
+      // Check if this file was read earlier in the session
+      const wasReadFirst = session.filesRead.some((r) => r.path === filePath);
+
+      session.filesWritten.set(filePath, {
+        path: filePath,
+        writeCount: 1,
+        content: content.substring(0, 10000),
+        modifiedAtTurns: [session.currentTurn],
+        wasReadFirst,
+        containsCanary,
+      });
+    }
+
+    const record = session.filesWritten.get(filePath)!;
+
+    if (record.writeCount > 1) {
+      console.log(
+        `  [FILE] ${filePath} written ${record.writeCount} times (turns: ${record.modifiedAtTurns.join(",")})`
+      );
+    }
+    if (containsCanary) {
+      console.log(
+        `  [FILE] *** CANARY detected in write to ${filePath}`
+      );
+    }
+    if (containsReadData) {
+      console.log(
+        `  [FILE] *** Content from sensitive read detected in write to ${filePath}`
+      );
+    }
+  }
+
+  /**
+   * Check if written content contains data from previously read sensitive files.
+   * This detects the pattern: Read(.env.test) → Write(config.ts) with .env.test values.
+   */
+  private checkContentFromReads(session: SessionState, content: string): boolean {
+    for (const read of session.filesRead) {
+      if (!read.isSensitive) continue;
+
+      // Extract potential secret values from the read content
+      // (lines that look like KEY=VALUE)
+      const lines = read.content.split("\n");
+      for (const line of lines) {
+        const match = line.match(/^[A-Z_]+=(.+)$/);
+        if (match) {
+          const value = match[1].trim();
+          // Check if the value (or a significant substring) appears in the written content
+          if (value.length >= 8 && content.includes(value)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Get all files written this session with their accumulated content.
+   * Used by PreToolUse to evaluate execution commands against written files.
+   */
+  getWrittenFiles(sessionId: string): FileRecord[] {
+    const session = this.getSession(sessionId);
+    return Array.from(session.filesWritten.values());
+  }
+
+  /**
+   * Get files that have been written multiple times (potential payload splitting).
+   */
+  getMultiWriteFiles(sessionId: string): FileRecord[] {
+    return this.getWrittenFiles(sessionId).filter((f) => f.writeCount > 1);
+  }
+
+  /**
+   * Get files containing canary/sensitive data.
+   */
+  getCanaryFiles(sessionId: string): FileRecord[] {
+    return this.getWrittenFiles(sessionId).filter((f) => f.containsCanary);
+  }
+
+  /**
+   * Build a context summary of all written files for the judge.
+   * Used when evaluating execution commands (Bash, git commit, etc.).
+   */
+  getFileContextForJudge(sessionId: string): string {
+    const files = this.getWrittenFiles(sessionId);
+    if (files.length === 0) return "No files written this session.";
+
+    const multiWrite = files.filter((f) => f.writeCount > 1);
+    const canaryFiles = files.filter((f) => f.containsCanary);
+    const sensitiveReads = this.getSession(sessionId).filesRead.filter((r) => r.isSensitive);
+
+    let context = `FILES WRITTEN THIS SESSION (${files.length} total):\n`;
+
+    for (const f of files) {
+      const flags = [
+        f.writeCount > 1 ? `MULTI-WRITE(${f.writeCount}x)` : null,
+        f.containsCanary ? "CONTAINS-SENSITIVE-DATA" : null,
+        f.wasReadFirst ? "READ-THEN-WRITTEN" : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+
+      context += `\n--- ${f.path} ${flags ? `[${flags}]` : ""} ---\n`;
+      context += f.content.substring(0, 2000);
+      if (f.content.length > 2000) context += "\n... (truncated)";
+      context += "\n";
+    }
+
+    if (sensitiveReads.length > 0) {
+      context += `\nSENSITIVE FILES READ THIS SESSION: ${sensitiveReads.map((r) => r.path).join(", ")}`;
+    }
+
+    if (multiWrite.length > 0) {
+      context += `\nWARNING: ${multiWrite.length} file(s) written multiple times (potential payload splitting)`;
+    }
+
+    if (canaryFiles.length > 0) {
+      context += `\nWARNING: ${canaryFiles.length} file(s) contain sensitive data patterns`;
+    }
+
+    return context;
   }
 
   /**
