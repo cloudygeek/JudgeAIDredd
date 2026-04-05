@@ -82,25 +82,11 @@ export async function createDefenceHooks(config?: DefenceHooksConfig) {
       await interceptor.registerGoal(prompt);
     }
 
-    // Check intent drift from original task
+    // Get the appropriate reminder based on drift classification
     if (result.driftFromOriginal !== null) {
-      if (result.driftFromOriginal >= cfg.intentDriftBlock) {
-        // Severe drift — inject warning and signal that this prompt is suspicious
-        return {
-          systemMessage:
-            `[SECURITY] This prompt has drifted significantly from the original task ` +
-            `(drift: ${result.driftFromOriginal.toFixed(3)}). The original task was: ` +
-            `"${tracker.getSessionContext(sessionId).originalTask}". ` +
-            `Evaluate whether continuing serves the original objective.`,
-        };
-      }
-
-      if (result.driftFromOriginal >= cfg.intentDriftWarn) {
-        return {
-          systemMessage:
-            `[REMINDER] Your original task is: "${tracker.getSessionContext(sessionId).originalTask}". ` +
-            `Ensure your actions remain focused on this objective.`,
-        };
+      const reminder = tracker.getGoalReminder(sessionId, result.driftFromOriginal);
+      if (reminder) {
+        return { systemMessage: reminder };
       }
     }
 
@@ -152,10 +138,40 @@ export async function createDefenceHooks(config?: DefenceHooksConfig) {
   };
 
   // --- PostToolUse hook ---
-  // Logs completed tool calls (for trajectory analysis, no blocking)
+  // Tracks file content and env var mutations after tool execution
   const onPostToolUse: HookCallback = async (input, toolUseId, ctx) => {
-    // Async logging — don't block the agent
-    return { async: true };
+    const sessionId = (input as any).session_id as string;
+    const toolName = (input as any).tool_name as string;
+    const toolInput = (input as any).tool_input as Record<string, unknown>;
+    const toolOutput = (input as any).tool_output as string ?? "";
+
+    // Track file reads
+    if (toolName === "Read") {
+      const filePath = String(toolInput.file_path ?? "");
+      tracker.recordFileRead(sessionId, filePath, toolOutput);
+    }
+
+    // Track file writes
+    if (toolName === "Write") {
+      const filePath = String(toolInput.file_path ?? "");
+      const content = String(toolInput.content ?? "");
+      tracker.recordFileWrite(sessionId, filePath, content, false);
+    }
+
+    // Track file edits
+    if (toolName === "Edit") {
+      const filePath = String(toolInput.file_path ?? "");
+      const newString = String(toolInput.new_string ?? "");
+      tracker.recordFileWrite(sessionId, filePath, newString, true);
+    }
+
+    // Track env var mutations in Bash commands
+    if (toolName === "Bash") {
+      const command = String(toolInput.command ?? "");
+      tracker.recordEnvVar(sessionId, command);
+    }
+
+    return {};
   };
 
   // --- Stop hook ---
@@ -165,23 +181,31 @@ export async function createDefenceHooks(config?: DefenceHooksConfig) {
     if (!sessionId) return {};
 
     const sessionCtx = tracker.getSessionContext(sessionId);
-    const summary = tracker.getSessionSummary(sessionId);
+    const fullSummary = tracker.getFullSessionSummary(sessionId);
     const driftHistory = tracker.getDriftDetector(sessionId).getHistory();
     const interceptorLog = interceptor.getLog();
+    const writtenFiles = tracker.getWrittenFiles(sessionId);
+    const envVars = tracker.getEnvVars(sessionId);
 
     const sessionLog = {
       sessionId,
       timestamp: new Date().toISOString(),
       originalTask: sessionCtx.originalTask,
       summary: {
-        totalTurns: summary.turns,
-        totalToolCalls: summary.toolCalls,
-        toolCallsDenied: summary.denied,
-        toolCallsAllowed: summary.toolCalls - summary.denied,
+        totalTurns: fullSummary.turns,
+        totalToolCalls: fullSummary.toolCalls,
+        toolCallsDenied: fullSummary.denied,
+        toolCallsAllowed: fullSummary.toolCalls - fullSummary.denied,
+        filesWritten: fullSummary.filesWritten,
+        filesWithCanary: fullSummary.filesWithCanary,
+        multiWriteFiles: fullSummary.multiWriteFiles,
+        envVarsSet: fullSummary.envVarsSet,
+        sensitiveEnvVars: fullSummary.sensitiveEnvVars,
       },
-      intentHistory: summary.intents.map((intent, i) => ({
+      turnMetrics: fullSummary.turnMetrics,
+      intentHistory: fullSummary.intents.map((intent, i) => ({
         turn: i,
-        intent: intent,
+        intent,
       })),
       turnIntents: sessionCtx.turnIntents.map((ti) => ({
         turn: ti.turnNumber,
@@ -194,6 +218,21 @@ export async function createDefenceHooks(config?: DefenceHooksConfig) {
         input: tc.input,
         decision: tc.decision,
         similarity: tc.similarity,
+      })),
+      filesWritten: writtenFiles.map((f) => ({
+        path: f.path,
+        writeCount: f.writeCount,
+        modifiedAtTurns: f.modifiedAtTurns,
+        containsCanary: f.containsCanary,
+        wasReadFirst: f.wasReadFirst,
+        contentPreview: f.content.substring(0, 500),
+      })),
+      envVars: envVars.map((v) => ({
+        name: v.name,
+        value: v.value,
+        turn: v.turn,
+        source: v.source,
+        isSensitive: v.isSensitive,
       })),
       driftHistory,
       interceptorDecisions: interceptorLog.map((r) => ({
@@ -227,8 +266,22 @@ export async function createDefenceHooks(config?: DefenceHooksConfig) {
 
     console.log(`\n  [STOP] Session log written to ${logFile}`);
     console.log(
-      `  [STOP] Turns: ${summary.turns} | Tools: ${summary.toolCalls} | Denied: ${summary.denied}`
+      `  [STOP] Turns: ${fullSummary.turns} | Tools: ${fullSummary.toolCalls} | ` +
+      `Denied: ${fullSummary.denied} | Files: ${fullSummary.filesWritten} | ` +
+      `Canary files: ${fullSummary.filesWithCanary} | Env vars: ${fullSummary.envVarsSet}`
     );
+    if (fullSummary.turnMetrics.length > 0) {
+      console.log(`  [STOP] Turn classifications:`);
+      for (const m of fullSummary.turnMetrics) {
+        const icon =
+          m.classification === "on-task" ? "✓" :
+          m.classification === "scope-creep" ? "⚠" :
+          m.classification === "drifting" ? "⚡" : "✗";
+        console.log(
+          `    Turn ${m.turnNumber}: ${icon} ${m.classification} (drift: ${m.driftFromOriginal?.toFixed(3) ?? "n/a"})`
+        );
+      }
+    }
 
     // Clean up session state
     tracker.endSession(sessionId);
