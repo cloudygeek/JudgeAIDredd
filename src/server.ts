@@ -89,14 +89,135 @@ function json(res: ServerResponse, status: number, data: unknown): void {
 }
 
 // =========================================================================
+// Transcript Backfill
+// =========================================================================
+
+/**
+ * When Dredd starts mid-session (or restarts), reconstruct state from
+ * the Claude transcript file. Extracts the original task, tool history,
+ * and file operations so the session tracker has full context.
+ */
+async function backfillFromTranscript(
+  sessionId: string,
+  transcriptPath: string
+): Promise<void> {
+  if (!transcriptPath || !existsSync(transcriptPath)) return;
+
+  try {
+    const content = readFileSync(transcriptPath, "utf8");
+    const lines = content.trim().split("\n").filter(Boolean);
+
+    let firstUserPrompt: string | null = null;
+    let turnCount = 0;
+    const toolCalls: { tool: string; input: Record<string, unknown> }[] = [];
+    const filesRead: string[] = [];
+    const filesWritten: { path: string; content: string; isEdit: boolean }[] = [];
+
+    for (const line of lines) {
+      try {
+        const msg = JSON.parse(line);
+
+        // Extract first user message as original intent
+        if (msg.type === "user" && !firstUserPrompt) {
+          const textBlocks = (msg.message?.content ?? [])
+            .filter((b: any) => b.type === "text")
+            .map((b: any) => b.text);
+          if (textBlocks.length > 0) {
+            firstUserPrompt = textBlocks.join("\n");
+          }
+        }
+
+        // Count user messages as turns
+        if (msg.type === "user" && msg.message?.content?.some((b: any) => b.type === "text")) {
+          turnCount++;
+        }
+
+        // Extract tool calls from assistant messages
+        if (msg.type === "assistant") {
+          const blocks = msg.message?.content ?? [];
+          for (const block of blocks) {
+            if (block.type === "tool_use") {
+              const tool = block.name;
+              const input = block.input ?? {};
+              toolCalls.push({ tool, input });
+
+              // Track file operations
+              if (tool === "Read") {
+                filesRead.push(String(input.file_path ?? ""));
+              }
+              if (tool === "Write") {
+                filesWritten.push({
+                  path: String(input.file_path ?? ""),
+                  content: String(input.content ?? ""),
+                  isEdit: false,
+                });
+              }
+              if (tool === "Edit") {
+                filesWritten.push({
+                  path: String(input.file_path ?? ""),
+                  content: String(input.new_string ?? ""),
+                  isEdit: true,
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // Skip malformed lines
+      }
+    }
+
+    if (!firstUserPrompt) return;
+
+    console.log(
+      `  [BACKFILL] Session ${sessionId.substring(0, 8)}: ` +
+      `${turnCount} turns, ${toolCalls.length} tools, ` +
+      `${filesRead.length} reads, ${filesWritten.length} writes ` +
+      `from transcript`
+    );
+
+    // Register the original intent
+    await tracker.registerIntent(sessionId, firstUserPrompt);
+    await interceptor.registerGoal(firstUserPrompt);
+    registeredSessions.add(sessionId);
+
+    // Replay file operations into the tracker
+    for (const path of filesRead) {
+      tracker.recordFileRead(sessionId, path, "(backfilled)");
+    }
+    for (const file of filesWritten) {
+      tracker.recordFileWrite(sessionId, file.path, file.content, file.isEdit);
+    }
+
+    // Record tool calls
+    for (const tc of toolCalls) {
+      tracker.recordToolCall(sessionId, tc.tool, tc.input, "allow", null);
+    }
+
+    console.log(
+      `  [BACKFILL] Original intent: "${firstUserPrompt.substring(0, 60)}..."`
+    );
+  } catch (err) {
+    console.error(
+      `  [BACKFILL] Failed for session ${sessionId.substring(0, 8)}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+// =========================================================================
 // POST /intent — UserPromptSubmit
 // =========================================================================
 async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
-  const { session_id, prompt } = body;
+  const { session_id, prompt, transcript_path } = body;
 
   if (!session_id || !prompt) {
     return json(res, 400, { error: "Missing session_id or prompt" });
+  }
+
+  // If this is a session we haven't seen and there's a transcript, backfill
+  if (!registeredSessions.has(session_id) && transcript_path) {
+    await backfillFromTranscript(session_id, transcript_path);
   }
 
   // Allow per-request mode override (e.g., SDK sends mode in body)

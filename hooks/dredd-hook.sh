@@ -59,9 +59,10 @@ fi
 case "$HOOK_EVENT" in
   "UserPromptSubmit")
     PROMPT=$(echo "$INPUT" | jq -r '.prompt // .message // empty')
+    TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
     RESPONSE=$(curl -s -X POST "$DREDD_URL/intent" \
       -H "Content-Type: application/json" \
-      -d "{\"session_id\": \"$SESSION_ID\", \"prompt\": $(echo "$PROMPT" | jq -Rs .)}" \
+      -d "{\"session_id\": \"$SESSION_ID\", \"prompt\": $(echo "$PROMPT" | jq -Rs .), \"transcript_path\": \"$TRANSCRIPT_PATH\"}" \
       --connect-timeout 5 --max-time 30)
 
     # Extract just the hook fields (systemMessage etc), strip _meta
