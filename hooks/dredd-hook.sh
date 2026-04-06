@@ -46,9 +46,13 @@ INPUT=$(cat)
 HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 
-# If server is down, fail open (allow everything)
+# If server is down, fall back to user prompt
 if ! curl -s --connect-timeout 1 "$DREDD_URL/health" > /dev/null 2>&1; then
-  echo '{}'
+  if [ "$HOOK_EVENT" = "PreToolUse" ]; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Judge Dredd server unavailable — requesting user approval"}}'
+  else
+    echo '{}'
+  fi
   exit 0
 fi
 
