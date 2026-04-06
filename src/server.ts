@@ -116,7 +116,11 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     // But short confirmations ("yes", "ok", "do it", "go ahead") are
     // confirming the PREVIOUS intent, not setting a new one.
     // Only update the goal for substantive prompts.
-    const isConfirmation = /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|👍)\s*[.!]?\s*$/i.test(prompt);
+    // Match bare confirmations AND confirmations with selections/numbers
+    // e.g., "yes", "yes 1-8", "ok do all of them", "y 3", "go ahead with option 2"
+    const isConfirmation =
+      /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|👍)\b/i.test(prompt)
+      && prompt.trim().length < 80;
 
     if (isConfirmation) {
       console.log(
