@@ -31,6 +31,7 @@ import { checkOllama } from "./ollama-client.js";
 const { values } = parseArgs({
   options: {
     port: { type: "string", default: "3001" },
+    mode: { type: "string", default: "autonomous" },
     "judge-model": { type: "string", default: "nemotron-3-super" },
     "embedding-model": { type: "string", default: "nomic-embed-text" },
     "review-threshold": { type: "string", default: "0.6" },
@@ -40,7 +41,12 @@ const { values } = parseArgs({
 });
 
 const PORT = parseInt(values.port!, 10);
+type TrustMode = "interactive" | "autonomous";
+
 const CONFIG = {
+  /** interactive = vibe coding (trust user prompts, update intent)
+   *  autonomous  = SDK/pipeline (validate all prompts against original intent) */
+  mode: (values.mode as TrustMode) ?? "autonomous",
   judgeModel: values["judge-model"]!,
   embeddingModel: values["embedding-model"]!,
   reviewThreshold: parseFloat(values["review-threshold"]!),
@@ -84,6 +90,9 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     return json(res, 400, { error: "Missing session_id or prompt" });
   }
 
+  // Allow per-request mode override (e.g., SDK sends mode in body)
+  const mode: TrustMode = body.mode ?? CONFIG.mode;
+
   const result = await tracker.registerIntent(session_id, prompt);
 
   // Register goal with interceptor on first call per session
@@ -92,9 +101,23 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     registeredSessions.add(session_id);
   }
 
-  // Get appropriate reminder
-  const reminder = tracker.getGoalReminder(session_id, result.driftFromOriginal);
+  if (mode === "interactive" && !result.isOriginal) {
+    // INTERACTIVE MODE (vibe coding):
+    // Every user prompt is trusted — they're steering.
+    // Update the interceptor's goal to match the latest intent.
+    // Still track drift for logging/analytics, but don't intervene.
+    await interceptor.registerGoal(prompt);
+    console.log(
+      `  [INTENT] Interactive mode: updated goal to "${prompt.substring(0, 60)}..." ` +
+      `(drift from original: ${result.driftFromOriginal?.toFixed(3) ?? "n/a"})`
+    );
+  }
+
+  // Get appropriate reminder (only in autonomous mode)
   const classification = tracker.classifyDrift(result.driftFromOriginal);
+  const reminder = mode === "autonomous"
+    ? tracker.getGoalReminder(session_id, result.driftFromOriginal)
+    : null;
 
   // Build hook response
   const hookResponse: Record<string, unknown> = {};
@@ -380,10 +403,19 @@ async function main() {
 
   // Preflight
   await interceptor.preflight();
+  console.log(`  Mode:            ${CONFIG.mode}`);
   console.log(`  Embedding model: ${CONFIG.embeddingModel}`);
   console.log(`  Judge model:     ${CONFIG.judgeModel}`);
   console.log(`  Thresholds:      review=${CONFIG.reviewThreshold}, deny=${CONFIG.denyThreshold}`);
   console.log(`  Log directory:   ${CONFIG.logDir}`);
+
+  if (CONFIG.mode === "interactive") {
+    console.log(`\n  ⚠ Interactive mode: user prompts are trusted, intent updates each turn`);
+    console.log(`    Policy deny list still enforced. Drift logged but not blocked.`);
+  } else {
+    console.log(`\n  🔒 Autonomous mode: all prompts validated against original intent`);
+    console.log(`    Scope creep at 0.2, drift warning at 0.3, block at 0.5.`);
+  }
 
   server.listen(PORT, () => {
     console.log(`\n  Listening on http://localhost:${PORT}`);
