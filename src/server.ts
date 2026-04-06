@@ -294,10 +294,42 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
 // =========================================================================
 async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
-  const { session_id, tool_name, tool_input, agent_reasoning } = body;
+  const { session_id, tool_name, tool_input, agent_reasoning, transcript_path } = body;
 
   if (!session_id || !tool_name) {
     return json(res, 400, { error: "Missing session_id or tool_name" });
+  }
+
+  // If no goal registered yet, try backfill or fail-open
+  if (!registeredSessions.has(session_id)) {
+    if (transcript_path) {
+      await backfillFromTranscript(session_id, transcript_path);
+    }
+
+    // Still no goal after backfill? Allow the call — we can't evaluate
+    // drift without a baseline. Policy deny list still applies.
+    if (!registeredSessions.has(session_id)) {
+      const policyOnly = (await import("./tool-policy.js")).evaluateToolPolicy(tool_name, tool_input ?? {});
+      if (policyOnly.decision === "deny") {
+        return json(res, 200, {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: `Judge Dredd (no goal): ${policyOnly.reason}`,
+          },
+          _meta: { allowed: false, stage: "policy-deny", reason: policyOnly.reason },
+        });
+      }
+      // Allow — no goal to drift from, policy didn't deny
+      return json(res, 200, {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "allow",
+          permissionDecisionReason: "Judge Dredd: no goal registered yet, policy allows",
+        },
+        _meta: { allowed: true, stage: "no-goal-allow", reason: "No goal registered, policy allows" },
+      });
+    }
   }
 
   // Build file context for Bash/git commands

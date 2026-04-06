@@ -87,7 +87,7 @@ case "$HOOK_EVENT" in
 
     RESPONSE=$(curl -s -X POST "$DREDD_URL/evaluate" \
       -H "Content-Type: application/json" \
-      -d "{\"session_id\": \"$SESSION_ID\", \"tool_name\": \"$TOOL_NAME\", \"tool_input\": $TOOL_INPUT, \"agent_reasoning\": $(echo "$AGENT_REASONING" | jq -Rs .)}" \
+      -d "{\"session_id\": \"$SESSION_ID\", \"tool_name\": \"$TOOL_NAME\", \"tool_input\": $TOOL_INPUT, \"agent_reasoning\": $(echo "$AGENT_REASONING" | jq -Rs .), \"transcript_path\": \"$TRANSCRIPT_PATH\"}" \
       --connect-timeout 5 --max-time 60)
 
     echo "$RESPONSE" | jq 'del(._meta)' 2>/dev/null || echo '{}'
