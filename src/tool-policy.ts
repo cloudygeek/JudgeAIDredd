@@ -53,6 +53,7 @@ const ALLOWED_TOOLS: PatternRule[] = [
 
 // Bash commands that are always safe
 const ALLOWED_BASH_PATTERNS: PatternRule[] = [
+  { pattern: /^cd\s+(?!\.\.|\/)(?!~)[.\w]/, reason: "Change to relative subdirectory" },
   { pattern: /^ls(\s|$)/, reason: "List directory" },
   { pattern: /^find\s/, reason: "Find files" },
   { pattern: /^cat\s/, reason: "Read file" },
@@ -202,6 +203,101 @@ const SENSITIVE_WRITE_PATTERNS: PatternRule[] = [
 ];
 
 /**
+ * Evaluate a single bash command (no chaining operators) against policy lists.
+ */
+interface SingleBashResult {
+  decision: PolicyDecision;
+  reason: string;
+  matchedRule: string;
+  command: string;
+}
+
+function evaluateSingleBashCommand(command: string): SingleBashResult {
+  // Deny list
+  for (const rule of DENIED_BASH_PATTERNS) {
+    if (rule.pattern.test(command)) {
+      return { decision: "deny", reason: rule.reason, matchedRule: `DENY:Bash:${rule.pattern}`, command };
+    }
+  }
+
+  // Review triggers (but skip the chaining patterns — we already split)
+  for (const rule of REVIEW_BASH_PATTERNS) {
+    // Skip the &&, ||, ; rules since we already split on those
+    if (rule.reason.includes("chaining")) continue;
+    if (rule.pattern.test(command)) {
+      return { decision: "review", reason: rule.reason, matchedRule: `REVIEW:Bash:${rule.pattern}`, command };
+    }
+  }
+
+  // Allow list
+  for (const rule of ALLOWED_BASH_PATTERNS) {
+    if (rule.pattern.test(command)) {
+      return { decision: "allow", reason: rule.reason, matchedRule: `ALLOW:Bash:${rule.pattern}`, command };
+    }
+  }
+
+  return { decision: "review", reason: "Unrecognised command", matchedRule: "DEFAULT:Bash:unmatched", command };
+}
+
+/**
+ * Check for dangerous combinations of individually-safe commands.
+ * Returns a reason string if dangerous, null if safe.
+ */
+function checkDangerousCombination(
+  parts: string[],
+  _results: SingleBashResult[]
+): string | null {
+  // Track if any part changes directory
+  const cdParts = parts.filter((p) => /^\s*cd\s/.test(p));
+  const hasCd = cdParts.length > 0;
+
+  if (hasCd) {
+    // Check if cd goes outside the project
+    // Dangerous: cd to parent, absolute paths, home, or temp dirs
+    // Safe: cd to relative subdirectories (cd src, cd mcp, cd ./lib)
+    const escapesProject = cdParts.some((p) =>
+      /cd\s+(\.\.|\/)/.test(p) ||                   // parent or root
+      /cd\s+~/.test(p) ||                           // home directory
+      /cd\s+\/(tmp|etc|var|home|usr|opt)/.test(p)   // system directories
+    );
+
+    if (escapesProject) {
+      // Any file operation after escaping the project is dangerous
+      const afterCd = parts.slice(parts.indexOf(cdParts[0]) + 1);
+      const hasFileOp = afterCd.some((p) =>
+        /^(cat|read|head|tail|less|more|cp|mv|rm|git\s+add|git\s+push|curl|wget)\s/.test(p.trim())
+      );
+      if (hasFileOp) {
+        return `Directory escape: cd leaves project (${cdParts[0]}), followed by file operations`;
+      }
+    }
+  }
+
+  // Check for write-then-execute patterns (payload assembly)
+  const hasWrite = parts.some((p) => /^(echo|cat|printf)\s.*>/.test(p.trim()));
+  const hasExecute = parts.some((p) =>
+    /^(chmod\s+\+x|\.\/|bash\s|sh\s|source\s)/.test(p.trim())
+  );
+  if (hasWrite && hasExecute) {
+    return "Write-then-execute: command creates a file and executes it in same chain";
+  }
+
+  // Check for download-then-execute
+  const hasDownload = parts.some((p) => /^(curl|wget)\s/.test(p.trim()));
+  if (hasDownload && hasExecute) {
+    return "Download-then-execute: command downloads and executes in same chain";
+  }
+
+  // Check for git push after operations in non-standard directory
+  const hasGitPush = parts.some((p) => /git\s+push/.test(p));
+  if (hasCd && hasGitPush) {
+    return "Git push after cd: push may target unexpected repository";
+  }
+
+  return null;
+}
+
+/**
  * Evaluate a tool call against the policy.
  */
 export function evaluateToolPolicy(
@@ -212,7 +308,7 @@ export function evaluateToolPolicy(
   if (tool === "Bash") {
     const command = String(input.command ?? "").trim();
 
-    // Check deny list first (highest priority)
+    // Check deny list first against the FULL command (highest priority)
     for (const rule of DENIED_BASH_PATTERNS) {
       if (rule.pattern.test(command)) {
         return {
@@ -224,36 +320,66 @@ export function evaluateToolPolicy(
       }
     }
 
-    // Check review triggers
-    for (const rule of REVIEW_BASH_PATTERNS) {
-      if (rule.pattern.test(command)) {
+    // If command is chained (&&, ||, ;, |), split and evaluate each part
+    if (/&&|\|\||;|\|/.test(command)) {
+      const parts = command
+        .split(/\s*(?:&&|\|\||;|\|)\s*/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+
+      if (parts.length > 1) {
+        const partResults = parts.map((part) => evaluateSingleBashCommand(part));
+
+        // If ANY part is denied → deny the whole chain
+        const denied = partResults.find((r) => r.decision === "deny");
+        if (denied) {
+          return {
+            decision: "deny",
+            tool,
+            reason: `Chained command denied: ${denied.reason} (in: ${denied.command})`,
+            matchedRule: `DENY:Bash:chain:${denied.matchedRule}`,
+          };
+        }
+
+        // Check for dangerous combinations
+        const dangerousCombo = checkDangerousCombination(parts, partResults);
+        if (dangerousCombo) {
+          return {
+            decision: "review",
+            tool,
+            reason: dangerousCombo,
+            matchedRule: "REVIEW:Bash:dangerous-combination",
+          };
+        }
+
+        // If ALL parts are allowed → allow the chain
+        if (partResults.every((r) => r.decision === "allow")) {
+          return {
+            decision: "allow",
+            tool,
+            reason: `Chained command: all ${parts.length} parts allowed`,
+            matchedRule: "ALLOW:Bash:chain:all-allowed",
+          };
+        }
+
+        // Mixed: some allow, some review → review the whole chain
+        const reviewParts = partResults.filter((r) => r.decision === "review");
         return {
           decision: "review",
           tool,
-          reason: rule.reason,
-          matchedRule: `REVIEW:Bash:${rule.pattern}`,
+          reason: `Chained command: ${reviewParts.length}/${parts.length} parts need review (${reviewParts.map((r) => r.command).join(", ")})`,
+          matchedRule: "REVIEW:Bash:chain:mixed",
         };
       }
     }
 
-    // Check allow list
-    for (const rule of ALLOWED_BASH_PATTERNS) {
-      if (rule.pattern.test(command)) {
-        return {
-          decision: "allow",
-          tool,
-          reason: rule.reason,
-          matchedRule: `ALLOW:Bash:${rule.pattern}`,
-        };
-      }
-    }
-
-    // Default for unmatched Bash: review
+    // Single command evaluation
+    const singleResult = evaluateSingleBashCommand(command);
     return {
-      decision: "review",
+      decision: singleResult.decision,
       tool,
-      reason: "Unrecognised Bash command",
-      matchedRule: "DEFAULT:Bash:unmatched",
+      reason: singleResult.reason,
+      matchedRule: singleResult.matchedRule,
     };
   }
 
