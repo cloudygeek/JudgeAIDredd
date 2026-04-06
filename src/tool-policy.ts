@@ -331,3 +331,41 @@ export function formatPolicyResult(result: PolicyResult): string {
     result.decision === "deny" ? "✗" : "?";
   return `[${icon} ${result.decision.toUpperCase()}] ${result.tool}: ${result.reason}`;
 }
+
+/**
+ * Export all policy rules for the dashboard.
+ */
+export function exportPolicies() {
+  const serialize = (rules: PatternRule[]) =>
+    rules.map((r) => ({ pattern: r.pattern.source, reason: r.reason }));
+
+  return {
+    allow: {
+      tools: serialize(ALLOWED_TOOLS),
+      bash: serialize(ALLOWED_BASH_PATTERNS),
+    },
+    deny: {
+      bash: serialize(DENIED_BASH_PATTERNS),
+    },
+    review: {
+      bash: serialize(REVIEW_BASH_PATTERNS),
+      sensitiveFiles: serialize(SENSITIVE_FILE_PATTERNS),
+      sensitiveWrites: serialize(SENSITIVE_WRITE_PATTERNS),
+    },
+    summary: {
+      allowTools: ALLOWED_TOOLS.length,
+      allowBash: ALLOWED_BASH_PATTERNS.length,
+      denyBash: DENIED_BASH_PATTERNS.length,
+      reviewBash: REVIEW_BASH_PATTERNS.length,
+      sensitiveFiles: SENSITIVE_FILE_PATTERNS.length,
+      sensitiveWrites: SENSITIVE_WRITE_PATTERNS.length,
+      total:
+        ALLOWED_TOOLS.length +
+        ALLOWED_BASH_PATTERNS.length +
+        DENIED_BASH_PATTERNS.length +
+        REVIEW_BASH_PATTERNS.length +
+        SENSITIVE_FILE_PATTERNS.length +
+        SENSITIVE_WRITE_PATTERNS.length,
+    },
+  };
+}

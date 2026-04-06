@@ -26,6 +26,7 @@ import { writeFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from 
 import { join } from "node:path";
 import { SessionTracker } from "./session-tracker.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
+import { exportPolicies } from "./tool-policy.js";
 import { checkOllama } from "./ollama-client.js";
 
 const { values } = parseArgs({
@@ -539,6 +540,10 @@ const server = createServer(async (req, res) => {
     // API: live feed
     if (req.method === "GET" && url.pathname === "/api/feed") {
       return json(res, 200, feed);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/policies") {
+      return json(res, 200, exportPolicies());
     }
 
     json(res, 404, { error: "Not found" });
