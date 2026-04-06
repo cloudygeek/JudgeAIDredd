@@ -304,6 +304,7 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
     turnMetrics: summary.turnMetrics,
     interceptorLog: interceptor.getLog().map((r) => ({
       tool: r.tool,
+      input: r.input,
       stage: r.stage,
       allowed: r.allowed,
       similarity: r.similarity,

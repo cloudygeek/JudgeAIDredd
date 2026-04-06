@@ -33,6 +33,7 @@ const ALLOWED_TOOLS: PatternRule[] = [
   { pattern: /^Read$/, reason: "Read-only file access" },
   { pattern: /^Glob$/, reason: "File pattern matching" },
   { pattern: /^Grep$/, reason: "Content search" },
+  { pattern: /^ToolSearch$/, reason: "Tool discovery (read-only)" },
 
   // Note: Read is allowed by default but can be overridden by
   // SENSITIVE_FILE_PATTERNS below for specific paths

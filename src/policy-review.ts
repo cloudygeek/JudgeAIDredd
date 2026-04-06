@@ -201,7 +201,9 @@ async function main() {
         if (entry.stage === "judge-allow" || entry.stage === "judge-deny") {
           reviewed.push({
             tool: entry.tool,
-            inputSummary: entry.reason,
+            inputSummary: entry.input
+              ? JSON.stringify(entry.input).substring(0, 100)
+              : entry.reason.substring(0, 100),
             stage: entry.stage,
             allowed: entry.allowed,
             similarity: entry.similarity,
