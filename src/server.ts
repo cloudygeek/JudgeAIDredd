@@ -104,13 +104,22 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   if (mode === "interactive" && !result.isOriginal) {
     // INTERACTIVE MODE (vibe coding):
     // Every user prompt is trusted — they're steering.
-    // Update the interceptor's goal to match the latest intent.
-    // Still track drift for logging/analytics, but don't intervene.
-    await interceptor.registerGoal(prompt);
-    console.log(
-      `  [INTENT] Interactive mode: updated goal to "${prompt.substring(0, 60)}..." ` +
-      `(drift from original: ${result.driftFromOriginal?.toFixed(3) ?? "n/a"})`
-    );
+    // But short confirmations ("yes", "ok", "do it", "go ahead") are
+    // confirming the PREVIOUS intent, not setting a new one.
+    // Only update the goal for substantive prompts.
+    const isConfirmation = /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|👍)\s*[.!]?\s*$/i.test(prompt);
+
+    if (isConfirmation) {
+      console.log(
+        `  [INTENT] Interactive mode: "${prompt.trim()}" is a confirmation — keeping previous goal`
+      );
+    } else {
+      await interceptor.registerGoal(prompt);
+      console.log(
+        `  [INTENT] Interactive mode: updated goal to "${prompt.substring(0, 60)}..." ` +
+        `(drift from original: ${result.driftFromOriginal?.toFixed(3) ?? "n/a"})`
+      );
+    }
   }
 
   // Get appropriate reminder (only in autonomous mode)
