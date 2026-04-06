@@ -1,151 +1,85 @@
-%%{ init: { 'theme': 'base', 'themeVariables': { 'primaryColor': '#2E86AB', 'primaryTextColor': '#fff', 'primaryBorderColor': '#1B6B8A', 'lineColor': '#666', 'secondaryColor': '#27AE60', 'tertiaryColor': '#F39C12', 'errorColor': '#E74C3C' } } }%%
+%%{ init: { 'theme': 'base', 'themeVariables': { 'primaryColor': '#E8F4FD', 'primaryTextColor': '#1B2838', 'primaryBorderColor': '#2E86AB', 'lineColor': '#555', 'secondaryColor': '#E8F8E8', 'tertiaryColor': '#FFF8E1', 'background': '#FFFFFF', 'mainBkg': '#FFFFFF', 'nodeBorder': '#2E86AB', 'clusterBkg': '#F8F9FA', 'clusterBorder': '#DEE2E6' } } }%%
 
 flowchart TD
-    subgraph Agent["🤖 Claude Agent (SDK)"]
-        A1[Receive Task]
-        A2[Plan & Reason]
-        A3[Request Tool Call]
-        A4[Receive Result]
-        A5[Produce Response]
+    START([Agent receives task]) --> UPS
+
+    subgraph UPS["1. UserPromptSubmit Hook"]
+        direction LR
+        U1[Capture prompt] --> U2{First prompt?}
+        U2 -->|Yes| U3[Store as<br/>ORIGINAL INTENT<br/>+ embedding]
+        U2 -->|No| U4[Compute drift<br/>from original]
+        U4 --> U5{Drift level?}
+        U5 -->|"< 0.2"| U6[ON-TASK<br/>No action]:::green
+        U5 -->|"0.2 - 0.3"| U7[SCOPE CREEP<br/>Remind agent]:::amber
+        U5 -->|"0.3 - 0.5"| U8[DRIFTING<br/>Warn agent]:::red
+        U5 -->|"> 0.5"| U9[HIJACKED<br/>Security alert]:::darkred
     end
 
-    subgraph Hooks["🔒 Judge AI Dredd Hook Chain"]
+    UPS --> AGENT[Agent reasons & requests tool call]
+
+    AGENT --> PTU
+
+    subgraph PTU["2. PreToolUse Hook — Three-Stage Pipeline"]
         direction TB
+        P1["Stage 1: Policy Engine"]:::blue --> P1D{Decision?}
+        P1D -->|ALLOW<br/>Read, Glob, Grep,<br/>ls, git status| ALLOW1[✓ Execute tool]:::green
+        P1D -->|DENY<br/>rm -rf, printenv,<br/>curl @file| DENY1[✗ Block tool]:::red
+        P1D -->|REVIEW<br/>.env, curl, &&,<br/>MCP tools| P2
 
-        subgraph H1["UserPromptSubmit"]
-            UPS1{First prompt?}
-            UPS2[Store as<br/>ORIGINAL INTENT<br/>+ compute embedding]
-            UPS3[Store as<br/>TURN INTENT]
-            UPS4{Drift from<br/>original?}
-            UPS5["< 0.2: ON-TASK<br/>No action"]
-            UPS6["0.2-0.3: SCOPE CREEP<br/>Inject reminder"]
-            UPS7["0.3-0.5: DRIFTING<br/>Inject warning"]
-            UPS8["≥ 0.5: HIJACKED<br/>Inject security alert"]
-        end
+        P2["Stage 2: Embedding Drift<br/>~50ms via Ollama"]:::blue --> P2D{Similarity?}
+        P2D -->|"> 0.6"| ALLOW2[✓ Execute tool]:::green
+        P2D -->|"< 0.4"| DENY2[✗ Block tool]:::red
+        P2D -->|"0.4 - 0.6"| P3
 
-        subgraph H2["PreToolUse — Three-Stage Pipeline"]
-            direction TB
-            S1["Stage 1: Policy Engine<br/>(instant)"]
-            S1A["ALLOW<br/>Read, Glob, Grep,<br/>safe Bash"]
-            S1D["DENY<br/>rm -rf, printenv,<br/>curl @file, force push"]
-            S1R["REVIEW<br/>.env reads, curl,<br/>&&, eval, MCP tools"]
+        P3["Stage 3: LLM Judge<br/>~1.4s Bedrock / ~12s local"]:::blue --> P3D{Verdict?}
+        P3D -->|consistent| ALLOW3[✓ Execute tool]:::green
+        P3D -->|drifting /<br/>hijacked| DENY3[✗ Block tool]:::red
 
-            S2["Stage 2: Embedding Drift<br/>(~50ms via Ollama)"]
-            S2A["sim ≥ 0.6 → ALLOW"]
-            S2D["sim < 0.4 → DENY"]
-            S2R["0.4-0.6 → Stage 3"]
-
-            S3["Stage 3: LLM Judge<br/>(~1.4s Bedrock / ~12s Ollama)"]
-            S3C["consistent → ALLOW"]
-            S3H["drifting/hijacked → DENY"]
-            S3F["+ File Context<br/>Assembled content of<br/>all files written<br/>this session"]
-        end
-
-        subgraph H3["PostToolUse"]
-            PT1[Record file reads<br/>Track sensitive files]
-            PT2[Record file writes<br/>Accumulate content<br/>Detect multi-write]
-            PT3[Record env var<br/>mutations]
-            PT4[Detect canary<br/>cross-contamination]
-        end
-
-        subgraph H4["Stop"]
-            ST1[Write session log<br/>to results/]
-            ST2[Log turn metrics<br/>& classifications]
-            ST3[Clean up session]
-        end
+        FC["📁 File Context<br/>Assembled content of<br/>all files written<br/>this session"] -.->|"injected for<br/>Bash & git commands"| P3
     end
 
-    subgraph State["📊 Session Tracker"]
-        SS1[Original Intent<br/>+ Embedding]
-        SS2[Turn Intent History<br/>+ Drift per turn]
-        SS3[Tool Call History<br/>+ Decisions]
-        SS4[File Content Map<br/>Accumulated writes]
-        SS5[Env Var Registry]
-        SS6[Turn Metrics<br/>Classification per turn]
+    ALLOW1 & ALLOW2 & ALLOW3 --> EXEC[Tool executes]
+    DENY1 & DENY2 & DENY3 --> BLOCKED[Agent receives rejection<br/>& tries different approach]
+    BLOCKED --> AGENT
+
+    EXEC --> POST
+
+    subgraph POST["3. PostToolUse Hook — State Tracking"]
+        direction LR
+        T1["📄 Track file<br/>reads & writes"] ~~~ T2["🔑 Track env<br/>var mutations"] ~~~ T3["⚠️ Detect canary<br/>cross-contamination"]
     end
 
-    subgraph Models["🧠 Judge Models"]
-        EM["Embedding Model<br/>nomic-embed-text<br/>(Ollama, ~15ms)"]
-        JM["Judge LLM<br/>nemotron-3-super"]
-        JM1["Local: Ollama<br/>~12s per call<br/>Free"]
-        JM2["Cloud: Bedrock<br/>~1.4s per call<br/>Per-token cost"]
+    POST --> STATE
+
+    subgraph STATE["Session State"]
+        direction LR
+        S1["Original intent<br/>+ embedding"] ~~~ S2["Turn-by-turn<br/>intent history"] ~~~ S3["File content<br/>map"] ~~~ S4["Tool call<br/>decisions"]
     end
 
-    %% Agent flow
-    A1 -->|prompt| H1
-    UPS1 -->|Yes| UPS2
-    UPS1 -->|No| UPS3
-    UPS3 --> UPS4
-    UPS4 --> UPS5
-    UPS4 --> UPS6
-    UPS4 --> UPS7
-    UPS4 --> UPS8
-    UPS2 --> A2
-    UPS5 --> A2
-    UPS6 -->|systemMessage| A2
-    UPS7 -->|systemMessage| A2
-    UPS8 -->|systemMessage| A2
+    STATE -.-> UPS
+    STATE -.-> FC
+    POST -->|"Agent continues<br/>reasoning"| AGENT
 
-    A2 --> A3
-    A3 -->|tool_name, tool_input| H2
+    AGENT -->|"No more tool calls"| STOP
 
-    %% PreToolUse pipeline
-    S1 --> S1A
-    S1 --> S1D
-    S1 --> S1R
-    S1R --> S2
-    S2 --> S2A
-    S2 --> S2D
-    S2 --> S2R
-    S2R --> S3
-    S3 --> S3C
-    S3 --> S3H
-    S3F -.->|file context<br/>for Bash/git| S3
+    subgraph STOP["4. Stop Hook"]
+        direction LR
+        L1["Write session log"] ~~~ L2["Per-turn metrics<br/>& classifications"] ~~~ L3["Clean up"]
+    end
 
-    S1A -->|allow| A4
-    S2A -->|allow| A4
-    S3C -->|allow| A4
-    S1D -->|deny + reason| A2
-    S2D -->|deny + reason| A2
-    S3H -->|deny + reason| A2
+    STOP --> FIN([Session complete])
 
-    %% PostToolUse
-    A4 --> H3
-    PT1 --> SS4
-    PT2 --> SS4
-    PT3 --> SS5
-    PT4 --> SS4
-    H3 --> A2
+    subgraph MODELS["Judge Models"]
+        direction LR
+        M1["🔤 Embeddings<br/>nomic-embed-text<br/>Ollama · ~15ms"]
+        M2["🧠 Judge LLM<br/>nemotron-3-super<br/>Bedrock ~1.4s<br/>Ollama ~12s"]
+    end
 
-    %% When agent finishes
-    A5 --> H4
-    ST1 --> SS6
+    M1 -.-> P2
+    M2 -.-> P3
 
-    %% State connections
-    UPS2 --> SS1
-    UPS3 --> SS2
-    SS1 -.-> S2
-    SS4 -.-> S3F
-    S1 -.->|decision| SS3
-    S2 -.->|decision| SS3
-    S3 -.->|decision| SS3
-
-    %% Model connections
-    EM -.-> S2
-    JM -.-> S3
-    JM --- JM1
-    JM --- JM2
-
-    %% Styling
-    style S1A fill:#27AE60,color:#fff
-    style S2A fill:#27AE60,color:#fff
-    style S3C fill:#27AE60,color:#fff
-    style S1D fill:#E74C3C,color:#fff
-    style S2D fill:#E74C3C,color:#fff
-    style S3H fill:#E74C3C,color:#fff
-    style S1R fill:#F39C12,color:#fff
-    style S2R fill:#F39C12,color:#fff
-    style UPS5 fill:#27AE60,color:#fff
-    style UPS6 fill:#F39C12,color:#fff
-    style UPS7 fill:#E74C3C,color:#fff
-    style UPS8 fill:#E74C3C,color:#fff
+    classDef green fill:#D4EDDA,stroke:#28A745,color:#155724
+    classDef amber fill:#FFF3CD,stroke:#FFC107,color:#856404
+    classDef red fill:#F8D7DA,stroke:#DC3545,color:#721C24
+    classDef darkred fill:#DC3545,stroke:#A71D2A,color:#FFFFFF
+    classDef blue fill:#D6EAF8,stroke:#2E86AB,color:#1B4F72
