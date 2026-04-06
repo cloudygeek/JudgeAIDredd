@@ -22,7 +22,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { parseArgs } from "node:util";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { SessionTracker } from "./session-tracker.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
@@ -55,6 +55,14 @@ const CONFIG = {
 };
 
 // Shared state
+const feed: { timestamp: string; type: string; tool?: string; stage?: string; allowed?: boolean; reason?: string; prompt?: string; sessionId?: string }[] = [];
+const MAX_FEED = 200;
+
+function addFeed(entry: typeof feed[0]) {
+  feed.push({ ...entry, timestamp: entry.timestamp ?? new Date().toISOString() });
+  if (feed.length > MAX_FEED) feed.splice(0, feed.length - MAX_FEED);
+}
+
 const tracker = new SessionTracker(CONFIG.embeddingModel);
 const interceptor = new PreToolInterceptor({
   judgeModel: CONFIG.judgeModel,
@@ -135,6 +143,14 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     hookResponse.systemMessage = reminder;
   }
 
+  addFeed({
+    timestamp: new Date().toISOString(),
+    type: "intent",
+    prompt: prompt.substring(0, 100),
+    sessionId: session_id,
+    reason: `Turn ${result.turnNumber}: ${classification}${result.driftFromOriginal !== null ? ` (drift: ${result.driftFromOriginal.toFixed(3)})` : ""}`,
+  });
+
   json(res, 200, {
     ...hookResponse,
     _meta: {
@@ -194,6 +210,16 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     result.allowed ? "allow" : "deny",
     result.similarity
   );
+
+  addFeed({
+    timestamp: new Date().toISOString(),
+    type: "tool",
+    tool: tool_name,
+    stage: result.stage,
+    allowed: result.allowed,
+    reason: result.reason.substring(0, 100),
+    sessionId: session_id,
+  });
 
   // Build hook response
   const hookResponse: Record<string, unknown> = {};
@@ -459,6 +485,62 @@ const server = createServer(async (req, res) => {
       return await handleCompact(req, res);
     }
 
+    // ===== Dashboard & API =====
+
+    // Serve dashboard
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/dashboard")) {
+      const html = readFileSync(
+        new URL("./web/dashboard.html", import.meta.url), "utf8"
+      );
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(html);
+      return;
+    }
+
+    // API: list session logs
+    if (req.method === "GET" && url.pathname === "/api/sessions") {
+      const logDir = CONFIG.logDir;
+      if (!existsSync(logDir)) return json(res, 200, []);
+
+      const files = readdirSync(logDir)
+        .filter((f) => f.startsWith("session-") && f.endsWith(".json"))
+        .sort()
+        .reverse()
+        .slice(0, 50);
+
+      const sessions = files.map((f) => {
+        try {
+          return JSON.parse(readFileSync(join(logDir, f), "utf8"));
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+
+      return json(res, 200, sessions);
+    }
+
+    // API: get session log by ID
+    if (req.method === "GET" && url.pathname.startsWith("/api/session-log/")) {
+      const id = url.pathname.split("/api/session-log/")[1];
+      const logDir = CONFIG.logDir;
+      if (!existsSync(logDir)) return json(res, 404, { error: "No logs" });
+
+      const file = readdirSync(logDir)
+        .filter((f) => f.includes(id.substring(0, 12)))
+        .sort()
+        .reverse()[0];
+
+      if (!file) return json(res, 404, { error: "Session not found" });
+
+      const data = JSON.parse(readFileSync(join(logDir, file), "utf8"));
+      return json(res, 200, data);
+    }
+
+    // API: live feed
+    if (req.method === "GET" && url.pathname === "/api/feed") {
+      return json(res, 200, feed);
+    }
+
     json(res, 404, { error: "Not found" });
   } catch (err) {
     console.error(`[ERROR] ${req.method} ${url.pathname}:`, err);
@@ -500,13 +582,17 @@ async function main() {
 
   server.listen(PORT, () => {
     console.log(`\n  Listening on http://localhost:${PORT}`);
+    console.log(`\n  Dashboard:  http://localhost:${PORT}/`);
     console.log(`\n  Endpoints:`);
     console.log(`    POST /intent    — UserPromptSubmit (register intent)`);
     console.log(`    POST /evaluate  — PreToolUse (evaluate tool call)`);
     console.log(`    POST /track     — PostToolUse (record file/env state)`);
     console.log(`    POST /end       — Stop (write log, cleanup)`);
-    console.log(`    GET  /health    — health check`);
-    console.log(`    GET  /session/:id — session state (debug)`);
+    console.log(`    POST /pivot     — explicit direction change`);
+    console.log(`    POST /compact   — context compaction notification`);
+    console.log(`    GET  /health    — health check + version`);
+    console.log(`    GET  /api/sessions  — session log listing`);
+    console.log(`    GET  /api/feed      — live event feed`);
     console.log("█".repeat(50));
   });
 }
