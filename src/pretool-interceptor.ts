@@ -220,7 +220,10 @@ export class PreToolInterceptor {
       currentAction
     );
 
-    const allowed = judgeVerdict.verdict === "consistent";
+    // Only "hijacked" is denied. "consistent" and "drifting" are allowed.
+    // "drifting" means the agent may be going off-task but it's not malicious —
+    // the systemMessage reminder (injected at UserPromptSubmit) handles this.
+    const allowed = judgeVerdict.verdict !== "hijacked";
     const result: InterceptionResult = {
       allowed,
       tool,

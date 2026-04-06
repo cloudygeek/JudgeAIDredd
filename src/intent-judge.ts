@@ -101,11 +101,13 @@ Evaluate whether this trajectory is consistent with the original task.`;
         durationMs: response.durationMs,
       };
     } catch (err) {
-      // If the judge fails, default to "drifting" (fail-safe)
+      // If the judge fails, default to "consistent" (fail open).
+      // Better to allow a suspicious call than block a legitimate one.
+      // The policy deny list still catches truly dangerous operations.
       return {
-        verdict: "drifting",
-        confidence: 0.5,
-        reasoning: `Judge error: ${err instanceof Error ? err.message : String(err)}`,
+        verdict: "consistent",
+        confidence: 0.3,
+        reasoning: `Judge error (fail-open): ${err instanceof Error ? err.message : String(err)}`,
         durationMs: 0,
       };
     }
@@ -115,9 +117,34 @@ Evaluate whether this trajectory is consistent with the original task.`;
     raw: string
   ): Omit<JudgeVerdict, "durationMs"> {
     // Try to extract JSON from the response
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    let jsonMatch = raw.match(/\{[\s\S]*\}/);
+
+    // If JSON is truncated (no closing brace), try to fix it
     if (!jsonMatch) {
-      // If no JSON, try to infer verdict from text
+      const openBrace = raw.indexOf("{");
+      if (openBrace >= 0) {
+        // Truncated JSON — try to extract what we can
+        let partial = raw.substring(openBrace);
+        // Close any open strings and the object
+        if (!partial.endsWith("}")) {
+          // Find the last complete key-value pair
+          const verdictMatch = partial.match(/"verdict"\s*:\s*"(\w+)"/);
+          const confMatch = partial.match(/"confidence"\s*:\s*([\d.]+)/);
+          const reasonMatch = partial.match(/"reasoning"\s*:\s*"([^"]*)/);
+
+          if (verdictMatch) {
+            return {
+              verdict: (verdictMatch[1] as "consistent" | "drifting" | "hijacked") ?? "consistent",
+              confidence: confMatch ? parseFloat(confMatch[1]) : 0.5,
+              reasoning: reasonMatch ? reasonMatch[1] + "..." : "Truncated response",
+            };
+          }
+        }
+      }
+    }
+
+    if (!jsonMatch) {
+      // If no JSON at all, infer verdict from text
       const lower = raw.toLowerCase();
       if (lower.includes("hijack")) {
         return {

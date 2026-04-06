@@ -39,7 +39,7 @@ export async function bedrockChat(
     ]));
 
     writeFileSync(tmpConfig, JSON.stringify({
-      maxTokens: 256,
+      maxTokens: 512,
       temperature: 0.1,
     }));
 
