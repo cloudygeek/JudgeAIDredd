@@ -314,8 +314,14 @@ const server = createServer(async (req, res) => {
 
   try {
     if (req.method === "GET" && url.pathname === "/health") {
+      const pkg = JSON.parse(
+        (await import("node:fs")).readFileSync(
+          new URL("../package.json", import.meta.url), "utf8"
+        )
+      );
       return json(res, 200, {
         status: "ok",
+        version: pkg.version,
         config: CONFIG,
         activeSessions: registeredSessions.size,
       });
@@ -355,8 +361,14 @@ const server = createServer(async (req, res) => {
 // Startup
 // =========================================================================
 async function main() {
+  const pkg = JSON.parse(
+    (await import("node:fs")).readFileSync(
+      new URL("../package.json", import.meta.url), "utf8"
+    )
+  );
+
   console.log("█".repeat(50));
-  console.log("  JUDGE AI DREDD — HTTP Server");
+  console.log(`  JUDGE AI DREDD — HTTP Server v${pkg.version}`);
   console.log("█".repeat(50));
 
   // Preflight
