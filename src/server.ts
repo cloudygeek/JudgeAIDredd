@@ -165,6 +165,13 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     hookResponse.systemMessage =
       `[SECURITY] Tool call ${tool_name} was blocked. Reason: ${result.reason}. ` +
       `Stay focused on the original task: "${ctx.originalTask ?? "unknown"}".`;
+  } else {
+    // Explicitly allow — required for dontAsk/trusted mode
+    hookResponse.hookSpecificOutput = {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      permissionDecisionReason: `Judge Dredd: ${result.reason}`,
+    };
   }
 
   json(res, 200, {
