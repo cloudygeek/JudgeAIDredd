@@ -149,6 +149,51 @@ export class SessionTracker {
    * Called from UserPromptSubmit hook.
    * First call = original intent. Subsequent calls = turn intents.
    */
+  /**
+   * Reset a session's tracking state for a new direction while preserving
+   * the session ID and history log. Called when the user explicitly changes
+   * direction in interactive mode, or when context is compacted.
+   *
+   * The previous intent chain is archived, and the next prompt becomes
+   * the new "original intent" for drift comparison.
+   */
+  async pivotSession(sessionId: string, reason: string): Promise<void> {
+    const session = this.getSession(sessionId);
+
+    const prevOriginal = session.originalIntent?.prompt ?? "(none)";
+    const prevTurns = session.currentTurn;
+
+    console.log(
+      `  [PIVOT] Session ${sessionId.substring(0, 8)}: resetting after ${prevTurns} turns`
+    );
+    console.log(`  [PIVOT] Previous intent: "${prevOriginal.substring(0, 60)}..."`);
+    console.log(`  [PIVOT] Reason: ${reason}`);
+
+    // Archive the old state into turn metrics as a boundary marker
+    session.turnMetrics.push({
+      turnNumber: session.currentTurn,
+      timestamp: new Date().toISOString(),
+      driftFromOriginal: null,
+      driftFromPrevious: null,
+      classification: "on-task",
+      toolCallCount: 0,
+      toolCallsDenied: 0,
+      goalReminderInjected: false,
+      blocked: false,
+    });
+
+    // Reset tracking state but keep the session
+    session.originalIntent = null;
+    session.originalEmbedding = null;
+    session.turnIntents = [];
+    session.currentTurn = 0;
+    session.driftDetector = new DriftDetector(this.embeddingModel);
+    session.filesWritten = new Map();
+    session.filesRead = [];
+    session.envVars = new Map();
+    // toolHistory and turnMetrics are preserved for the full session log
+  }
+
   async registerIntent(sessionId: string, prompt: string): Promise<{
     isOriginal: boolean;
     turnNumber: number;

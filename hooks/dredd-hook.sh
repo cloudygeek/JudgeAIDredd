@@ -103,6 +103,16 @@ case "$HOOK_EVENT" in
     echo '{}'
     ;;
 
+  "PreCompact")
+    # Context is being compacted — notify Dredd so it can record the boundary
+    curl -s -X POST "$DREDD_URL/compact" \
+      -H "Content-Type: application/json" \
+      -d "{\"session_id\": \"$SESSION_ID\"}" \
+      --connect-timeout 2 --max-time 5 > /dev/null 2>&1 &
+
+    echo '{}'
+    ;;
+
   *)
     echo '{}'
     ;;

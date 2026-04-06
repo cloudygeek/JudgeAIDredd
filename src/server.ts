@@ -337,6 +337,58 @@ function handleSessionGet(res: ServerResponse, sessionId: string) {
 }
 
 // =========================================================================
+// POST /pivot — Explicit direction change (interactive mode)
+// =========================================================================
+async function handlePivot(req: IncomingMessage, res: ServerResponse) {
+  const body = JSON.parse(await readBody(req));
+  const { session_id, reason } = body;
+
+  if (!session_id) {
+    return json(res, 400, { error: "Missing session_id" });
+  }
+
+  await tracker.pivotSession(session_id, reason ?? "User changed direction");
+
+  // Reset the interceptor goal — next UserPromptSubmit will set the new one
+  interceptor.reset();
+
+  json(res, 200, { pivoted: true, reason: reason ?? "User changed direction" });
+}
+
+// =========================================================================
+// POST /compact — Context compaction notification (PreCompact hook)
+// =========================================================================
+async function handleCompact(req: IncomingMessage, res: ServerResponse) {
+  const body = JSON.parse(await readBody(req));
+  const { session_id } = body;
+
+  if (!session_id) {
+    return json(res, 400, { error: "Missing session_id" });
+  }
+
+  // Context is being compacted — the model will lose older conversation.
+  // We keep our full tracking state but note the boundary.
+  console.log(
+    `  [COMPACT] Session ${session_id.substring(0, 8)}: context compaction detected`
+  );
+
+  // Don't pivot — the intent hasn't changed, just the model's memory.
+  // But record it in metrics so we know when it happened.
+  const session = tracker.getSessionContext(session_id);
+  tracker.recordTurnMetrics(
+    session_id,
+    null, // no drift measurement at compaction
+    null,
+    0,
+    0,
+    false,
+    false
+  );
+
+  json(res, 200, { noted: true });
+}
+
+// =========================================================================
 // Router
 // =========================================================================
 const server = createServer(async (req, res) => {
@@ -376,6 +428,14 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/end") {
       return await handleEnd(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/pivot") {
+      return await handlePivot(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/compact") {
+      return await handleCompact(req, res);
     }
 
     json(res, 404, { error: "Not found" });
