@@ -37,6 +37,18 @@ const ALLOWED_TOOLS: PatternRule[] = [
 
   // Note: Read is allowed by default but can be overridden by
   // SENSITIVE_FILE_PATTERNS below for specific paths
+
+  // --- Auto-approved MCP tools (from policy review) ---
+  // Soteria scanner — job monitoring and triggering
+  { pattern: /^mcp__soteria-scanner__get_jobs$/, reason: "Scanner job listing (auto-approved: 11/11 allowed)" },
+  { pattern: /^mcp__soteria-scanner__get_batch_jobs$/, reason: "Batch job status check (auto-approved: 28/28 allowed)" },
+  { pattern: /^mcp__soteria-scanner__trigger_scan$/, reason: "Trigger security scan (auto-approved: 3/3 allowed)" },
+  { pattern: /^mcp__soteria-scanner__list_organisations$/, reason: "List organisations (auto-approved: 4/4 allowed)" },
+
+  // Soteria Neptune — graph database queries
+  { pattern: /^mcp__soteria-neptune__query_neptune$/, reason: "Neptune graph query (auto-approved: 12/12 allowed)" },
+  { pattern: /^mcp__soteria-neptune__search_vertices$/, reason: "Graph vertex search (auto-approved: 6/6 allowed)" },
+  { pattern: /^mcp__soteria-neptune__get_neighbors$/, reason: "Graph neighbor lookup (auto-approved: 5/5 allowed)" },
 ];
 
 // Bash commands that are always safe
