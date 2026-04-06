@@ -152,7 +152,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
 // =========================================================================
 async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
-  const { session_id, tool_name, tool_input } = body;
+  const { session_id, tool_name, tool_input, agent_reasoning } = body;
 
   if (!session_id || !tool_name) {
     return json(res, 400, { error: "Missing session_id or tool_name" });
@@ -173,7 +173,18 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     }
   }
 
-  const result = await interceptor.evaluate(tool_name, tool_input ?? {}, fileContext);
+  // Combine file context and agent reasoning for the judge
+  let fullContext = fileContext ?? "";
+  if (agent_reasoning) {
+    fullContext = (fullContext ? fullContext + "\n\n" : "") +
+      `AGENT REASONING (why it wants to use this tool):\n${agent_reasoning}`;
+  }
+
+  const result = await interceptor.evaluate(
+    tool_name,
+    tool_input ?? {},
+    fullContext || undefined
+  );
 
   // Record the decision
   tracker.recordToolCall(

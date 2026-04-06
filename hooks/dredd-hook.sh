@@ -71,10 +71,22 @@ case "$HOOK_EVENT" in
   "PreToolUse")
     TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
     TOOL_INPUT=$(echo "$INPUT" | jq '.tool_input // {}')
+    TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
+
+    # Extract the last assistant message from the transcript for context
+    AGENT_REASONING=""
+    if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+      # Get the last assistant message (text content blocks)
+      AGENT_REASONING=$(tail -20 "$TRANSCRIPT_PATH" \
+        | grep -o '"type":"assistant".*' \
+        | tail -1 \
+        | jq -r '.message.content[]? | select(.type=="text") | .text' 2>/dev/null \
+        | head -c 500)
+    fi
 
     RESPONSE=$(curl -s -X POST "$DREDD_URL/evaluate" \
       -H "Content-Type: application/json" \
-      -d "{\"session_id\": \"$SESSION_ID\", \"tool_name\": \"$TOOL_NAME\", \"tool_input\": $TOOL_INPUT}" \
+      -d "{\"session_id\": \"$SESSION_ID\", \"tool_name\": \"$TOOL_NAME\", \"tool_input\": $TOOL_INPUT, \"agent_reasoning\": $(echo "$AGENT_REASONING" | jq -Rs .)}" \
       --connect-timeout 5 --max-time 60)
 
     echo "$RESPONSE" | jq 'del(._meta)' 2>/dev/null || echo '{}'
