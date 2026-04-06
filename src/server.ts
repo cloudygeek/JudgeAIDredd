@@ -263,8 +263,23 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
     timestamp: new Date().toISOString(),
     originalTask: ctx.originalTask,
     summary,
+    toolHistory: ctx.recentTools,
+    filesWritten: tracker.getWrittenFiles(session_id).map((f) => ({
+      path: f.path,
+      writeCount: f.writeCount,
+      containsCanary: f.containsCanary,
+    })),
+    envVars: tracker.getEnvVars(session_id),
     driftHistory,
     turnMetrics: summary.turnMetrics,
+    interceptorLog: interceptor.getLog().map((r) => ({
+      tool: r.tool,
+      stage: r.stage,
+      allowed: r.allowed,
+      similarity: r.similarity,
+      reason: r.reason,
+      evaluationMs: r.evaluationMs,
+    })),
   };
 
   writeFileSync(logFile, JSON.stringify(sessionLog, null, 2));
