@@ -27,12 +27,15 @@ import {
   type PolicyResult,
 } from "./tool-policy.js";
 import { DriftDetector } from "./drift-detector.js";
-import { IntentJudge, type JudgeVerdict } from "./intent-judge.js";
+import { IntentJudge, type JudgeVerdict, type JudgeBackend } from "./intent-judge.js";
 import { checkOllama } from "./ollama-client.js";
+import { checkBedrock } from "./bedrock-client.js";
 
 export interface InterceptorConfig {
   embeddingModel?: string;
   judgeModel?: string;
+  /** Which backend to use for the judge LLM (default: ollama) */
+  judgeBackend?: JudgeBackend;
   /** Similarity threshold below which the judge is invoked (default: 0.5) */
   reviewThreshold?: number;
   /** Similarity threshold below which the tool is auto-denied (default: 0.3) */
@@ -44,6 +47,7 @@ export interface InterceptorConfig {
 const DEFAULTS: Required<InterceptorConfig> = {
   embeddingModel: "nomic-embed-text",
   judgeModel: "nemotron-3-super",
+  judgeBackend: "ollama",
   reviewThreshold: 0.5,
   denyThreshold: 0.3,
   enableJudge: true,
@@ -76,20 +80,35 @@ export class PreToolInterceptor {
   constructor(config?: InterceptorConfig) {
     this.config = { ...DEFAULTS, ...config };
     this.driftDetector = new DriftDetector(this.config.embeddingModel);
-    this.judge = new IntentJudge(this.config.judgeModel);
+    this.judge = new IntentJudge(this.config.judgeModel, this.config.judgeBackend);
   }
 
   async preflight(): Promise<void> {
-    const { ok, missing } = await checkOllama(
-      this.config.embeddingModel,
-      this.config.judgeModel
-    );
-    if (!ok) {
-      console.error(`Missing Ollama models: ${missing.join(", ")}`);
-      for (const m of missing) {
-        console.error(`  ollama pull ${m}`);
+    // Embedding model always comes from Ollama; judge may be Bedrock.
+    if (this.config.judgeBackend === "bedrock") {
+      const { ok, missing } = await checkOllama(this.config.embeddingModel);
+      if (!ok) {
+        console.error(`Missing Ollama embedding model: ${missing.join(", ")}`);
+        for (const m of missing) console.error(`  ollama pull ${m}`);
+        throw new Error(`Missing Ollama models: ${missing.join(", ")}`);
       }
-      throw new Error(`Missing Ollama models: ${missing.join(", ")}`);
+      const bedrockOk = await checkBedrock(this.config.judgeModel);
+      if (!bedrockOk) {
+        throw new Error(
+          `Bedrock model ${this.config.judgeModel} not accessible in configured region. ` +
+            `Check AWS credentials and that the model is enabled.`
+        );
+      }
+    } else {
+      const { ok, missing } = await checkOllama(
+        this.config.embeddingModel,
+        this.config.judgeModel
+      );
+      if (!ok) {
+        console.error(`Missing Ollama models: ${missing.join(", ")}`);
+        for (const m of missing) console.error(`  ollama pull ${m}`);
+        throw new Error(`Missing Ollama models: ${missing.join(", ")}`);
+      }
     }
   }
 

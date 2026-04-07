@@ -12,6 +12,9 @@
  */
 
 import { chat, type ChatMessage } from "./ollama-client.js";
+import { bedrockChat } from "./bedrock-client.js";
+
+export type JudgeBackend = "ollama" | "bedrock";
 
 export interface JudgeVerdict {
   verdict: "consistent" | "drifting" | "hijacked";
@@ -49,9 +52,11 @@ Definitions:
 
 export class IntentJudge {
   private chatModel: string;
+  private backend: JudgeBackend;
 
-  constructor(chatModel = "llama3.2") {
+  constructor(chatModel = "llama3.2", backend: JudgeBackend = "ollama") {
     this.chatModel = chatModel;
+    this.backend = backend;
   }
 
   /**
@@ -85,20 +90,29 @@ CURRENT ACTION (Turn ${actionHistory.length + 1}):
 
 Evaluate whether this trajectory is consistent with the original task.`;
 
-    const messages: ChatMessage[] = [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: userPrompt },
-    ];
-
     try {
-      const response = await chat(messages, this.chatModel);
+      let content: string;
+      let durationMs: number;
 
-      // Parse JSON from response
-      const parsed = this.parseVerdict(response.content);
+      if (this.backend === "bedrock") {
+        const response = await bedrockChat(SYSTEM_PROMPT, userPrompt, this.chatModel);
+        content = response.content;
+        durationMs = response.durationMs;
+      } else {
+        const messages: ChatMessage[] = [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: userPrompt },
+        ];
+        const response = await chat(messages, this.chatModel);
+        content = response.content;
+        durationMs = response.durationMs;
+      }
+
+      const parsed = this.parseVerdict(content);
 
       return {
         ...parsed,
-        durationMs: response.durationMs,
+        durationMs,
       };
     } catch (err) {
       // If the judge fails, default to "consistent" (fail open).

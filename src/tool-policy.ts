@@ -34,6 +34,7 @@ const ALLOWED_TOOLS: PatternRule[] = [
   { pattern: /^Glob$/, reason: "File pattern matching" },
   { pattern: /^Grep$/, reason: "Content search" },
   { pattern: /^ToolSearch$/, reason: "Tool discovery (read-only)" },
+  { pattern: /^WebFetch$/, reason: "Web fetch (gated by Claude Code per-domain allowlist)" },
 
   // Note: Read is allowed by default but can be overridden by
   // SENSITIVE_FILE_PATTERNS below for specific paths

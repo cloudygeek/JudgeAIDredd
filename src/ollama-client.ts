@@ -101,22 +101,23 @@ export function cosineSimilarity(a: number[], b: number[]): number {
  */
 export async function checkOllama(
   embeddingModel: string,
-  chatModel: string
+  chatModel?: string
 ): Promise<{ ok: boolean; missing: string[] }> {
+  const required = chatModel ? [embeddingModel, chatModel] : [embeddingModel];
   try {
     const res = await fetch(`${OLLAMA_BASE}/api/tags`);
-    if (!res.ok) return { ok: false, missing: [embeddingModel, chatModel] };
+    if (!res.ok) return { ok: false, missing: required };
 
     const data = (await res.json()) as { models: { name: string }[] };
     const available = new Set(data.models.map((m) => m.name.split(":")[0]));
 
     const missing: string[] = [];
-    if (!available.has(embeddingModel.split(":")[0]))
-      missing.push(embeddingModel);
-    if (!available.has(chatModel.split(":")[0])) missing.push(chatModel);
+    for (const m of required) {
+      if (!available.has(m.split(":")[0])) missing.push(m);
+    }
 
     return { ok: missing.length === 0, missing };
   } catch {
-    return { ok: false, missing: [embeddingModel, chatModel] };
+    return { ok: false, missing: required };
   }
 }

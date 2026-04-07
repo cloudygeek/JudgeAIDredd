@@ -34,9 +34,10 @@ const { values } = parseArgs({
     port: { type: "string", default: "3001" },
     mode: { type: "string", default: "autonomous" },
     "judge-model": { type: "string", default: "nemotron-3-super" },
+    backend: { type: "string", default: "ollama" },
     "embedding-model": { type: "string", default: "nomic-embed-text" },
     "review-threshold": { type: "string", default: "0.6" },
-    "deny-threshold": { type: "string", default: "0.4" },
+    "deny-threshold": { type: "string", default: "0.2" },
     "log-dir": { type: "string", default: "./results" },
   },
 });
@@ -49,6 +50,7 @@ const CONFIG = {
    *  autonomous  = SDK/pipeline (validate all prompts against original intent) */
   mode: (values.mode as TrustMode) ?? "autonomous",
   judgeModel: values["judge-model"]!,
+  judgeBackend: (values.backend as "ollama" | "bedrock")!,
   embeddingModel: values["embedding-model"]!,
   reviewThreshold: parseFloat(values["review-threshold"]!),
   denyThreshold: parseFloat(values["deny-threshold"]!),
@@ -67,6 +69,7 @@ function addFeed(entry: typeof feed[0]) {
 const tracker = new SessionTracker(CONFIG.embeddingModel);
 const interceptor = new PreToolInterceptor({
   judgeModel: CONFIG.judgeModel,
+  judgeBackend: CONFIG.judgeBackend,
   embeddingModel: CONFIG.embeddingModel,
   reviewThreshold: CONFIG.reviewThreshold,
   denyThreshold: CONFIG.denyThreshold,
@@ -97,6 +100,70 @@ function json(res: ServerResponse, status: number, data: unknown): void {
  * the Claude transcript file. Extracts the original task, tool history,
  * and file operations so the session tracker has full context.
  */
+/**
+ * Walk a Claude JSONL transcript and pull out the most recent user prompt
+ * together with the assistant text that immediately preceded it. Used to
+ * build the "intent" handed to the judge in interactive mode — a short user
+ * reply only makes sense in the context of what the agent just said.
+ */
+function extractLastUserAndPriorAssistant(
+  transcriptPath: string
+): { lastUser: string | null; priorAssistant: string | null } {
+  if (!transcriptPath || !existsSync(transcriptPath)) {
+    return { lastUser: null, priorAssistant: null };
+  }
+  try {
+    const lines = readFileSync(transcriptPath, "utf8").trim().split("\n").filter(Boolean);
+    let lastUser: string | null = null;
+    let priorAssistant: string | null = null;
+    let pendingAssistant: string | null = null;
+
+    for (const line of lines) {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type === "assistant") {
+          const text = (msg.message?.content ?? [])
+            .filter((b: any) => b.type === "text")
+            .map((b: any) => b.text)
+            .join("\n")
+            .trim();
+          if (text) pendingAssistant = text;
+        } else if (msg.type === "user") {
+          const text = (msg.message?.content ?? [])
+            .filter((b: any) => b.type === "text")
+            .map((b: any) => b.text)
+            .join("\n")
+            .trim();
+          if (text) {
+            lastUser = text;
+            priorAssistant = pendingAssistant;
+          }
+        }
+      } catch {}
+    }
+    return { lastUser, priorAssistant };
+  } catch {
+    return { lastUser: null, priorAssistant: null };
+  }
+}
+
+/**
+ * Combine a user prompt with the previous assistant response into a single
+ * "intent" string. Short user replies ("yes", "do that one", "the second
+ * option") are meaningless without the agent's preceding turn.
+ */
+function buildContextualIntent(
+  userPrompt: string,
+  priorAssistant: string | null
+): string {
+  if (!priorAssistant) return userPrompt;
+  // Cap the assistant context so the embedding/judge prompt stays bounded.
+  const trimmed = priorAssistant.length > 2000
+    ? priorAssistant.substring(priorAssistant.length - 2000)
+    : priorAssistant;
+  return `PREVIOUS ASSISTANT RESPONSE:\n${trimmed}\n\nUSER PROMPT:\n${userPrompt}`;
+}
+
 async function backfillFromTranscript(
   sessionId: string,
   transcriptPath: string
@@ -167,7 +234,13 @@ async function backfillFromTranscript(
       }
     }
 
-    if (!firstUserPrompt) return;
+    // Prefer the *last* user prompt (combined with the prior assistant turn)
+    // as the goal — backfill is only used when Dredd starts mid-session, and
+    // the most recent exchange is what the agent is currently acting on.
+    const { lastUser, priorAssistant } = extractLastUserAndPriorAssistant(transcriptPath);
+    const goalPrompt = lastUser ?? firstUserPrompt;
+    if (!goalPrompt) return;
+    const contextualGoal = buildContextualIntent(goalPrompt, priorAssistant);
 
     console.log(
       `  [BACKFILL] Session ${sessionId.substring(0, 8)}: ` +
@@ -176,9 +249,9 @@ async function backfillFromTranscript(
       `from transcript`
     );
 
-    // Register the original intent
-    await tracker.registerIntent(sessionId, firstUserPrompt);
-    await interceptor.registerGoal(firstUserPrompt);
+    // Register the most-recent intent (with prior assistant context)
+    await tracker.registerIntent(sessionId, goalPrompt);
+    await interceptor.registerGoal(contextualGoal);
     registeredSessions.add(sessionId);
 
     // Replay file operations into the tracker
@@ -195,7 +268,8 @@ async function backfillFromTranscript(
     }
 
     console.log(
-      `  [BACKFILL] Original intent: "${firstUserPrompt.substring(0, 60)}..."`
+      `  [BACKFILL] Latest intent: "${goalPrompt.substring(0, 60)}..." ` +
+      `(prior assistant context: ${priorAssistant ? "yes" : "no"})`
     );
   } catch (err) {
     console.error(
@@ -225,9 +299,16 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
 
   const result = await tracker.registerIntent(session_id, prompt);
 
+  // Build a contextual goal: the user prompt combined with the assistant
+  // response that immediately preceded it, so short replies retain meaning.
+  const { priorAssistant } = transcript_path
+    ? extractLastUserAndPriorAssistant(transcript_path)
+    : { priorAssistant: null };
+  const contextualGoal = buildContextualIntent(prompt, priorAssistant);
+
   // Register goal with interceptor on first call per session
   if (result.isOriginal && !registeredSessions.has(session_id)) {
-    await interceptor.registerGoal(prompt);
+    await interceptor.registerGoal(contextualGoal);
     registeredSessions.add(session_id);
   }
 
@@ -248,10 +329,11 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
         `  [INTENT] Interactive mode: "${prompt.trim()}" is a confirmation — keeping previous goal`
       );
     } else {
-      await interceptor.registerGoal(prompt);
+      await interceptor.registerGoal(contextualGoal);
       console.log(
         `  [INTENT] Interactive mode: updated goal to "${prompt.substring(0, 60)}..." ` +
-        `(drift from original: ${result.driftFromOriginal?.toFixed(3) ?? "n/a"})`
+        `(prior assistant context: ${priorAssistant ? "yes" : "no"}, ` +
+        `drift from original: ${result.driftFromOriginal?.toFixed(3) ?? "n/a"})`
       );
     }
   }
@@ -730,6 +812,7 @@ async function main() {
   await interceptor.preflight();
   console.log(`  Mode:            ${CONFIG.mode}`);
   console.log(`  Embedding model: ${CONFIG.embeddingModel}`);
+  console.log(`  Judge backend:   ${CONFIG.judgeBackend}`);
   console.log(`  Judge model:     ${CONFIG.judgeModel}`);
   console.log(`  Thresholds:      review=${CONFIG.reviewThreshold}, deny=${CONFIG.denyThreshold}`);
   console.log(`  Log directory:   ${CONFIG.logDir}`);
