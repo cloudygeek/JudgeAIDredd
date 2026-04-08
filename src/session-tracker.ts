@@ -194,20 +194,25 @@ export class SessionTracker {
     // toolHistory and turnMetrics are preserved for the full session log
   }
 
-  async registerIntent(sessionId: string, prompt: string): Promise<{
+  async registerIntent(sessionId: string, prompt: string, skipDrift = false): Promise<{
     isOriginal: boolean;
     turnNumber: number;
     driftFromOriginal: number | null;
     driftFromPrevious: number | null;
   }> {
     const session = this.getSession(sessionId);
-    const [promptEmbedding] = await embed(prompt, this.embeddingModel);
+    // In interactive mode (skipDrift) we don't need an embedding for the
+    // turn prompt — drift from original isn't meaningful when the user is
+    // actively steering and the goal updates each turn.
+    const promptEmbedding = skipDrift && session.originalIntent !== null
+      ? null
+      : (await embed(prompt, this.embeddingModel))[0];
 
     const intent: TurnIntent = {
       turnNumber: session.currentTurn,
       timestamp: new Date().toISOString(),
       prompt,
-      embedding: promptEmbedding,
+      embedding: promptEmbedding ?? [],
     };
 
     let driftFromOriginal: number | null = null;
@@ -227,24 +232,32 @@ export class SessionTracker {
       session.turnIntents.push(intent);
       session.currentTurn++;
 
-      // Measure drift from original
-      driftFromOriginal = 1 - cosineSimilarity(
-        session.originalEmbedding!,
-        promptEmbedding
-      );
+      if (!skipDrift && promptEmbedding) {
+        // Measure drift from original
+        driftFromOriginal = 1 - cosineSimilarity(
+          session.originalEmbedding!,
+          promptEmbedding
+        );
 
-      // Measure drift from previous turn
-      const prevIntents = session.turnIntents;
-      if (prevIntents.length >= 2) {
-        const prevEmbedding = prevIntents[prevIntents.length - 2].embedding;
-        driftFromPrevious = 1 - cosineSimilarity(prevEmbedding, promptEmbedding);
+        // Measure drift from previous turn
+        const prevIntents = session.turnIntents;
+        if (prevIntents.length >= 2) {
+          const prevEmbedding = prevIntents[prevIntents.length - 2].embedding;
+          if (prevEmbedding.length > 0) {
+            driftFromPrevious = 1 - cosineSimilarity(prevEmbedding, promptEmbedding);
+          }
+        }
+
+        console.log(
+          `  [SESSION ${sessionId.substring(0, 8)}] TURN ${session.currentTurn} intent: "${prompt.substring(0, 80)}..." ` +
+          `(drift from original: ${driftFromOriginal?.toFixed(3) ?? "n/a"}, ` +
+          `from prev: ${driftFromPrevious?.toFixed(3) ?? "n/a"})`
+        );
+      } else {
+        console.log(
+          `  [SESSION ${sessionId.substring(0, 8)}] TURN ${session.currentTurn} intent: "${prompt.substring(0, 80)}..." (interactive)`
+        );
       }
-
-      console.log(
-        `  [SESSION ${sessionId.substring(0, 8)}] TURN ${session.currentTurn} intent: "${prompt.substring(0, 80)}..." ` +
-        `(drift from original: ${driftFromOriginal?.toFixed(3) ?? "n/a"}, ` +
-        `from prev: ${driftFromPrevious?.toFixed(3) ?? "n/a"})`
-      );
     }
 
     return {

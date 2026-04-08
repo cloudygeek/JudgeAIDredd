@@ -106,6 +106,19 @@ function json(res: ServerResponse, status: number, data: unknown): void {
  * build the "intent" handed to the judge in interactive mode — a short user
  * reply only makes sense in the context of what the agent just said.
  */
+/**
+ * Short user replies like "yes", "ok", "do it", "option B" are confirmations
+ * of the previous assistant turn — they are not standalone goals. Backfill
+ * must walk past them to find the last substantive user prompt, otherwise
+ * the judge ends up evaluating tool calls against "yes, option B".
+ */
+function isConfirmationPrompt(text: string): boolean {
+  return (
+    /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|option\s+\w+|👍)\b/i.test(text)
+    && text.trim().length < 80
+  );
+}
+
 function extractLastUserAndPriorAssistant(
   transcriptPath: string
 ): { lastUser: string | null; priorAssistant: string | null } {
@@ -114,8 +127,11 @@ function extractLastUserAndPriorAssistant(
   }
   try {
     const lines = readFileSync(transcriptPath, "utf8").trim().split("\n").filter(Boolean);
-    let lastUser: string | null = null;
-    let priorAssistant: string | null = null;
+    // Collect all user prompts with the assistant turn that immediately
+    // preceded each one, then pick the last *substantive* (non-confirmation)
+    // entry. Falls back to the very last user prompt if everything is a
+    // confirmation.
+    const userTurns: { user: string; prior: string | null }[] = [];
     let pendingAssistant: string | null = null;
 
     for (const line of lines) {
@@ -135,13 +151,23 @@ function extractLastUserAndPriorAssistant(
             .join("\n")
             .trim();
           if (text) {
-            lastUser = text;
-            priorAssistant = pendingAssistant;
+            userTurns.push({ user: text, prior: pendingAssistant });
           }
         }
       } catch {}
     }
-    return { lastUser, priorAssistant };
+
+    if (userTurns.length === 0) return { lastUser: null, priorAssistant: null };
+
+    // Walk backwards for the last substantive prompt.
+    for (let i = userTurns.length - 1; i >= 0; i--) {
+      if (!isConfirmationPrompt(userTurns[i].user)) {
+        return { lastUser: userTurns[i].user, priorAssistant: userTurns[i].prior };
+      }
+    }
+    // All confirmations — fall back to the most recent.
+    const last = userTurns[userTurns.length - 1];
+    return { lastUser: last.user, priorAssistant: last.prior };
   } catch {
     return { lastUser: null, priorAssistant: null };
   }
@@ -297,7 +323,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   // Allow per-request mode override (e.g., SDK sends mode in body)
   const mode: TrustMode = body.mode ?? CONFIG.mode;
 
-  const result = await tracker.registerIntent(session_id, prompt);
+  const result = await tracker.registerIntent(session_id, prompt, mode === "interactive");
 
   // Build a contextual goal: the user prompt combined with the assistant
   // response that immediately preceded it, so short replies retain meaning.
@@ -465,7 +491,16 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const hookResponse: Record<string, unknown> = {};
 
   if (!result.allowed) {
-    const ctx = tracker.getSessionContext(session_id);
+    // Use the interceptor's *current* working goal (which interactive mode
+    // updates each turn) rather than the session's stale very-first prompt.
+    const currentGoal = interceptor.getCurrentGoal()
+      || tracker.getSessionContext(session_id).originalTask
+      || "unknown";
+    // Strip the contextual "PREVIOUS ASSISTANT RESPONSE: ..." prefix when
+    // surfacing to the user — they only need to see the actual user prompt.
+    const userVisibleGoal = currentGoal.includes("USER PROMPT:\n")
+      ? currentGoal.split("USER PROMPT:\n").pop()!.trim()
+      : currentGoal;
     hookResponse.hookSpecificOutput = {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
@@ -473,7 +508,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     };
     hookResponse.systemMessage =
       `[SECURITY] Tool call ${tool_name} was blocked. Reason: ${result.reason}. ` +
-      `Stay focused on the original task: "${ctx.originalTask ?? "unknown"}".`;
+      `Stay focused on the current task: "${userVisibleGoal}".`;
   } else {
     // Explicitly allow — required for dontAsk/trusted mode
     hookResponse.hookSpecificOutput = {

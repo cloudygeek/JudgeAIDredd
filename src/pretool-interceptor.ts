@@ -28,8 +28,8 @@ import {
 } from "./tool-policy.js";
 import { DriftDetector } from "./drift-detector.js";
 import { IntentJudge, type JudgeVerdict, type JudgeBackend } from "./intent-judge.js";
-import { checkOllama } from "./ollama-client.js";
-import { checkBedrock } from "./bedrock-client.js";
+import { checkOllama, embed, chat } from "./ollama-client.js";
+import { checkBedrock, bedrockChat } from "./bedrock-client.js";
 
 export interface InterceptorConfig {
   embeddingModel?: string;
@@ -110,11 +110,53 @@ export class PreToolInterceptor {
         throw new Error(`Missing Ollama models: ${missing.join(", ")}`);
       }
     }
+
+    // Live connectivity test: actually invoke each model so we fail fast
+    // if Ollama/Bedrock is reachable but the model errors at inference time.
+    const embedStart = Date.now();
+    try {
+      const vecs = await embed("preflight connectivity test", this.config.embeddingModel);
+      if (!vecs?.[0]?.length) throw new Error("empty embedding response");
+      console.log(
+        `  ✓ Embedding model OK (${this.config.embeddingModel}, ` +
+        `dim=${vecs[0].length}, ${Date.now() - embedStart}ms)`
+      );
+    } catch (err) {
+      throw new Error(
+        `Embedding model ${this.config.embeddingModel} failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
+    const judgeStart = Date.now();
+    try {
+      if (this.config.judgeBackend === "bedrock") {
+        const r = await bedrockChat("You are a test.", "Reply with the single word: ok", this.config.judgeModel);
+        if (!r.content) throw new Error("empty response");
+      } else {
+        const r = await chat(
+          [{ role: "user", content: "Reply with the single word: ok" }],
+          this.config.judgeModel
+        );
+        if (!r.content) throw new Error("empty response");
+      }
+      console.log(
+        `  ✓ Judge model OK (${this.config.judgeBackend}/${this.config.judgeModel}, ` +
+        `${Date.now() - judgeStart}ms)`
+      );
+    } catch (err) {
+      throw new Error(
+        `Judge model ${this.config.judgeModel} failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   async registerGoal(task: string): Promise<void> {
     this.originalTask = task;
     await this.driftDetector.registerGoal(task);
+  }
+
+  getCurrentGoal(): string {
+    return this.originalTask;
   }
 
   /**

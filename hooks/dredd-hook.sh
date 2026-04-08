@@ -32,6 +32,10 @@
 #       "Stop": [{
 #         "type": "command",
 #         "command": "/path/to/JudgeAIDredd/hooks/dredd-hook.sh"
+#       }],
+#       "SessionEnd": [{
+#         "type": "command",
+#         "command": "/path/to/JudgeAIDredd/hooks/dredd-hook.sh"
 #       }]
 #     }
 #   }
@@ -108,6 +112,14 @@ case "$HOOK_EVENT" in
     ;;
 
   "Stop")
+    # Stop fires after every assistant turn (not at session end). Do NOT
+    # call /end here — that would wipe the session state and cause the next
+    # user prompt to be registered as a new "original intent", breaking
+    # interactive-mode confirmation handling.
+    echo '{}'
+    ;;
+
+  "SessionEnd")
     curl -s -X POST "$DREDD_URL/end" \
       -H "Content-Type: application/json" \
       -d "{\"session_id\": \"$SESSION_ID\"}" \
