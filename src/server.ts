@@ -42,8 +42,14 @@ const { values } = parseArgs({
   },
 });
 
+// Prepend ISO timestamp to every console line so server logs are grep/sortable.
+for (const level of ["log", "info", "warn", "error"] as const) {
+  const original = console[level].bind(console);
+  console[level] = (...args: unknown[]) => original(`[${new Date().toISOString()}]`, ...args);
+}
+
 const PORT = parseInt(values.port!, 10);
-type TrustMode = "interactive" | "autonomous";
+type TrustMode = "interactive" | "autonomous" | "learn";
 
 const CONFIG = {
   /** interactive = vibe coding (trust user prompts, update intent)
@@ -403,6 +409,8 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
 async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
   const { session_id, tool_name, tool_input, agent_reasoning, transcript_path } = body;
+  const mode: TrustMode = body.mode ?? CONFIG.mode;
+  const isLearn = mode === "learn";
 
   if (!session_id || !tool_name) {
     return json(res, 400, { error: "Missing session_id or tool_name" });
@@ -415,10 +423,11 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     }
 
     // Still no goal after backfill? Allow the call — we can't evaluate
-    // drift without a baseline. Policy deny list still applies.
+    // drift without a baseline. Policy deny list still applies (except in
+    // learn mode, which only observes).
     if (!registeredSessions.has(session_id)) {
       const policyOnly = (await import("./tool-policy.js")).evaluateToolPolicy(tool_name, tool_input ?? {});
-      if (policyOnly.decision === "deny") {
+      if (policyOnly.decision === "deny" && !isLearn) {
         return json(res, 200, {
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
@@ -468,7 +477,11 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     fullContext || undefined
   );
 
-  // Record the decision
+  // In learn mode, the pipeline still runs (for logging/observation) but
+  // we never block — the would-be verdict is recorded as-is.
+  const effectiveAllowed = isLearn ? true : result.allowed;
+
+  // Record the decision (true verdict, not the learn-mode override)
   tracker.recordToolCall(
     session_id,
     tool_name,
@@ -481,16 +494,22 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     timestamp: new Date().toISOString(),
     type: "tool",
     tool: tool_name,
-    stage: result.stage,
-    allowed: result.allowed,
+    stage: isLearn && !result.allowed ? `${result.stage} (learn-allow)` : result.stage,
+    allowed: effectiveAllowed,
     reason: result.reason.substring(0, 100),
     sessionId: session_id,
   });
 
+  if (isLearn && !result.allowed) {
+    console.log(
+      `  [LEARN] Would have blocked ${tool_name}: ${result.reason} — allowing anyway`
+    );
+  }
+
   // Build hook response
   const hookResponse: Record<string, unknown> = {};
 
-  if (!result.allowed) {
+  if (!effectiveAllowed) {
     // Use the interceptor's *current* working goal (which interactive mode
     // updates each turn) rather than the session's stale very-first prompt.
     const currentGoal = interceptor.getCurrentGoal()
@@ -852,7 +871,10 @@ async function main() {
   console.log(`  Thresholds:      review=${CONFIG.reviewThreshold}, deny=${CONFIG.denyThreshold}`);
   console.log(`  Log directory:   ${CONFIG.logDir}`);
 
-  if (CONFIG.mode === "interactive") {
+  if (CONFIG.mode === "learn") {
+    console.log(`\n  📖 Learn mode: pipeline runs but NOTHING is blocked`);
+    console.log(`    Verdicts are logged for observation only. Use to gather data before enforcing.`);
+  } else if (CONFIG.mode === "interactive") {
     console.log(`\n  ⚠ Interactive mode: user prompts are trusted, intent updates each turn`);
     console.log(`    Policy deny list still enforced. Drift logged but not blocked.`);
   } else {

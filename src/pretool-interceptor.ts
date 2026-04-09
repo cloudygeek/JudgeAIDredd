@@ -76,6 +76,11 @@ export class PreToolInterceptor {
   private judge: IntentJudge;
   private originalTask: string = "";
   private toolLog: InterceptionResult[] = [];
+  /** Index into toolLog marking where the current goal started. Tool calls
+   *  before this index belong to previous (completed) goals and must not
+   *  be fed to the judge — otherwise stale actions from earlier turns get
+   *  interpreted as "trajectory" for the current task. */
+  private goalStartIndex: number = 0;
 
   constructor(config?: InterceptorConfig) {
     this.config = { ...DEFAULTS, ...config };
@@ -152,6 +157,10 @@ export class PreToolInterceptor {
 
   async registerGoal(task: string): Promise<void> {
     this.originalTask = task;
+    // Anything in toolLog before this point belongs to a previous goal —
+    // remember the boundary so recent-history for the judge is scoped to
+    // just the current task.
+    this.goalStartIndex = this.toolLog.length;
     await this.driftDetector.registerGoal(task);
   }
 
@@ -265,7 +274,11 @@ export class PreToolInterceptor {
       return result;
     }
 
-    const recentTools = this.toolLog.slice(-5).map(
+    // Only consider tool calls taken since the current goal was registered.
+    // Earlier calls belong to a previous (completed) user task and would
+    // mislead the judge into thinking the agent has drifted.
+    const currentGoalTools = this.toolLog.slice(this.goalStartIndex);
+    const recentTools = currentGoalTools.slice(-5).map(
       (r) => `${r.tool}(${this.describeToolCall(r.tool, r.input).substring(0, 80)})`
     );
 
@@ -350,6 +363,7 @@ export class PreToolInterceptor {
   reset(): void {
     this.toolLog = [];
     this.originalTask = "";
+    this.goalStartIndex = 0;
     this.driftDetector.reset();
   }
 }
