@@ -28,8 +28,8 @@ import {
 } from "./tool-policy.js";
 import { DriftDetector } from "./drift-detector.js";
 import { IntentJudge, type JudgeVerdict, type JudgeBackend } from "./intent-judge.js";
-import { checkOllama, embed, chat } from "./ollama-client.js";
-import { checkBedrock, bedrockChat } from "./bedrock-client.js";
+import { checkOllama, embedAny, isBedrockModel, chat } from "./ollama-client.js";
+import { checkBedrock, bedrockChat, bedrockEmbed } from "./bedrock-client.js";
 
 export interface InterceptorConfig {
   embeddingModel?: string;
@@ -45,11 +45,11 @@ export interface InterceptorConfig {
 }
 
 const DEFAULTS: Required<InterceptorConfig> = {
-  embeddingModel: "nomic-embed-text",
+  embeddingModel: "eu.cohere.embed-v4:0",
   judgeModel: "nemotron-3-super",
   judgeBackend: "ollama",
-  reviewThreshold: 0.5,
-  denyThreshold: 0.3,
+  reviewThreshold: 0.6,
+  denyThreshold: 0.25,
   enableJudge: true,
 };
 
@@ -89,26 +89,16 @@ export class PreToolInterceptor {
   }
 
   async preflight(): Promise<void> {
-    // Embedding model always comes from Ollama; judge may be Bedrock.
-    if (this.config.judgeBackend === "bedrock") {
-      const { ok, missing } = await checkOllama(this.config.embeddingModel);
-      if (!ok) {
-        console.error(`Missing Ollama embedding model: ${missing.join(", ")}`);
-        for (const m of missing) console.error(`  ollama pull ${m}`);
-        throw new Error(`Missing Ollama models: ${missing.join(", ")}`);
-      }
-      const bedrockOk = await checkBedrock(this.config.judgeModel);
-      if (!bedrockOk) {
-        throw new Error(
-          `Bedrock model ${this.config.judgeModel} not accessible in configured region. ` +
-            `Check AWS credentials and that the model is enabled.`
-        );
-      }
-    } else {
-      const { ok, missing } = await checkOllama(
-        this.config.embeddingModel,
-        this.config.judgeModel
-      );
+    const usingBedrockEmbed = isBedrockModel(this.config.embeddingModel);
+    const usingBedrockJudge = this.config.judgeBackend === "bedrock";
+
+    // Check Ollama only for whichever components actually use it
+    if (!usingBedrockEmbed || !usingBedrockJudge) {
+      const ollamaModels = [
+        ...(!usingBedrockEmbed ? [this.config.embeddingModel] : []),
+        ...(!usingBedrockJudge ? [this.config.judgeModel] : []),
+      ];
+      const { ok, missing } = await checkOllama(ollamaModels[0], ollamaModels[1]);
       if (!ok) {
         console.error(`Missing Ollama models: ${missing.join(", ")}`);
         for (const m of missing) console.error(`  ollama pull ${m}`);
@@ -116,11 +106,21 @@ export class PreToolInterceptor {
       }
     }
 
-    // Live connectivity test: actually invoke each model so we fail fast
-    // if Ollama/Bedrock is reachable but the model errors at inference time.
+    // Check Bedrock for whichever components use it
+    if (usingBedrockJudge) {
+      const bedrockOk = await checkBedrock(this.config.judgeModel);
+      if (!bedrockOk) {
+        throw new Error(
+          `Bedrock judge model ${this.config.judgeModel} not accessible. ` +
+          `Check AWS credentials and that the model is enabled.`
+        );
+      }
+    }
+
+    // Live embedding test
     const embedStart = Date.now();
     try {
-      const vecs = await embed("preflight connectivity test", this.config.embeddingModel);
+      const vecs = await embedAny("preflight connectivity test", this.config.embeddingModel);
       if (!vecs?.[0]?.length) throw new Error("empty embedding response");
       console.log(
         `  ✓ Embedding model OK (${this.config.embeddingModel}, ` +
@@ -179,12 +179,14 @@ export class PreToolInterceptor {
   async evaluate(
     tool: string,
     input: Record<string, unknown>,
-    fileContext?: string
+    fileContext?: string,
+    sessionId?: string,
+    projectRoot?: string | null
   ): Promise<InterceptionResult> {
     const start = Date.now();
 
     // --- Stage 1: Policy engine ---
-    const policyResult = evaluateToolPolicy(tool, input);
+    const policyResult = evaluateToolPolicy(tool, input, projectRoot);
 
     if (policyResult.decision === "allow") {
       const result: InterceptionResult = {
@@ -198,7 +200,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: policyResult.reason,
       };
-      this.log(result);
+      this.log(result, sessionId);
       return result;
     }
 
@@ -214,7 +216,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: policyResult.reason,
       };
-      this.log(result);
+      this.log(result, sessionId);
       return result;
     }
 
@@ -235,7 +237,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `Similarity ${drift.similarity.toFixed(3)} >= threshold ${this.config.reviewThreshold}`,
       };
-      this.log(result);
+      this.log(result, sessionId);
       return result;
     }
 
@@ -252,7 +254,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `Similarity ${drift.similarity.toFixed(3)} < deny threshold ${this.config.denyThreshold}`,
       };
-      this.log(result);
+      this.log(result, sessionId);
       return result;
     }
 
@@ -270,7 +272,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `Similarity ${drift.similarity.toFixed(3)} in review zone, judge disabled`,
       };
-      this.log(result);
+      this.log(result, sessionId);
       return result;
     }
 
@@ -338,7 +340,7 @@ export class PreToolInterceptor {
     }
   }
 
-  private log(result: InterceptionResult): void {
+  private log(result: InterceptionResult, sessionId?: string): void {
     this.toolLog.push(result);
 
     const icon =
@@ -350,9 +352,10 @@ export class PreToolInterceptor {
     const judgeStr = result.judgeVerdict
       ? ` judge=${result.judgeVerdict.verdict}(${result.judgeVerdict.durationMs}ms)`
       : "";
+    const sessionStr = sessionId ? ` [${sessionId.substring(0, 8)}]` : "";
 
     console.log(
-      `    [${icon} ${result.stage}]${simStr}${judgeStr} ${result.tool}: ${result.reason} (${result.evaluationMs}ms)`
+      `   ${sessionStr} [${icon} ${result.stage}]${simStr}${judgeStr} ${result.tool}: ${result.reason} (${result.evaluationMs}ms)`
     );
   }
 

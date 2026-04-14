@@ -86,7 +86,7 @@ const DENIED_BASH_PATTERNS: PatternRule[] = [
   { pattern: /rmdir\s/, reason: "Remove directory" },
   { pattern: /mkfs/, reason: "Filesystem format" },
   { pattern: /dd\s+if=/, reason: "Raw disk write" },
-  { pattern: />\s*\/dev\//, reason: "Write to device" },
+  { pattern: />\s*\/dev\/(?!null\b)/, reason: "Write to device (non-null)" },
   { pattern: /chmod\s+777/, reason: "World-writable permissions" },
   { pattern: /chmod\s+\+s/, reason: "Set SUID bit" },
 
@@ -299,11 +299,53 @@ function checkDangerousCombination(
 }
 
 /**
+ * Return a "review" result for a write that lands outside the project sandbox.
+ * Used for both file-write tools and bash redirect targets.
+ */
+function sandboxReview(tool: string, path: string, projectRoot: string): PolicyResult {
+  const isDotClaude = path.includes("/.claude/");
+  return {
+    decision: "review",
+    tool,
+    reason: isDotClaude
+      ? `.claude/ write outside project root — judge required`
+      : `Write outside project sandbox (${projectRoot}) — judge required`,
+    matchedRule: isDotClaude
+      ? "REVIEW:sandbox:dot-claude"
+      : "REVIEW:sandbox:out-of-project",
+  };
+}
+
+/**
+ * Check whether an absolute path is outside the project sandbox.
+ * Returns a sandbox review result if so, null if the path is within bounds.
+ */
+function checkSandbox(
+  tool: string,
+  filePath: string,
+  projectRoot: string | null | undefined
+): PolicyResult | null {
+  if (!projectRoot || !filePath.startsWith("/")) return null;
+  if (filePath.startsWith(projectRoot)) return null;
+  return sandboxReview(tool, filePath, projectRoot);
+}
+
+/**
+ * Extract the write target from a bash redirect expression (> path or >> path).
+ * Returns null if no redirect to an absolute path is found.
+ */
+function extractRedirectTarget(command: string): string | null {
+  const m = command.match(/>>?\s*(\/[^\s;|&]+)/);
+  return m ? m[1] : null;
+}
+
+/**
  * Evaluate a tool call against the policy.
  */
 export function evaluateToolPolicy(
   tool: string,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  projectRoot?: string | null
 ): PolicyResult {
   // --- Built-in tool: Bash ---
   if (tool === "Bash") {
@@ -318,6 +360,15 @@ export function evaluateToolPolicy(
           reason: rule.reason,
           matchedRule: `DENY:Bash:${rule.pattern}`,
         };
+      }
+    }
+
+    // Sandbox: if the command writes to an absolute path outside the project, review
+    if (projectRoot) {
+      const redirectTarget = extractRedirectTarget(command);
+      if (redirectTarget) {
+        const sandboxResult = checkSandbox(tool, redirectTarget, projectRoot);
+        if (sandboxResult) return sandboxResult;
       }
     }
 
@@ -409,6 +460,11 @@ export function evaluateToolPolicy(
   // --- Built-in tools: Write / Edit ---
   if (tool === "Write" || tool === "Edit") {
     const filePath = String(input.file_path ?? "");
+
+    // Sandbox: writes outside the project root go straight to judge
+    const sandboxResult = checkSandbox(tool, filePath, projectRoot);
+    if (sandboxResult) return sandboxResult;
+
     for (const rule of SENSITIVE_WRITE_PATTERNS) {
       if (rule.pattern.test(filePath)) {
         return {

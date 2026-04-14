@@ -9,7 +9,7 @@
  * given the same embeddings, and runs entirely locally.
  */
 
-import { embed, cosineSimilarity } from "./ollama-client.js";
+import { embedAny, cosineSimilarity } from "./ollama-client.js";
 
 export interface DriftScore {
   /** Cosine similarity between this turn's action and the original task (0-1) */
@@ -40,7 +40,7 @@ export class DriftDetector {
    * Register the original task. Computes and caches its embedding.
    */
   async registerGoal(task: string): Promise<void> {
-    const embeddings = await embed(task, this.embeddingModel);
+    const embeddings = await embedAny(task, this.embeddingModel);
     this.taskEmbedding = embeddings[0];
     this.turnSimilarities = [];
     this.previousSimilarity = 1.0;
@@ -83,7 +83,7 @@ export class DriftDetector {
     }
 
     const start = Date.now();
-    const embeddings = await embed(turnSummary, this.embeddingModel);
+    const embeddings = await embedAny(turnSummary, this.embeddingModel);
     const embedTimeMs = Date.now() - start;
 
     const turnEmbedding = embeddings[0];

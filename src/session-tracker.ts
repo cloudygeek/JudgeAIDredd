@@ -15,7 +15,7 @@
  */
 
 import { DriftDetector } from "./drift-detector.js";
-import { embed, cosineSimilarity } from "./ollama-client.js";
+import { embedAny, cosineSimilarity } from "./ollama-client.js";
 import { CANARY_PREFIXES } from "./types.js";
 
 export interface TurnIntent {
@@ -113,6 +113,8 @@ export interface SessionState {
   envVars: Map<string, EnvVarRecord>;
   /** Per-turn metrics for logging and analysis */
   turnMetrics: TurnMetrics[];
+  /** Working directory of the Claude instance — defines the sandbox boundary */
+  projectRoot: string | null;
 }
 
 export class SessionTracker {
@@ -140,9 +142,26 @@ export class SessionTracker {
         filesRead: [],
         envVars: new Map(),
         turnMetrics: [],
+        projectRoot: null,
       });
     }
     return this.sessions.get(sessionId)!;
+  }
+
+  /**
+   * Record the working directory of the Claude instance for sandbox enforcement.
+   * Called once on session registration (UserPromptSubmit). Ignored if already set
+   * so that subsequent prompts don't overwrite the original boundary.
+   */
+  setProjectRoot(sessionId: string, cwd: string): void {
+    const session = this.getSession(sessionId);
+    if (!session.projectRoot) {
+      session.projectRoot = cwd;
+    }
+  }
+
+  getProjectRoot(sessionId: string): string | null {
+    return this.sessions.get(sessionId)?.projectRoot ?? null;
   }
 
   /**
@@ -206,7 +225,7 @@ export class SessionTracker {
     // actively steering and the goal updates each turn.
     const promptEmbedding = skipDrift && session.originalIntent !== null
       ? null
-      : (await embed(prompt, this.embeddingModel))[0];
+      : (await embedAny(prompt, this.embeddingModel))[0];
 
     const intent: TurnIntent = {
       turnNumber: session.currentTurn,

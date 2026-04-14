@@ -77,6 +77,83 @@ export async function bedrockChat(
   }
 }
 
+// ============================================================================
+// Embedding API
+// ============================================================================
+
+/**
+ * Embed a batch of texts using a Bedrock embedding model.
+ * Dispatches to the correct request/response format per model family.
+ */
+export async function bedrockEmbed(
+  texts: string[],
+  modelId: string,
+  region = REGION
+): Promise<number[][]> {
+  // Strip cross-region inference profile prefixes (eu., us., global.) before dispatch
+  const bare = modelId.replace(/^(?:eu|us|global)\./, "");
+
+  if (bare.startsWith("cohere.embed")) {
+    return cohereEmbed(texts, modelId, region);
+  }
+  if (bare.startsWith("amazon.titan-embed")) {
+    return Promise.all(texts.map((t) => titanEmbed(t, modelId, region)));
+  }
+  if (bare.startsWith("twelvelabs.")) {
+    return Promise.all(texts.map((t) => marengoEmbed(t, modelId, region)));
+  }
+  throw new Error(`Unknown Bedrock embedding model family: ${modelId}`);
+}
+
+function invokeModel(modelId: string, body: object, region: string): object {
+  const tmpIn  = join(tmpdir(), `bedrock-embed-in-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const tmpOut = join(tmpdir(), `bedrock-embed-out-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  try {
+    writeFileSync(tmpIn, JSON.stringify(body));
+    const cmd = [
+      "aws", "bedrock-runtime", "invoke-model",
+      "--region", region,
+      "--model-id", modelId,
+      "--body", `file://${tmpIn}`,
+      "--cli-binary-format", "raw-in-base64-out",
+      tmpOut,
+    ].join(" ");
+    execSync(cmd, { encoding: "utf8", timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+    return JSON.parse(readFileSync(tmpOut, "utf8"));
+  } finally {
+    try { unlinkSync(tmpIn); } catch {}
+    try { unlinkSync(tmpOut); } catch {}
+  }
+}
+
+function cohereEmbed(texts: string[], modelId: string, region: string): number[][] {
+  const resp = invokeModel(modelId, { texts, input_type: "search_query" }, region) as Record<string, unknown>;
+  // v3: { embeddings: number[][] }
+  // v4: { embeddings: { float: number[][] } }
+  const emb = resp.embeddings as number[][] | { float: number[][] };
+  return Array.isArray(emb) ? emb : emb.float;
+}
+
+function titanEmbed(text: string, modelId: string, region: string): number[] {
+  const resp = invokeModel(modelId, { inputText: text }, region) as { embedding: number[] };
+  return resp.embedding;
+}
+
+function marengoEmbed(text: string, modelId: string, region: string): number[] {
+  // Marengo 3.0: { inputType: "text", text: { text: "..." } }
+  // Marengo 2.7: { inputText: "..." }  (Titan-compatible schema)
+  const bare = modelId.replace(/^(?:eu|us|global)\./, "");
+  const body = bare.includes("marengo-embed-2-7")
+    ? { inputType: "text", inputText: text }
+    : { inputType: "text", text: { inputText: text } };
+
+  const resp = invokeModel(modelId, body, region) as Record<string, unknown>;
+  if (Array.isArray(resp.embedding)) return resp.embedding as number[];
+  const data = resp.data as { embedding: number[] }[] | undefined;
+  if (data?.[0]?.embedding) return data[0].embedding;
+  throw new Error(`Unexpected Marengo response shape: ${JSON.stringify(resp).substring(0, 200)}`);
+}
+
 export async function checkBedrock(modelId = MODEL_ID): Promise<boolean> {
   try {
     execSync(

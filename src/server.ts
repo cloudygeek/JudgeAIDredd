@@ -22,8 +22,9 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { parseArgs } from "node:util";
-import { writeFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import { writeFileSync, appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { inspect } from "node:util";
 import { SessionTracker } from "./session-tracker.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
 import { exportPolicies } from "./tool-policy.js";
@@ -35,17 +36,38 @@ const { values } = parseArgs({
     mode: { type: "string", default: "autonomous" },
     "judge-model": { type: "string", default: "nemotron-3-super" },
     backend: { type: "string", default: "ollama" },
-    "embedding-model": { type: "string", default: "nomic-embed-text" },
+    "embedding-model": { type: "string", default: "eu.cohere.embed-v4:0" },
     "review-threshold": { type: "string", default: "0.6" },
-    "deny-threshold": { type: "string", default: "0.2" },
+    "deny-threshold": { type: "string", default: "0.25" },
     "log-dir": { type: "string", default: "./results" },
   },
 });
 
-// Prepend ISO timestamp to every console line so server logs are grep/sortable.
+// File logger — mirrors all console output to logs/dredd-YYYY-MM-DD.log
+const LOG_DIR = "./logs";
+try { mkdirSync(LOG_DIR, { recursive: true }); } catch {}
+
+function getLogFilePath(): string {
+  const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  return join(LOG_DIR, `dredd-${date}.log`);
+}
+
+function appendToLogFile(line: string): void {
+  try {
+    appendFileSync(getLogFilePath(), line + "\n");
+  } catch {}
+}
+
+// Prepend ISO timestamp to every console line so server logs are grep/sortable,
+// and also write to the daily log file.
 for (const level of ["log", "info", "warn", "error"] as const) {
   const original = console[level].bind(console);
-  console[level] = (...args: unknown[]) => original(`[${new Date().toISOString()}]`, ...args);
+  console[level] = (...args: unknown[]) => {
+    const timestamp = `[${new Date().toISOString()}]`;
+    original(timestamp, ...args);
+    const parts = args.map(a => typeof a === "string" ? a : inspect(a, { depth: 4, breakLength: Infinity }));
+    appendToLogFile(`${timestamp} ${parts.join(" ")}`);
+  };
 }
 
 const PORT = parseInt(values.port!, 10);
@@ -315,10 +337,16 @@ async function backfillFromTranscript(
 // =========================================================================
 async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
-  const { session_id, prompt, transcript_path } = body;
+  const { session_id, prompt, transcript_path, cwd } = body;
 
   if (!session_id || !prompt) {
     return json(res, 400, { error: "Missing session_id or prompt" });
+  }
+
+  // Store the Claude instance's working directory as the sandbox boundary.
+  // setProjectRoot ignores subsequent calls so the first cwd wins.
+  if (cwd) {
+    tracker.setProjectRoot(session_id, cwd);
   }
 
   // If this is a session we haven't seen and there's a transcript, backfill
@@ -344,26 +372,26 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     registeredSessions.add(session_id);
   }
 
-  if (mode === "interactive" && !result.isOriginal) {
-    // INTERACTIVE MODE (vibe coding):
+  if ((mode === "interactive" || mode === "learn") && !result.isOriginal) {
+    // INTERACTIVE / LEARN MODE:
     // Every user prompt is trusted — they're steering.
     // But short confirmations ("yes", "ok", "do it", "go ahead") are
     // confirming the PREVIOUS intent, not setting a new one.
     // Only update the goal for substantive prompts.
-    // Match bare confirmations AND confirmations with selections/numbers
-    // e.g., "yes", "yes 1-8", "ok do all of them", "y 3", "go ahead with option 2"
+    // Learn mode also updates intent so pipeline verdicts are evaluated
+    // against the actual current goal, not a stale first prompt.
     const isConfirmation =
       /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|👍)\b/i.test(prompt)
       && prompt.trim().length < 80;
 
     if (isConfirmation) {
       console.log(
-        `  [INTENT] Interactive mode: "${prompt.trim()}" is a confirmation — keeping previous goal`
+        `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: "${prompt.trim()}" is a confirmation — keeping previous goal`
       );
     } else {
       await interceptor.registerGoal(contextualGoal);
       console.log(
-        `  [INTENT] Interactive mode: updated goal to "${prompt.substring(0, 60)}..." ` +
+        `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: updated goal to "${prompt.substring(0, 60)}..." ` +
         `(prior assistant context: ${priorAssistant ? "yes" : "no"}, ` +
         `drift from original: ${result.driftFromOriginal?.toFixed(3) ?? "n/a"})`
       );
@@ -426,7 +454,8 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     // drift without a baseline. Policy deny list still applies (except in
     // learn mode, which only observes).
     if (!registeredSessions.has(session_id)) {
-      const policyOnly = (await import("./tool-policy.js")).evaluateToolPolicy(tool_name, tool_input ?? {});
+      const projectRoot = tracker.getProjectRoot(session_id);
+      const policyOnly = (await import("./tool-policy.js")).evaluateToolPolicy(tool_name, tool_input ?? {}, projectRoot);
       if (policyOnly.decision === "deny" && !isLearn) {
         return json(res, 200, {
           hookSpecificOutput: {
@@ -474,7 +503,9 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const result = await interceptor.evaluate(
     tool_name,
     tool_input ?? {},
-    fullContext || undefined
+    fullContext || undefined,
+    session_id,
+    tracker.getProjectRoot(session_id)
   );
 
   // In learn mode, the pipeline still runs (for logging/observation) but
@@ -502,7 +533,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
 
   if (isLearn && !result.allowed) {
     console.log(
-      `  [LEARN] Would have blocked ${tool_name}: ${result.reason} — allowing anyway`
+      `  [${session_id.substring(0, 8)}] [LEARN] Would have blocked ${tool_name}: ${result.reason} — allowing anyway`
     );
   }
 

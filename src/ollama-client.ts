@@ -78,6 +78,29 @@ export async function chat(
 }
 
 /**
+ * Route an embed call to Bedrock or Ollama based on the model name.
+ * Bedrock model IDs start with a known provider prefix (with or without a
+ * region qualifier like eu./us./global.). Ollama model names never do.
+ */
+const BEDROCK_PREFIXES = /^(?:eu\.|us\.|global\.|amazon\.|cohere\.|twelvelabs\.|anthropic\.|meta\.|mistral\.|nvidia\.)/;
+
+export function isBedrockModel(model: string): boolean {
+  return BEDROCK_PREFIXES.test(model);
+}
+
+export async function embedAny(
+  texts: string | string[],
+  model: string
+): Promise<number[][]> {
+  if (isBedrockModel(model)) {
+    const { bedrockEmbed } = await import("./bedrock-client.js");
+    const arr = Array.isArray(texts) ? texts : [texts];
+    return bedrockEmbed(arr, model);
+  }
+  return embed(texts, model);
+}
+
+/**
  * Cosine similarity between two vectors.
  */
 export function cosineSimilarity(a: number[], b: number[]): number {
