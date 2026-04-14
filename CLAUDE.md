@@ -12,9 +12,11 @@ Judge AI Dredd is a PreToolUse defence system that intercepts tool calls from Cl
 # Run the HTTP server (dashboard at http://localhost:3001)
 npm run server                  # default: autonomous mode, llama3.2 judge
 npm run server:interactive      # interactive mode
+npm run server:learn            # learn mode
 npm run server:autonomous       # autonomous mode (re-evaluates intent every turn)
 npm run server:bedrock          # use AWS Bedrock nemotron-super-3-120b instead of Ollama
 npm run server:bedrock:interactive  # Bedrock + interactive mode
+npm run server:bedrock:learn    # Bedrock + learn mode
 
 # Test harness (replays P14 attack scenarios)
 npm test                        # default scenarios
