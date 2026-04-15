@@ -17,7 +17,8 @@
 import { TurnLogger } from "./turn-logger.js";
 import { DriftDetector } from "./drift-detector.js";
 import { IntentJudge, type JudgeVerdict } from "./intent-judge.js";
-import { checkOllama } from "./ollama-client.js";
+import { checkOllama, isBedrockModel } from "./ollama-client.js";
+import { checkBedrock } from "./bedrock-client.js";
 import type { TurnLog, IntentVerdict } from "./types.js";
 
 export interface IntentTrackerConfig {
@@ -70,23 +71,35 @@ export class IntentTracker extends TurnLogger {
   }
 
   /**
-   * Check that Ollama is running and required models are available.
+   * Check that required models are reachable (Ollama or Bedrock, per config).
    */
   async preflight(): Promise<void> {
-    const { ok, missing } = await checkOllama(
-      this.config.embeddingModel,
-      this.config.judgeModel
-    );
-    if (!ok) {
-      console.error(`\n  Ollama models not found: ${missing.join(", ")}`);
-      console.error(`  Pull them with:`);
-      for (const m of missing) {
-        console.error(`    ollama pull ${m}`);
+    const usingBedrockEmbed = this.config.embeddingBackend === "bedrock" || isBedrockModel(this.config.embeddingModel);
+    const usingBedrockJudge = this.config.judgeBackend === "bedrock" || isBedrockModel(this.config.judgeModel);
+
+    // Check Ollama only for models that use it
+    const ollamaModels = [
+      ...(!usingBedrockEmbed ? [this.config.embeddingModel] : []),
+      ...(!usingBedrockJudge ? [this.config.judgeModel] : []),
+    ];
+    if (ollamaModels.length > 0) {
+      const { ok, missing } = await checkOllama(ollamaModels[0], ollamaModels[1]);
+      if (!ok) {
+        console.error(`\n  Ollama models not found: ${missing.join(", ")}`);
+        for (const m of missing) console.error(`    ollama pull ${m}`);
+        throw new Error(`Missing Ollama models: ${missing.join(", ")}`);
       }
-      throw new Error(`Missing Ollama models: ${missing.join(", ")}`);
     }
+
+    // Check Bedrock for models that use it
+    if (usingBedrockJudge) {
+      const ok = await checkBedrock(this.config.judgeModel);
+      if (!ok) throw new Error(`Bedrock judge model ${this.config.judgeModel} not accessible`);
+    }
+
     console.log(
-      `\n  Ollama OK: embedding=${this.config.embeddingModel}, judge=${this.config.judgeModel}`
+      `\n  Preflight OK: embedding=${this.config.embeddingModel} (${usingBedrockEmbed ? "bedrock" : "ollama"}), ` +
+      `judge=${this.config.judgeModel} (${usingBedrockJudge ? "bedrock" : "ollama"})`
     );
   }
 
