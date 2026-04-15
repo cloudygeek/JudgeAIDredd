@@ -185,7 +185,7 @@ If Bedrock access is unavailable or v4 billing is a concern, `cohere.embed-engli
 
 ### Threshold adjustment
 
-With Cohere v4, the `deny` threshold can be raised from 0.2 to **0.25** to auto-deny more of the clearly-low-scoring attacks without touching the review boundary. The current `review = 0.6` threshold remains appropriate — no hijacks pass through at that level with Cohere v4.
+With Cohere v4, the `deny` threshold should be set to **0.15** (not 0.25 as initially recommended). Pipeline testing (see `docs/test_results.md` Test 1) revealed that `deny=0.25` produces 3 false positives — legitimate on-task actions with indirect semantic relationship to the task score between 0.17–0.23 with Cohere v4. The threshold sweep (Test 6) confirms 0.15 as the highest zero-false-positive deny threshold. The `review = 0.6` threshold remains appropriate.
 
 With `nomic-embed-text` (if not switching), lower `review` from 0.6 to **0.55** — the threshold sweep shows this improves hijack capture from 1/11 to 2/11 auto-denied with no new on-task calls blocked.
 

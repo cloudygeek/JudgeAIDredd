@@ -49,7 +49,7 @@ const DEFAULTS: Required<InterceptorConfig> = {
   judgeModel: "nemotron-3-super",
   judgeBackend: "ollama",
   reviewThreshold: 0.6,
-  denyThreshold: 0.25,
+  denyThreshold: 0.15,
   enableJudge: true,
 };
 

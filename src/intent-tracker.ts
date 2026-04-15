@@ -25,6 +25,10 @@ export interface IntentTrackerConfig {
   embeddingModel?: string;
   /** Chat model for LLM judge (default: llama3.2) */
   judgeModel?: string;
+  /** Backend for the LLM judge (default: "ollama") */
+  judgeBackend?: "ollama" | "bedrock";
+  /** Backend for embedding drift detection (default: "ollama") */
+  embeddingBackend?: "ollama" | "bedrock";
   /** Cumulative drift threshold to trigger judge (default: 0.3) */
   thetaWarn?: number;
   /** Cumulative drift threshold to block (default: 0.5) */
@@ -40,6 +44,8 @@ export interface IntentTrackerConfig {
 const DEFAULTS: Required<IntentTrackerConfig> = {
   embeddingModel: "nomic-embed-text",
   judgeModel: "llama3.2",
+  judgeBackend: "ollama",
+  embeddingBackend: "ollama",
   thetaWarn: 0.3,
   thetaBlock: 0.5,
   deltaWarn: 0.2,
@@ -60,7 +66,7 @@ export class IntentTracker extends TurnLogger {
     super();
     this.config = { ...DEFAULTS, ...config };
     this.driftDetector = new DriftDetector(this.config.embeddingModel);
-    this.judge = new IntentJudge(this.config.judgeModel);
+    this.judge = new IntentJudge(this.config.judgeModel, this.config.judgeBackend);
   }
 
   /**

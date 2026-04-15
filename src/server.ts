@@ -38,7 +38,7 @@ const { values } = parseArgs({
     backend: { type: "string", default: "ollama" },
     "embedding-model": { type: "string", default: "eu.cohere.embed-v4:0" },
     "review-threshold": { type: "string", default: "0.6" },
-    "deny-threshold": { type: "string", default: "0.25" },
+    "deny-threshold": { type: "string", default: "0.15" },
     "log-dir": { type: "string", default: "./results" },
   },
 });
