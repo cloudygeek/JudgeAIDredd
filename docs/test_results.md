@@ -245,13 +245,13 @@ Based on Tests 1, 6, and 8:
 |---|---|---|---|---|---|---|---|
 | 1 | Combined Pipeline E2E | **Done** | 97% accuracy, 0 FP (Config C) | No | ~150k (embed+judge) | ~20 min | ~$0.60 |
 | 2 | Multi-turn Trajectory | **Done** | Full defence blocks 100% | Yes | ~20M (agent SDK) | ~6 hours | ~$160 |
-| 3 | Statistical Robustness | Not started | 720 runs needed | Yes | ~72M (agent SDK) | ~36–48 hours | ~$576 |
-| 4 | Goal Anchoring | Not started | 160 runs needed | Yes | ~16M (agent SDK) | ~6–8 hours | ~$128 |
+| 3 | Statistical Robustness | **Running** | 720 runs needed | Yes | ~72M (agent SDK) | ~36–48 hours | ~$576 |
+| 4 | Goal Anchoring | **Running** | 160 runs needed | Yes | ~16M (agent SDK) | ~6–8 hours | ~$128 |
 | 5 | False Positive Rate | **Done** | PASS — 0/100 FP | Yes | ~10M (agent SDK) | ~1.5 hours | ~$80 |
 | 6 | Threshold Sensitivity | **Done** | deny=0.15 optimal, AUC ~0.85 | No | ~30k (embed only) | ~2 min | ~$0.004 |
 | 7 | Cross-model Agents | **Done** | Opus 67.8% GES reduction, defence generalises | No (Bedrock agents) | ~24M (Bedrock agent) | ~8 hours | ~$286 |
 | 8 | Adversarial Judge | **Done** | 5 pretexts evade all 7 models | No | ~500k (judge only) | ~15 min | ~$2.50 |
-| 9 | Latency Impact | Not started | 120 runs, needs instrumentation | Yes | ~12M (agent SDK) | ~4–6 hours | ~$96 |
+| 9 | Latency Impact | **Done** | Full defence +8% overhead (3.6s/session) | No (Bedrock agents) | ~12M (Bedrock agent) | ~30 min | ~$96 |
 
 ### Cost breakdown
 
@@ -278,12 +278,12 @@ Based on Tests 1, 6, and 8:
 
 **Test 7 actual cost** (360 Bedrock agent runs): 120 Opus runs (~$156) + 120 Sonnet runs (~$94) + 120 Haiku runs (~$31) + judge/embed overhead (~$5) = ~$286. Ran on Fargate via Bedrock (no Anthropic API key needed).
 
+**Test 9 actual cost** (120 Bedrock agent runs, all Sonnet 4.6): ~$96. Ran on Fargate via Bedrock. Completed in ~30 min wall clock.
+
 ### Summary
 
 | | Tokens | Cost | Time |
 |---|---|---|---|
-| **Completed** (1, 2, 5, 6, 7, 8) | ~54M | ~$529 | ~16 hours |
-| **Remaining** (3, 4, 9) | ~100M | **~$800** | ~47–62 hours |
-| **Total** | ~154M | **~$1,329** | ~63–78 hours |
-
-**Recommended execution order:** 4 ($128) → 9 ($96) → 3 ($576).
+| **Completed** (1, 2, 5, 6, 7, 8, 9) | ~66M | ~$625 | ~16.5 hours |
+| **Running** (3, 4) | ~88M | **~$704** | ~42–56 hours |
+| **Total** | ~154M | **~$1,329** | ~59–73 hours |
