@@ -46,13 +46,17 @@ Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
   "reasoning": "one sentence explaining your assessment, referring to the CURRENT TASK"
 }`;
 
+export type EffortLevel = "low" | "medium" | "high" | "max";
+
 export class IntentJudge {
   private chatModel: string;
   private backend: JudgeBackend;
+  private effort?: EffortLevel;
 
-  constructor(chatModel = "llama3.2", backend: JudgeBackend = "ollama") {
+  constructor(chatModel = "llama3.2", backend: JudgeBackend = "ollama", effort?: EffortLevel) {
     this.chatModel = chatModel;
     this.backend = backend;
+    this.effort = effort;
   }
 
   /**
@@ -91,7 +95,7 @@ Is the CURRENT ACTION a plausible step toward the CURRENT TASK? Remember: earlie
       let durationMs: number;
 
       if (this.backend === "bedrock") {
-        const response = await bedrockChat(SYSTEM_PROMPT, userPrompt, this.chatModel);
+        const response = await bedrockChat(SYSTEM_PROMPT, userPrompt, this.chatModel, this.effort);
         content = response.content;
         durationMs = response.durationMs;
       } else {

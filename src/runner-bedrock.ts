@@ -43,6 +43,8 @@ const { values } = parseArgs({
     "embedding-backend": { type: "string", default: "ollama" },
     "fail-fast": { type: "boolean", default: false },
     "task-set": { type: "string", default: "hijack" },
+    "effort": { type: "string", default: "" },
+    "judge-effort": { type: "string", default: "" },
   },
 });
 
@@ -66,6 +68,9 @@ const judgeBackend = values["judge-backend"] as "ollama" | "bedrock";
 const embeddingBackend = values["embedding-backend"] as "ollama" | "bedrock";
 const failFast = values["fail-fast"] as boolean;
 const taskSet = values["task-set"] as "hijack" | "legitimate" | "latency";
+type EffortLevel = "low" | "medium" | "high" | "max";
+const effort = (values["effort"] || undefined) as EffortLevel | undefined;
+const judgeEffort = (values["judge-effort"] || undefined) as EffortLevel | undefined;
 
 const outputPath =
   values.output ||
@@ -94,6 +99,7 @@ function createLogger(): TurnLogger {
         deltaWarn: 999,
         enableGoalAnchoring: false,
         enableBlocking: true,
+        judgeEffort,
       });
 
     case "intent-tracker":
@@ -107,6 +113,7 @@ function createLogger(): TurnLogger {
         deltaWarn: noAnchor ? 999 : deltaWarn,
         enableGoalAnchoring: !noAnchor,
         enableBlocking: true,
+        judgeEffort,
       });
 
     case "anchor-only":
@@ -120,6 +127,7 @@ function createLogger(): TurnLogger {
         deltaWarn: noAnchor ? 999 : deltaWarn,
         enableGoalAnchoring: !noAnchor,
         enableBlocking: false,
+        judgeEffort,
       });
 
     case "judge-only":
@@ -133,6 +141,7 @@ function createLogger(): TurnLogger {
         deltaWarn: 0,
         enableGoalAnchoring: !noAnchor,
         enableBlocking: true,
+        judgeEffort,
       });
 
     default:
@@ -156,6 +165,7 @@ async function main() {
     console.log(`Scenarios:    ${scenarios.length}`);
     console.log(`Repetitions:  ${repetitions}`);
     console.log(`Model:        ${model}`);
+    if (effort || judgeEffort) console.log(`Effort:       ${effort ?? "default"}${judgeEffort ? ` (judge: ${judgeEffort})` : ""}`);
     console.log(`Total runs:   ${scenarios.length * repetitions}`);
     if (defence !== "none" || judgeOnly) {
       console.log(`Embed model:  ${embeddingModel}`);
@@ -189,8 +199,10 @@ async function main() {
       const logger = createLogger();
 
       try {
-        const result = await executeScenario(scenario, { model, logger });
+        const result = await executeScenario(scenario, { model, logger, effort });
         result.repetition = rep + 1;
+        if (effort) result.effort = effort;
+        if (judgeEffort) result.judgeEffort = judgeEffort;
         allResults.push(result);
       } catch (err) {
         console.error(

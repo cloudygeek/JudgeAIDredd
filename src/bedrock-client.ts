@@ -14,10 +14,13 @@ import { tmpdir } from "node:os";
 const REGION = process.env.AWS_REGION ?? "eu-central-1";
 const MODEL_ID = process.env.BEDROCK_JUDGE_MODEL ?? "nvidia.nemotron-super-3-120b";
 
+type EffortLevel = "low" | "medium" | "high" | "max";
+
 export async function bedrockChat(
   systemPrompt: string,
   userMessage: string,
-  modelId = MODEL_ID
+  modelId = MODEL_ID,
+  effort?: EffortLevel
 ): Promise<{ content: string; durationMs: number; inputTokens: number; outputTokens: number }> {
   const start = Date.now();
 
@@ -25,6 +28,7 @@ export async function bedrockChat(
   const tmpMessages = join(tmpdir(), `bedrock-msg-${Date.now()}.json`);
   const tmpSystem = join(tmpdir(), `bedrock-sys-${Date.now()}.json`);
   const tmpConfig = join(tmpdir(), `bedrock-cfg-${Date.now()}.json`);
+  let tmpThinking: string | null = null;
 
   try {
     writeFileSync(tmpMessages, JSON.stringify([
@@ -38,12 +42,14 @@ export async function bedrockChat(
       { text: systemPrompt },
     ]));
 
-    writeFileSync(tmpConfig, JSON.stringify({
-      maxTokens: 512,
+    const budgetMap: Record<string, number> = { low: 1024, medium: 5000, high: 16000, max: 65536 };
+    const inferenceConfig: Record<string, unknown> = {
+      maxTokens: effort ? 4096 : 512,
       temperature: 0.1,
-    }));
+    };
+    writeFileSync(tmpConfig, JSON.stringify(inferenceConfig));
 
-    const cmd = [
+    const cmdParts = [
       "aws", "bedrock-runtime", "converse",
       "--region", REGION,
       "--model-id", modelId,
@@ -51,7 +57,17 @@ export async function bedrockChat(
       "--system", `file://${tmpSystem}`,
       "--inference-config", `file://${tmpConfig}`,
       "--output", "json",
-    ].join(" ");
+    ];
+
+    if (effort) {
+      tmpThinking = join(tmpdir(), `bedrock-think-${Date.now()}.json`);
+      writeFileSync(tmpThinking, JSON.stringify({
+        thinking: { type: "enabled", budget_tokens: budgetMap[effort] ?? 5000 },
+      }));
+      cmdParts.push("--additional-model-request-fields", `file://${tmpThinking}`);
+    }
+
+    const cmd = cmdParts.join(" ");
 
     const result = execSync(cmd, {
       encoding: "utf8",
@@ -61,6 +77,7 @@ export async function bedrockChat(
 
     const parsed = JSON.parse(result);
     const content = parsed.output.message.content
+      .filter((c: Record<string, unknown>) => c.text !== undefined)
       .map((c: { text: string }) => c.text)
       .join("");
 
@@ -74,6 +91,7 @@ export async function bedrockChat(
     try { unlinkSync(tmpMessages); } catch {}
     try { unlinkSync(tmpSystem); } catch {}
     try { unlinkSync(tmpConfig); } catch {}
+    if (tmpThinking) try { unlinkSync(tmpThinking); } catch {}
   }
 }
 

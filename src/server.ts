@@ -822,6 +822,14 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // Serve favicon
+    if (req.method === "GET" && url.pathname === "/favicon.ico") {
+      const ico = readFileSync(new URL("./web/favicon.ico", import.meta.url));
+      res.writeHead(200, { "Content-Type": "image/x-icon", "Cache-Control": "public, max-age=86400" });
+      res.end(ico);
+      return;
+    }
+
     // API: list session logs
     if (req.method === "GET" && url.pathname === "/api/sessions") {
       const logDir = CONFIG.logDir;

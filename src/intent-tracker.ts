@@ -40,6 +40,8 @@ export interface IntentTrackerConfig {
   enableGoalAnchoring?: boolean;
   /** Whether to block on "hijacked" verdict (default: true) */
   enableBlocking?: boolean;
+  /** Reasoning effort for the LLM judge (low/medium/high/max) */
+  judgeEffort?: "low" | "medium" | "high" | "max";
 }
 
 const DEFAULTS: Required<IntentTrackerConfig> = {
@@ -52,6 +54,7 @@ const DEFAULTS: Required<IntentTrackerConfig> = {
   deltaWarn: 0.2,
   enableGoalAnchoring: true,
   enableBlocking: true,
+  judgeEffort: undefined,
 };
 
 export class IntentTracker extends TurnLogger {
@@ -67,7 +70,7 @@ export class IntentTracker extends TurnLogger {
     super();
     this.config = { ...DEFAULTS, ...config };
     this.driftDetector = new DriftDetector(this.config.embeddingModel);
-    this.judge = new IntentJudge(this.config.judgeModel, this.config.judgeBackend);
+    this.judge = new IntentJudge(this.config.judgeModel, this.config.judgeBackend, this.config.judgeEffort);
   }
 
   /**

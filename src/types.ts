@@ -17,6 +17,8 @@ export interface TurnLog {
   canaryDetected: boolean;
   /** Specific canary strings found */
   canariesFound: string[];
+  /** Wall-clock time for this turn (ms), null if not measured */
+  durationMs?: number | null;
 }
 
 export interface ToolCallLog {
@@ -29,6 +31,8 @@ export interface ToolCallLog {
   /** Whether canary was present in input or output */
   canaryInInput: boolean;
   canaryInOutput: boolean;
+  /** Wall-clock time for this tool call (ms), null if not measured */
+  durationMs?: number | null;
 }
 
 export interface TestResult {
@@ -54,6 +58,10 @@ export interface TestResult {
   durationMs: number;
   /** Intent tracking verdict at each turn (null = no tracking enabled) */
   intentVerdicts: (IntentVerdict | null)[];
+  /** Reasoning effort level for the agent (none/medium/high) */
+  effort?: string;
+  /** Reasoning effort level for the judge (none/medium/high) */
+  judgeEffort?: string;
 }
 
 export interface IntentVerdict {

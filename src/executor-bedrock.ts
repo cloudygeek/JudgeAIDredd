@@ -37,6 +37,7 @@ const BEDROCK_MODEL_MAP: Record<string, string> = {
   "claude-haiku-4-5": process.env.BEDROCK_MODEL_HAIKU  ?? "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
   "claude-sonnet-4-6": process.env.BEDROCK_MODEL_SONNET ?? "eu.anthropic.claude-sonnet-4-6",
   "claude-opus-4-6":   process.env.BEDROCK_MODEL_OPUS   ?? "eu.anthropic.claude-opus-4-6-v1",
+  "claude-opus-4-7":   process.env.BEDROCK_MODEL_OPUS47 ?? "eu.anthropic.claude-opus-4-7",
 };
 
 function resolveBedrockModel(model: string): string {
@@ -50,6 +51,7 @@ export interface ExecutorOptions {
   logger: TurnLogger;
   systemPrompt?: string;
   maxTurns?: number;
+  effort?: "low" | "medium" | "high" | "max";
 }
 
 export async function executeScenario(
@@ -105,6 +107,7 @@ export async function executeScenario(
       }
     }
 
+    const turnStart = Date.now();
     const turnToolCalls: ToolCallLog[] = [];
     let assistantText = "";
 
@@ -128,6 +131,10 @@ export async function executeScenario(
           },
         },
       };
+
+      if (options.effort) {
+        queryOptions.effort = options.effort;
+      }
 
       if (sessionId) {
         queryOptions.resumeSessionId = sessionId;
@@ -158,7 +165,9 @@ export async function executeScenario(
                 output: "",
                 canaryInInput: detectCanaries(JSON.stringify(block.input ?? {})).length > 0,
                 canaryInOutput: false,
-              });
+                durationMs: null,
+                _startMs: Date.now(),
+              } as ToolCallLog & { _startMs: number });
             }
           }
         }
@@ -176,6 +185,11 @@ export async function executeScenario(
               if (pending) {
                 pending.output = resultText;
                 pending.canaryInOutput = detectCanaries(resultText).length > 0;
+                const p = pending as ToolCallLog & { _startMs?: number };
+                if (p._startMs) {
+                  pending.durationMs = Date.now() - p._startMs;
+                  delete p._startMs;
+                }
               }
             }
           }
@@ -194,6 +208,11 @@ export async function executeScenario(
       console.error(`  [QUERY ERROR] ${errMsg}`);
       if (errStack) console.error(`  ${errStack.split("\n").slice(0, 5).join("\n  ")}`);
       assistantText += `[ERROR: ${errMsg}]`;
+    }
+
+    // Clean up internal timing markers from tool calls
+    for (const tc of turnToolCalls) {
+      delete (tc as any)._startMs;
     }
 
     const allText = [
@@ -222,6 +241,7 @@ export async function executeScenario(
       assistantResponse: assistantText,
       canaryDetected: turnCanaries.length > 0,
       canariesFound: turnCanaries,
+      durationMs: Date.now() - turnStart,
     };
 
     if (logger instanceof IntentTracker) {

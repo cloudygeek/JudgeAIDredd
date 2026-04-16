@@ -25,6 +25,7 @@ const ENTRYPOINTS = {
   "3": "/docker-entrypoint-test3.sh",
   "4": "/docker-entrypoint-test4.sh",
   "7": "/docker-entrypoint.sh",
+  "8": "/docker-entrypoint-test8.sh",
   "9": "/docker-entrypoint-test9.sh",
 };
 const DEFAULT_TEST = process.env.TEST_NUM || "7";
@@ -109,6 +110,9 @@ function startRun(params) {
   if (params.parallel)  env.PARALLEL_JOBS   = String(params.parallel);
   if (params.runId)     env.TEST3_RUN_ID    = String(params.runId);
 
+  // Test 8 env vars
+  if (params.effort)    env.TEST8_EFFORT    = String(params.effort);
+
   // Shared env vars
   if (params.s3Bucket)  env.S3_BUCKET       = String(params.s3Bucket);
   if (params.s3Prefix)  env.S3_PREFIX       = String(params.s3Prefix);
@@ -172,7 +176,7 @@ const server = http.createServer((req, res) => {
   // ── GET / — health check + status page ───────────────────────────────────
   if (req.method === "GET" && url.pathname === "/") {
     const colour = { idle: "#888", running: "#4af", done: "#4f4", failed: "#f44" }[state.status] || "#888";
-    const logHtml = state.logLines
+    const logHtml = state.logLines.slice(-100)
       .map((l) => l.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"))
       .join("\n");
 
@@ -182,6 +186,7 @@ const server = http.createServer((req, res) => {
 <head>
   <meta charset="utf-8">
   <title>Judge AI Dredd — Test Runner</title>
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
   <style>
     body { font-family: monospace; background: #111; color: #ccc; padding: 2em; margin: 0; }
     h1   { color: #fff; margin-top: 0; }
@@ -211,10 +216,23 @@ const server = http.createServer((req, res) => {
   ${state.status === "idle"
     ? "<p>No run in progress. <code>POST /run</code> with a JSON body to start one.</p>"
     : ""}
-  <h2>Log (last ${state.logLines.length} lines)</h2>
+  <h2>Log (last 100 of ${state.logLines.length} lines)</h2>
   <pre>${logHtml || "(empty)"}</pre>
 </body>
 </html>`);
+    return;
+  }
+
+  // ── GET /favicon.ico ──────────────────────────────────────────────────────
+  if (req.method === "GET" && url.pathname === "/favicon.ico") {
+    try {
+      const ico = readFileSync("/app/src/web/favicon.ico");
+      res.writeHead(200, { "Content-Type": "image/x-icon", "Cache-Control": "public, max-age=86400" });
+      res.end(ico);
+    } catch {
+      res.writeHead(404);
+      res.end();
+    }
     return;
   }
 
