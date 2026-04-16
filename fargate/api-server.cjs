@@ -32,6 +32,14 @@ const BUILD_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.m
 // Run state
 // ---------------------------------------------------------------------------
 
+const INITIAL_PROGRESS = {
+  totalCombinations: 0,
+  completedCombinations: 0,
+  failedCombinations: 0,
+  completedRuns: 0,       // individual repetitions
+  lastGES: null,
+};
+
 let state = {
   status: "idle",   // idle | running | done | failed
   runId: null,
@@ -41,6 +49,7 @@ let state = {
   exitCode: null,
   pid: null,
   logLines: [],
+  progress: { ...INITIAL_PROGRESS },
 };
 
 let currentProcess = null;
@@ -49,6 +58,31 @@ function appendLog(line) {
   state.logLines.push(line);
   if (state.logLines.length > MAX_LOG_LINES) state.logLines.shift();
   process.stdout.write(line + "\n");
+
+  // Track progress from log output
+  // Total combinations: "[1/12]" pattern from entrypoint or ">>> N combinations queued"
+  const totalMatch = line.match(/\[\d+\/(\d+)\]/);
+  if (totalMatch) state.progress.totalCombinations = parseInt(totalMatch[1], 10);
+  const queuedMatch = line.match(/>>> (\d+) combinations queued/);
+  if (queuedMatch) state.progress.totalCombinations = parseInt(queuedMatch[1], 10);
+
+  // Combination completed (Test 7: "Completed in", Test 3: "DONE in")
+  if (/Completed in \d+s/.test(line) || /\] DONE in \d+s/.test(line)) {
+    state.progress.completedCombinations++;
+  }
+  // Combination failed
+  if (/WARNING: run failed/.test(line) || /\] FAILED:/.test(line)) {
+    state.progress.completedCombinations++;
+    state.progress.failedCombinations++;
+  }
+
+  // Individual test result (one per repetition)
+  if (/^RESULT:/.test(line) || /^\s+RESULT:/.test(line)) {
+    state.progress.completedRuns++;
+  }
+  // Extract GES from result blocks
+  const gesMatch = line.match(/GES:\s+([\d.]+)/);
+  if (gesMatch) state.progress.lastGES = parseFloat(gesMatch[1]);
 }
 
 function startRun(params) {
@@ -90,6 +124,7 @@ function startRun(params) {
     exitCode: null,
     pid: null,
     logLines: [],
+    progress: { ...INITIAL_PROGRESS },
   };
 
   const child = spawn(entrypoint, [], {
@@ -167,6 +202,9 @@ const server = http.createServer((req, res) => {
     ${state.startedAt  ? `<tr><th>Started</th>   <td><code>${state.startedAt}</code></td></tr>` : ""}
     ${state.finishedAt ? `<tr><th>Finished</th>  <td><code>${state.finishedAt}</code> (exit ${state.exitCode})</td></tr>` : ""}
     ${state.pid        ? `<tr><th>PID</th>       <td><code>${state.pid}</code></td></tr>` : ""}
+    ${state.progress.totalCombinations > 0
+      ? `<tr><th>Progress</th>  <td><strong>${state.progress.completedCombinations} / ${state.progress.totalCombinations}</strong> combinations${state.progress.failedCombinations ? ` (${state.progress.failedCombinations} failed)` : ""} &mdash; ${state.progress.completedRuns} runs completed${state.progress.lastGES !== null ? `, last GES: ${state.progress.lastGES}` : ""}</td></tr>`
+      : ""}
   </table>
   ${state.status === "idle"
     ? "<p>No run in progress. <code>POST /run</code> with a JSON body to start one.</p>"
@@ -191,6 +229,7 @@ const server = http.createServer((req, res) => {
       exitCode:    state.exitCode,
       pid:         state.pid,
       bufferedLogLines: state.logLines.length,
+      progress:    state.progress,
     }));
     return;
   }
