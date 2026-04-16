@@ -22,11 +22,14 @@ import { readFileSync } from "fs";
 const PORT = 3000;
 const MAX_LOG_LINES = 20000;
 const ENTRYPOINTS = {
+  "1": "/docker-entrypoint-test1.sh",
   "3": "/docker-entrypoint-test3.sh",
+  "3a": "/docker-entrypoint-test3a.sh",
   "4": "/docker-entrypoint-test4.sh",
   "7": "/docker-entrypoint.sh",
   "8": "/docker-entrypoint-test8.sh",
   "9": "/docker-entrypoint-test9.sh",
+  "9a": "/docker-entrypoint-test9a.sh",
 };
 const DEFAULT_TEST = process.env.TEST_NUM || "7";
 const BUILD_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
@@ -109,6 +112,20 @@ function startRun(params) {
   if (params.defences)  env.TEST3_DEFENCES  = String(params.defences);
   if (params.parallel)  env.PARALLEL_JOBS   = String(params.parallel);
   if (params.runId)     env.TEST3_RUN_ID    = String(params.runId);
+
+  // Test 1 env vars
+  if (params.effort)    env.TEST1_EFFORT    = String(params.effort);
+  if (params.config)    env.TEST1_CONFIG    = String(params.config);
+
+  // Test 3a env vars
+  if (params.efforts)   env.TEST3A_EFFORTS  = String(params.efforts);
+  if (params.reps)      env.TEST3A_REPS     = String(params.reps);
+  if (params.runId)     env.TEST3A_RUN_ID   = String(params.runId);
+
+  // Test 9a env vars
+  if (params.matrix)    env.TEST9A_MATRIX   = String(params.matrix);
+  if (params.reps)      env.TEST9A_REPS     = String(params.reps);
+  if (params.runId)     env.TEST9A_RUN_ID   = String(params.runId);
 
   // Test 8 env vars
   if (params.effort)    env.TEST8_EFFORT    = String(params.effort);

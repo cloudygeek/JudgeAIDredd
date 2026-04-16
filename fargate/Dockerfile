@@ -42,11 +42,17 @@ COPY docker-entrypoint.sh /docker-entrypoint.sh
 COPY docker-entrypoint-test3.sh /docker-entrypoint-test3.sh
 # Test 4: Goal Anchoring Effectiveness (parallel jobs)
 COPY docker-entrypoint-test4.sh /docker-entrypoint-test4.sh
+# Test 1: Combined Pipeline E2E (effort sweep)
+COPY docker-entrypoint-test1.sh /docker-entrypoint-test1.sh
+# Test 3a: Statistical Robustness — Opus 4.7 + effort
+COPY docker-entrypoint-test3a.sh /docker-entrypoint-test3a.sh
 # Test 8: Adversarial Judge Robustness (effort sweep)
 COPY docker-entrypoint-test8.sh /docker-entrypoint-test8.sh
+# Test 9a: Latency Impact — effort dimension
+COPY docker-entrypoint-test9a.sh /docker-entrypoint-test9a.sh
 # Test 9: Latency Impact (parallel jobs)
 COPY docker-entrypoint-test9.sh /docker-entrypoint-test9.sh
-RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test3.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test9.sh
+RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh
 
 COPY server.js /app/server.js
 

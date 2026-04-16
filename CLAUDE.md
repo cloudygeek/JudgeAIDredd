@@ -65,32 +65,43 @@ Single bash script handling all hook events. Reads JSON from stdin, calls the ri
 
 ## Container image (AI Sandbox / Fargate)
 
-The container runs Test 7 (cross-model agent testing) on the AI Sandbox platform. It packages the app with `node_modules` into a zip that the platform's CodeBuild pipeline turns into a Docker image.
+The container runs test harnesses on the AI Sandbox platform. It packages the app into a zip that the platform's CodeBuild pipeline turns into a Docker image.
+
+**IMPORTANT:** Always commit before building the zip so the pre-commit hook bumps the version. The version prints on the sandbox status page — without a bump you can't tell old and new deployments apart. Do NOT include `node_modules/` in the zip — the Dockerfile runs `npm install` during the Docker build. Always delete the old zip before rebuilding (zip appends, it doesn't replace).
 
 ### Building the zip
 
 ```bash
-# 1. Install deps locally (they get bundled into the zip)
-npm install
+# 1. Commit your changes first (bumps version via pre-commit hook)
+git add -A && git commit -m "your message"
 
-# 2. Build the zip from the project root
-#    Includes: src/, scenarios/, workspace-template/, node_modules/,
-#              package.json, package-lock.json, tsconfig.json, logo.png,
-#              fargate/docker-entrypoint.sh (as docker-entrypoint.sh),
-#              fargate/api-server.js (as server.js),
-#              fargate/Dockerfile (as Dockerfile)
+# 2. Build the zip — always delete old zip first
+rm -f judge-ai-dredd-t3-sandbox.zip
 cd /tmp && rm -rf dredd-rezip && mkdir dredd-rezip && cd dredd-rezip
+
+# App source (no node_modules — Dockerfile handles deps)
 cp -r <project>/src <project>/scenarios <project>/workspace-template \
-      <project>/package.json <project>/package-lock.json <project>/tsconfig.json \
-      <project>/node_modules .
-cp <project>/fargate/docker-entrypoint.sh ./docker-entrypoint.sh
-cp <project>/fargate/api-server.js ./server.js
+      <project>/package.json <project>/package-lock.json <project>/tsconfig.json .
+
+# Entrypoints (flat layout — all sit at zip root)
+cp <project>/fargate/docker-entrypoint.sh      ./docker-entrypoint.sh
+cp <project>/fargate/docker-entrypoint-test1.sh ./docker-entrypoint-test1.sh
+cp <project>/fargate/docker-entrypoint-test3.sh ./docker-entrypoint-test3.sh
+cp <project>/fargate/docker-entrypoint-test3a.sh ./docker-entrypoint-test3a.sh
+cp <project>/fargate/docker-entrypoint-test4.sh ./docker-entrypoint-test4.sh
+cp <project>/fargate/docker-entrypoint-test8.sh ./docker-entrypoint-test8.sh
+cp <project>/fargate/docker-entrypoint-test9.sh ./docker-entrypoint-test9.sh
+cp <project>/fargate/docker-entrypoint-test9a.sh ./docker-entrypoint-test9a.sh
+
+# API server + Dockerfile + assets
+cp <project>/fargate/api-server.cjs ./server.js
 cp <project>/fargate/Dockerfile ./Dockerfile
 cp <project>/src/web/logo.png ./logo.png 2>/dev/null || true
-zip -r judge-ai-dredd-t3-sandbox.zip .
+
+zip -qr <project>/judge-ai-dredd-t3-sandbox.zip .
 ```
 
-The zip layout is **flat** — `Dockerfile`, `docker-entrypoint.sh`, and `server.js` sit at the root (not under `fargate/`).
+The zip layout is **flat** — `Dockerfile`, entrypoints, and `server.js` sit at the root (not under `fargate/`).
 
 ### Building the Docker image locally
 
@@ -108,8 +119,15 @@ docker build -f fargate/Dockerfile -t judge-ai-dredd-test7 .
 | File | Role |
 |---|---|
 | `fargate/Dockerfile` | Image definition — node:22-slim + AWS CLI v2, bundles app source |
-| `fargate/docker-entrypoint.sh` | Batch runner: preflight checks (Bedrock models + S3 access), then runs all model × scenario × defence combinations, uploading results to S3 |
-| `fargate/api-server.js` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
+| `fargate/docker-entrypoint.sh` | Test 7: Cross-Model Agent Testing |
+| `fargate/docker-entrypoint-test1.sh` | Test 1: Combined Pipeline E2E (effort sweep) |
+| `fargate/docker-entrypoint-test3.sh` | Test 3: Statistical Robustness |
+| `fargate/docker-entrypoint-test3a.sh` | Test 3a: Statistical Robustness — Opus 4.7 + effort |
+| `fargate/docker-entrypoint-test4.sh` | Test 4: Goal Anchoring Effectiveness |
+| `fargate/docker-entrypoint-test8.sh` | Test 8: Adversarial Judge Robustness (effort sweep) |
+| `fargate/docker-entrypoint-test9.sh` | Test 9: Latency Impact |
+| `fargate/docker-entrypoint-test9a.sh` | Test 9a: Latency Impact — effort dimension |
+| `fargate/api-server.cjs` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
 | `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-central-1.amazonaws.com`) |
 | `fargate/infra/` | Terraform for the Fargate task definition and supporting resources |
 
