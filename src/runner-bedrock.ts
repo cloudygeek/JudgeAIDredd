@@ -17,6 +17,8 @@ import { parseArgs } from "node:util";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getScenarios } from "../scenarios/t3-goal-hijacking.js";
+import { getLegitimateScenarios } from "../scenarios/legitimate-tasks.js";
+import { getLatencyScenarios } from "../scenarios/latency-tasks.js";
 import { executeScenario } from "./executor-bedrock.js";
 import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
@@ -40,6 +42,7 @@ const { values } = parseArgs({
     "judge-backend": { type: "string", default: "ollama" },
     "embedding-backend": { type: "string", default: "ollama" },
     "fail-fast": { type: "boolean", default: false },
+    "task-set": { type: "string", default: "hijack" },
   },
 });
 
@@ -62,6 +65,7 @@ const batch = values["batch"] as boolean;
 const judgeBackend = values["judge-backend"] as "ollama" | "bedrock";
 const embeddingBackend = values["embedding-backend"] as "ollama" | "bedrock";
 const failFast = values["fail-fast"] as boolean;
+const taskSet = values["task-set"] as "hijack" | "legitimate" | "latency";
 
 const outputPath =
   values.output ||
@@ -138,7 +142,11 @@ function createLogger(): TurnLogger {
 }
 
 async function main() {
-  const scenarios = getScenarios(scenarioFilter);
+  const scenarios = taskSet === "latency"
+    ? getLatencyScenarios(scenarioFilter === "all" ? "all" : scenarioFilter)
+    : taskSet === "legitimate"
+    ? getLegitimateScenarios(scenarioFilter === "all" ? "all" : scenarioFilter)
+    : getScenarios(scenarioFilter);
 
   if (!batch) {
     console.log(`\n${"█".repeat(70)}`);

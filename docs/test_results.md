@@ -249,7 +249,7 @@ Based on Tests 1, 6, and 8:
 | 4 | Goal Anchoring | Not started | 160 runs needed | Yes | ~16M (agent SDK) | ~6–8 hours | ~$128 |
 | 5 | False Positive Rate | **Done** | PASS — 0/100 FP | Yes | ~10M (agent SDK) | ~1.5 hours | ~$80 |
 | 6 | Threshold Sensitivity | **Done** | deny=0.15 optimal, AUC ~0.85 | No | ~30k (embed only) | ~2 min | ~$0.004 |
-| 7 | Cross-model Agents | Not started | 240 runs with Opus/Sonnet/Haiku | Yes | ~24M (agent SDK) | ~10–12 hours | ~$220 |
+| 7 | Cross-model Agents | **Done** | Opus 67.8% GES reduction, defence generalises | No (Bedrock agents) | ~24M (Bedrock agent) | ~8 hours | ~$286 |
 | 8 | Adversarial Judge | **Done** | 5 pretexts evade all 7 models | No | ~500k (judge only) | ~15 min | ~$2.50 |
 | 9 | Latency Impact | Not started | 120 runs, needs instrumentation | Yes | ~12M (agent SDK) | ~4–6 hours | ~$96 |
 
@@ -276,14 +276,14 @@ Based on Tests 1, 6, and 8:
 
 **Bedrock-only tests** (1, 6, 8) use only judge + embedding calls at ~$0.005/case — negligible.
 
-**Test 7 cost detail** (mixed agent models): 80 Opus runs (~$106) + 80 Sonnet runs (~$64) + 80 Haiku runs (~$22) + defence overhead (~$5) = ~$220.
+**Test 7 actual cost** (360 Bedrock agent runs): 120 Opus runs (~$156) + 120 Sonnet runs (~$94) + 120 Haiku runs (~$31) + judge/embed overhead (~$5) = ~$286. Ran on Fargate via Bedrock (no Anthropic API key needed).
 
 ### Summary
 
 | | Tokens | Cost | Time |
 |---|---|---|---|
-| **Completed** (1, 2, 5, 6, 8) | ~30M | ~$243 | ~8 hours |
-| **Remaining** (3, 4, 7, 9) | ~124M | **~$1,020** | ~60–74 hours |
-| **Total** | ~154M | **~$1,263** | ~68–82 hours |
+| **Completed** (1, 2, 5, 6, 7, 8) | ~54M | ~$529 | ~16 hours |
+| **Remaining** (3, 4, 9) | ~100M | **~$800** | ~47–62 hours |
+| **Total** | ~154M | **~$1,329** | ~63–78 hours |
 
-**Recommended execution order:** 4 ($128) → 7 ($220) → 9 ($96) → 3 ($576).
+**Recommended execution order:** 4 ($128) → 9 ($96) → 3 ($576).

@@ -40,7 +40,11 @@ RUN mkdir -p results
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 # Test 3: Statistical Robustness (parallel jobs)
 COPY docker-entrypoint-test3.sh /docker-entrypoint-test3.sh
-RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test3.sh
+# Test 4: Goal Anchoring Effectiveness (parallel jobs)
+COPY docker-entrypoint-test4.sh /docker-entrypoint-test4.sh
+# Test 9: Latency Impact (parallel jobs)
+COPY docker-entrypoint-test9.sh /docker-entrypoint-test9.sh
+RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test3.sh /docker-entrypoint-test4.sh /docker-entrypoint-test9.sh
 
 COPY server.js /app/server.js
 

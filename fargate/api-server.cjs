@@ -23,7 +23,9 @@ const PORT = 3000;
 const MAX_LOG_LINES = 20000;
 const ENTRYPOINTS = {
   "3": "/docker-entrypoint-test3.sh",
+  "4": "/docker-entrypoint-test4.sh",
   "7": "/docker-entrypoint.sh",
+  "9": "/docker-entrypoint-test9.sh",
 };
 const DEFAULT_TEST = process.env.TEST_NUM || "7";
 const BUILD_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
