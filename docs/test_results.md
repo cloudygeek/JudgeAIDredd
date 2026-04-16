@@ -246,7 +246,7 @@ Based on Tests 1, 6, and 8:
 | 1 | Combined Pipeline E2E | **Done** | 97% accuracy, 0 FP (Config C) | No | ~150k (embed+judge) | ~20 min | ~$0.60 |
 | 2 | Multi-turn Trajectory | **Done** | Full defence blocks 100% | Yes | ~20M (agent SDK) | ~6 hours | ~$160 |
 | 3 | Statistical Robustness | **Running** | 720 runs needed | Yes | ~72M (agent SDK) | ~36–48 hours | ~$576 |
-| 4 | Goal Anchoring | **Running** | 160 runs needed | Yes | ~16M (agent SDK) | ~6–8 hours | ~$128 |
+| 4 | Goal Anchoring | **Done** | Anchoring +29% marginal on top of judge; T3.4 −75% | No (Bedrock agents) | ~16M (Bedrock agent) | ~3 hours | ~$128 |
 | 5 | False Positive Rate | **Done** | PASS — 0/100 FP | Yes | ~10M (agent SDK) | ~1.5 hours | ~$80 |
 | 6 | Threshold Sensitivity | **Done** | deny=0.15 optimal, AUC ~0.85 | No | ~30k (embed only) | ~2 min | ~$0.004 |
 | 7 | Cross-model Agents | **Done** | Opus 67.8% GES reduction, defence generalises | No (Bedrock agents) | ~24M (Bedrock agent) | ~8 hours | ~$286 |
@@ -284,6 +284,6 @@ Based on Tests 1, 6, and 8:
 
 | | Tokens | Cost | Time |
 |---|---|---|---|
-| **Completed** (1, 2, 5, 6, 7, 8, 9) | ~66M | ~$625 | ~16.5 hours |
-| **Running** (3, 4) | ~88M | **~$704** | ~42–56 hours |
-| **Total** | ~154M | **~$1,329** | ~59–73 hours |
+| **Completed** (1, 2, 4, 5, 6, 7, 8, 9) | ~82M | ~$753 | ~19.5 hours |
+| **Running** (3) | ~72M | **~$576** | ~36–48 hours |
+| **Total** | ~154M | **~$1,329** | ~56–68 hours |
