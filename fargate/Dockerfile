@@ -1,0 +1,58 @@
+# Judge AI Dredd — Test Runner (Tests 3, 7)
+# Build context: project root
+#   docker build -f fargate/Dockerfile -t judge-ai-dredd .
+
+FROM 891377407345.dkr.ecr.eu-west-1.amazonaws.com/cko-pull-through/docker-hub/library/node:22-bookworm-slim
+
+WORKDIR /app
+
+# ── AWS CLI v2 ──────────────────────────────────────────────────────────────
+# Needed because bedrock-client.ts shells out to `aws bedrock-runtime converse`
+# and `aws bedrock-runtime invoke-model` for embeddings.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl unzip ca-certificates \
+    && ARCH=$(uname -m) \
+    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" \
+         -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/aws /tmp/awscliv2.zip \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Node dependencies ───────────────────────────────────────────────────────
+# tsx (devDep) is required at runtime: tsconfig rootDir=src means scenarios/
+# cannot be compiled alongside src/ without restructuring; tsx handles it fine.
+COPY package.json ./
+RUN npm install --registry https://registry.npmjs.org
+
+# ── Application source ──────────────────────────────────────────────────────
+COPY tsconfig.json ./
+COPY src/ ./src/
+COPY scenarios/ ./scenarios/
+COPY workspace-template/ ./workspace-template/
+
+# Results written here, then synced to S3
+RUN mkdir -p results
+
+# ── Entrypoints + AI Sandbox HTTP wrapper ───────────────────────────────────
+# In the zip, these files are at the root (flat layout for CodeBuild).
+# Test 7: Cross-Model Agent Testing (sequential)
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+# Test 3: Statistical Robustness (parallel jobs)
+COPY docker-entrypoint-test3.sh /docker-entrypoint-test3.sh
+RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test3.sh
+
+COPY server.js /app/server.js
+
+# ── Non-root user ───────────────────────────────────────────────────────
+# Claude Code refuses bypassPermissions when running as root.
+# Create a dedicated user and hand over ownership of writable directories.
+RUN useradd -m -s /bin/bash dredd \
+    && chown -R dredd:dredd /app results
+USER dredd
+
+# Port 3000 is required by the AI Sandbox ALB target group
+EXPOSE 3000
+
+# exec form — process receives signals directly (SIGTERM for graceful shutdown)
+CMD ["node", "/app/server.js"]

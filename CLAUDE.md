@@ -63,6 +63,56 @@ The judge gets file-content context from `SessionTracker.getFileContextForJudge(
 
 Single bash script handling all hook events. Reads JSON from stdin, calls the right Dredd endpoint, prints JSON to stdout. **Fails open** if server is down (`permissionDecision: "ask"`). PostToolUse and Stop are fire-and-forget background curls so they don't block the agent. Install via `hooks/settings.json.example` — copy into `.claude/settings.json`.
 
+## Container image (AI Sandbox / Fargate)
+
+The container runs Test 7 (cross-model agent testing) on the AI Sandbox platform. It packages the app with `node_modules` into a zip that the platform's CodeBuild pipeline turns into a Docker image.
+
+### Building the zip
+
+```bash
+# 1. Install deps locally (they get bundled into the zip)
+npm install
+
+# 2. Build the zip from the project root
+#    Includes: src/, scenarios/, workspace-template/, node_modules/,
+#              package.json, package-lock.json, tsconfig.json, logo.png,
+#              fargate/docker-entrypoint.sh (as docker-entrypoint.sh),
+#              fargate/api-server.js (as server.js),
+#              fargate/Dockerfile (as Dockerfile)
+cd /tmp && rm -rf dredd-rezip && mkdir dredd-rezip && cd dredd-rezip
+cp -r <project>/src <project>/scenarios <project>/workspace-template \
+      <project>/package.json <project>/package-lock.json <project>/tsconfig.json \
+      <project>/node_modules .
+cp <project>/fargate/docker-entrypoint.sh ./docker-entrypoint.sh
+cp <project>/fargate/api-server.js ./server.js
+cp <project>/fargate/Dockerfile ./Dockerfile
+cp <project>/src/web/logo.png ./logo.png 2>/dev/null || true
+zip -r judge-ai-dredd-t3-sandbox.zip .
+```
+
+The zip layout is **flat** — `Dockerfile`, `docker-entrypoint.sh`, and `server.js` sit at the root (not under `fargate/`).
+
+### Building the Docker image locally
+
+```bash
+# Authenticate to the ECR pull-through cache first
+aws ecr get-login-password --region eu-west-1 | \
+  docker login --username AWS --password-stdin 891377407345.dkr.ecr.eu-west-1.amazonaws.com
+
+# Build from project root (uses fargate/Dockerfile)
+docker build -f fargate/Dockerfile -t judge-ai-dredd-test7 .
+```
+
+### Key fargate files
+
+| File | Role |
+|---|---|
+| `fargate/Dockerfile` | Image definition — node:22-slim + AWS CLI v2, bundles app source |
+| `fargate/docker-entrypoint.sh` | Batch runner: preflight checks (Bedrock models + S3 access), then runs all model × scenario × defence combinations, uploading results to S3 |
+| `fargate/api-server.js` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
+| `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-central-1.amazonaws.com`) |
+| `fargate/infra/` | Terraform for the Fargate task definition and supporting resources |
+
 ## Drift thresholds
 
 Configurable in tracker: `<0.2` on-task, `0.2–0.3` scope-creep (inject reminder), `0.3–0.5` drifting (escalate to judge), `>0.5` hijacked (block).

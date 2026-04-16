@@ -155,20 +155,12 @@ function marengoEmbed(text: string, modelId: string, region: string): number[] {
 }
 
 export async function checkBedrock(modelId = MODEL_ID): Promise<boolean> {
-  // Cross-region inference profiles (eu./us./global. prefix) are not returned
-  // by get-foundation-model — check via list-inference-profiles instead.
-  const isProfile = /^(?:eu|us|global)\./.test(modelId);
+  // Test with a real converse call — avoids needing metadata API permissions
+  // (bedrock:ListInferenceProfiles, bedrock:GetFoundationModel).
   try {
-    if (isProfile) {
-      const out = execSync(
-        `aws bedrock list-inference-profiles --region ${REGION} --query "inferenceProfileSummaries[?inferenceProfileId=='${modelId}'].inferenceProfileId" --output text 2>/dev/null`,
-        { encoding: "utf8", timeout: 10000 }
-      );
-      return out.trim().length > 0;
-    }
     execSync(
-      `aws bedrock get-foundation-model --region ${REGION} --model-identifier ${modelId} --query modelDetails.modelId --output text 2>/dev/null`,
-      { encoding: "utf8", timeout: 10000 }
+      `aws bedrock-runtime converse --region ${REGION} --model-id "${modelId}" --messages '[{"role":"user","content":[{"text":"ok"}]}]' --inference-config '{"maxTokens":1}' --output text --query "output.message.content[0].text" 2>/dev/null`,
+      { encoding: "utf8", timeout: 15000 }
     );
     return true;
   } catch {

@@ -239,15 +239,51 @@ Based on Tests 1, 6, and 8:
 
 ---
 
-## Remaining Tests (Not Yet Run)
+## All Tests — Status, Tokens, Time, and Cost Estimates
 
-| Test | Status | Blocker | Estimated time |
+| Test | Title | Status | Key Result | Anthropic API? | Est. Tokens | Est. Time | Est. Cost |
+|---|---|---|---|---|---|---|---|
+| 1 | Combined Pipeline E2E | **Done** | 97% accuracy, 0 FP (Config C) | No | ~150k (embed+judge) | ~20 min | ~$0.60 |
+| 2 | Multi-turn Trajectory | **Done** | Full defence blocks 100% | Yes | ~20M (agent SDK) | ~6 hours | ~$160 |
+| 3 | Statistical Robustness | Not started | 720 runs needed | Yes | ~72M (agent SDK) | ~36–48 hours | ~$576 |
+| 4 | Goal Anchoring | Not started | 160 runs needed | Yes | ~16M (agent SDK) | ~6–8 hours | ~$128 |
+| 5 | False Positive Rate | **Done** | PASS — 0/100 FP | Yes | ~10M (agent SDK) | ~1.5 hours | ~$80 |
+| 6 | Threshold Sensitivity | **Done** | deny=0.15 optimal, AUC ~0.85 | No | ~30k (embed only) | ~2 min | ~$0.004 |
+| 7 | Cross-model Agents | Not started | 240 runs with Opus/Sonnet/Haiku | Yes | ~24M (agent SDK) | ~10–12 hours | ~$220 |
+| 8 | Adversarial Judge | **Done** | 5 pretexts evade all 7 models | No | ~500k (judge only) | ~15 min | ~$2.50 |
+| 9 | Latency Impact | Not started | 120 runs, needs instrumentation | Yes | ~12M (agent SDK) | ~4–6 hours | ~$96 |
+
+### Cost breakdown
+
+**Prices used** (from Anthropic API pricing + AWS Bedrock eu-west-1, fetched 2026-04-16):
+
+| Component | Model | Input / MTok | Output / MTok |
 |---|---|---|---|
-| 2. Multi-turn trajectory | Not started | Need `--judge-only`, `--no-anchor` runner flags (now implemented) | ~10 hours |
-| 3. Statistical robustness (720 runs) | Not started | Long-running; needs `--batch` flag (now implemented) | ~36 hours |
-| 4. Goal anchoring | Not started | `anchor-only` mode now in runner | ~8 hours |
-| 5. False positive rate | Not started | Need `scenarios/legitimate-tasks.ts` | ~5 hours |
-| 7. Cross-model agents | Not started | Runner flags now in place | ~12 hours |
-| 9. Latency impact | Not started | Timing instrumentation needed | ~6 hours |
+| Agent | Claude Sonnet 4.6 | $3.00 | $15.00 |
+| Agent | Claude Opus 4.6 | $5.00 | $25.00 |
+| Agent | Claude Haiku 4.5 | $1.00 | $5.00 |
+| Judge | Claude Haiku 4.5 (Bedrock) | $1.00 | $5.00 |
+| Judge | Nemotron Super 120B (Bedrock) | $0.18 | $0.78 |
+| Embeddings | Cohere Embed v4 (Bedrock) | $0.12 | — |
 
-Tests 2–4 and 7 can now be launched with the updated runner. Tests 3 and 7 are the highest priority for the paper's statistical claims.
+**Per-run cost model** (~100k tokens/run, 60:40 input:output ratio):
+
+| Agent model | Agent cost/run | Judge + embed overhead | Total/run |
+|---|---|---|---|
+| Sonnet 4.6 | ~$0.78 | ~$0.02 | **~$0.80** |
+| Opus 4.6 | ~$1.30 | ~$0.02 | **~$1.32** |
+| Haiku 4.5 | ~$0.26 | ~$0.02 | **~$0.28** |
+
+**Bedrock-only tests** (1, 6, 8) use only judge + embedding calls at ~$0.005/case — negligible.
+
+**Test 7 cost detail** (mixed agent models): 80 Opus runs (~$106) + 80 Sonnet runs (~$64) + 80 Haiku runs (~$22) + defence overhead (~$5) = ~$220.
+
+### Summary
+
+| | Tokens | Cost | Time |
+|---|---|---|---|
+| **Completed** (1, 2, 5, 6, 8) | ~30M | ~$243 | ~8 hours |
+| **Remaining** (3, 4, 7, 9) | ~124M | **~$1,020** | ~60–74 hours |
+| **Total** | ~154M | **~$1,263** | ~68–82 hours |
+
+**Recommended execution order:** 4 ($128) → 7 ($220) → 9 ($96) → 3 ($576).
