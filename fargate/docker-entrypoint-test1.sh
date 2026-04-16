@@ -7,7 +7,7 @@ set -euo pipefail
 # Runs 29 labelled cases × N configs × M judge effort levels.
 #
 # Env overrides:
-#   TEST1_CONFIG    config filter (default: all — A,B,C,D)
+#   TEST1_CONFIG    config filter CSV (default: all — A,B,C,D,E,F,G,H)
 #   TEST1_EFFORT    judge effort levels CSV (default: default,medium,high)
 #   S3_BUCKET       results bucket (default: cko-results)
 #   S3_PREFIX       results prefix (default: test1)

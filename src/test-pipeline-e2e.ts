@@ -419,9 +419,11 @@ function printSideBySideTable(summaries: ConfigSummary[]) {
 // ============================================================================
 
 async function main() {
-  const configFilter = typeof args.config === "string" ? args.config.toUpperCase() : null;
+  const configFilter = typeof args.config === "string"
+    ? new Set(args.config.toUpperCase().split(",").map(s => s.trim()))
+    : null;
   const configsToRun = configFilter
-    ? CONFIGS.filter(c => c.name === configFilter)
+    ? CONFIGS.filter(c => configFilter.has(c.name))
     : CONFIGS;
 
   if (configsToRun.length === 0) {
