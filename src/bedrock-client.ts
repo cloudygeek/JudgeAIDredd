@@ -45,7 +45,7 @@ export async function bedrockChat(
     const budgetMap: Record<string, number> = { low: 1024, medium: 5000, high: 16000, max: 65536 };
     const inferenceConfig: Record<string, unknown> = {
       maxTokens: effort ? 4096 : 512,
-      temperature: 0.1,
+      temperature: effort ? 1 : 0.1,
     };
     writeFileSync(tmpConfig, JSON.stringify(inferenceConfig));
 
