@@ -11,7 +11,7 @@ import { writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const REGION = process.env.AWS_REGION ?? "eu-central-1";
+const REGION = process.env.AWS_REGION ?? "eu-west-2";
 const MODEL_ID = process.env.BEDROCK_JUDGE_MODEL ?? "nvidia.nemotron-super-3-120b";
 
 type EffortLevel = "low" | "medium" | "high" | "max";
@@ -46,7 +46,7 @@ export async function bedrockChat(
     const budgetTokens = budgetMap[effort!] ?? 5000;
     const isOpus47 = modelId.includes("opus-4-7");
     const inferenceConfig: Record<string, unknown> = {
-      maxTokens: effort ? budgetTokens + 4096 : 512,
+      maxTokens: effort ? (isOpus47 ? 16384 : budgetTokens + 4096) : 512,
     };
     if (!isOpus47) inferenceConfig.temperature = effort ? 1 : 0.1;
     writeFileSync(tmpConfig, JSON.stringify(inferenceConfig));
@@ -63,9 +63,10 @@ export async function bedrockChat(
 
     if (effort) {
       tmpThinking = join(tmpdir(), `bedrock-think-${Date.now()}.json`);
-      writeFileSync(tmpThinking, JSON.stringify({
-        thinking: { type: "enabled", budget_tokens: budgetTokens },
-      }));
+      const thinkingFields = isOpus47
+        ? { thinking: { type: "adaptive" }, output_config: { effort } }
+        : { thinking: { type: "enabled", budget_tokens: budgetTokens } };
+      writeFileSync(tmpThinking, JSON.stringify(thinkingFields));
       cmdParts.push("--additional-model-request-fields", `file://${tmpThinking}`);
     }
 
