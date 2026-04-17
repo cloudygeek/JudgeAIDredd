@@ -16,11 +16,19 @@ const MODEL_ID = process.env.BEDROCK_JUDGE_MODEL ?? "nvidia.nemotron-super-3-120
 
 type EffortLevel = "low" | "medium" | "high" | "max";
 
+export interface BedrockImageBlock {
+  /** Base64-encoded image data */
+  data: string;
+  /** MIME type, e.g. "image/png" */
+  mediaType: string;
+}
+
 export async function bedrockChat(
   systemPrompt: string,
   userMessage: string,
   modelId = MODEL_ID,
-  effort?: EffortLevel
+  effort?: EffortLevel,
+  images?: BedrockImageBlock[]
 ): Promise<{ content: string; durationMs: number; inputTokens: number; outputTokens: number }> {
   const start = Date.now();
 
@@ -31,10 +39,19 @@ export async function bedrockChat(
   let tmpThinking: string | null = null;
 
   try {
+    const userContent: Record<string, unknown>[] = [{ text: userMessage }];
+    if (images?.length) {
+      for (const img of images) {
+        const format = img.mediaType.replace("image/", "");
+        userContent.push({
+          image: { format, source: { bytes: img.data } },
+        });
+      }
+    }
     writeFileSync(tmpMessages, JSON.stringify([
       {
         role: "user",
-        content: [{ text: userMessage }],
+        content: userContent,
       },
     ]));
 
@@ -42,11 +59,11 @@ export async function bedrockChat(
       { text: systemPrompt },
     ]));
 
-    const budgetMap: Record<string, number> = { low: 1024, medium: 5000, high: 16000, max: 65536 };
+    const budgetMap: Record<string, number> = { low: 1024, medium: 5000, high: 16000, max: 60000 };
     const budgetTokens = budgetMap[effort!] ?? 5000;
     const isOpus47 = modelId.includes("opus-4-7");
     const inferenceConfig: Record<string, unknown> = {
-      maxTokens: effort ? (isOpus47 ? 16384 : budgetTokens + 4096) : 512,
+      maxTokens: effort ? (isOpus47 ? 16384 : Math.min(budgetTokens + 4096, 64000)) : 512,
     };
     if (!isOpus47) inferenceConfig.temperature = effort ? 1 : 0.1;
     writeFileSync(tmpConfig, JSON.stringify(inferenceConfig));
