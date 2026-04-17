@@ -197,7 +197,7 @@ const server = http.createServer((req, res) => {
       .map((l) => l.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"))
       .join("\n");
 
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
     res.end(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -255,7 +255,7 @@ const server = http.createServer((req, res) => {
 
   // ── GET /status — JSON state ──────────────────────────────────────────────
   if (req.method === "GET" && url.pathname === "/status") {
-    res.writeHead(200, { "Content-Type": "application/json" });
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     res.end(JSON.stringify({
       version:     BUILD_VERSION,
       status:      state.status,
@@ -274,7 +274,7 @@ const server = http.createServer((req, res) => {
   // ── GET /logs — plain-text log tail ──────────────────────────────────────
   if (req.method === "GET" && url.pathname === "/logs") {
     const n = Math.min(parseInt(url.searchParams.get("n") || "100", 10), MAX_LOG_LINES);
-    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
     res.end(state.logLines.slice(-n).join("\n"));
     return;
   }
