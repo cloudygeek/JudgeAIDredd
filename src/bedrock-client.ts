@@ -43,8 +43,9 @@ export async function bedrockChat(
     ]));
 
     const budgetMap: Record<string, number> = { low: 1024, medium: 5000, high: 16000, max: 65536 };
+    const budgetTokens = budgetMap[effort!] ?? 5000;
     const inferenceConfig: Record<string, unknown> = {
-      maxTokens: effort ? 4096 : 512,
+      maxTokens: effort ? budgetTokens + 4096 : 512,
       temperature: effort ? 1 : 0.1,
     };
     writeFileSync(tmpConfig, JSON.stringify(inferenceConfig));
@@ -62,7 +63,7 @@ export async function bedrockChat(
     if (effort) {
       tmpThinking = join(tmpdir(), `bedrock-think-${Date.now()}.json`);
       writeFileSync(tmpThinking, JSON.stringify({
-        thinking: { type: "enabled", budget_tokens: budgetMap[effort] ?? 5000 },
+        thinking: { type: "enabled", budget_tokens: budgetTokens },
       }));
       cmdParts.push("--additional-model-request-fields", `file://${tmpThinking}`);
     }
