@@ -44,10 +44,11 @@ export async function bedrockChat(
 
     const budgetMap: Record<string, number> = { low: 1024, medium: 5000, high: 16000, max: 65536 };
     const budgetTokens = budgetMap[effort!] ?? 5000;
+    const isOpus47 = modelId.includes("opus-4-7");
     const inferenceConfig: Record<string, unknown> = {
       maxTokens: effort ? budgetTokens + 4096 : 512,
-      temperature: effort ? 1 : 0.1,
     };
+    if (!isOpus47) inferenceConfig.temperature = effort ? 1 : 0.1;
     writeFileSync(tmpConfig, JSON.stringify(inferenceConfig));
 
     const cmdParts = [
