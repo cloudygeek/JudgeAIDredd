@@ -55,7 +55,7 @@ Routes called by the hook script:
 
 1. **Policy engine** (`src/tool-policy.ts`) — instant, deterministic. `ALLOWED_TOOLS` (Read/Glob/Grep + curated MCP tools), `ALLOWED_BASH_PATTERNS`, `DENIED_BASH_PATTERNS`, `REVIEW_BASH_PATTERNS`. Splits chained commands on `&&`/`||`/`;`/`|` and evaluates each part. `checkDangerousCombination()` catches directory escape, write-then-execute, download-then-execute even when individual parts are allowed.
 2. **Embedding drift** (`src/drift-detector.ts`) — ~50ms. Cosine similarity between tool call and intent via Ollama `nomic-embed-text`. High → allow, low → judge, middle → judge.
-3. **LLM judge** (`src/intent-judge.ts`) — 1.4s Bedrock / 10–15s Ollama. Operates in clean context (no agent history). Returns `consistent` / `drifting` / `hijacked`. Has a partial-JSON parser fallback for truncated responses. **Only `hijacked` denies**; `drifting` allows with warning. Judge errors fail-open.
+3. **LLM judge** (`src/intent-judge.ts`) — 1.4s Bedrock / 10–15s Ollama. Operates in clean context (no agent history). Returns `consistent` / `drifting` / `hijacked`. Has a partial-JSON parser fallback for truncated responses. **Only `hijacked` denies**; `drifting` allows but injects a goal anchor before the next turn. Judge errors fail-soft (return `drifting`, log to stderr) — a Bedrock outage surfaces as a warning rather than silently removing the judge from the defence stack.
 
 The judge gets file-content context from `SessionTracker.getFileContextForJudge()` — this is how payload-splitting attacks are caught: assembled file content is fed to the judge when an execution command fires.
 

@@ -127,13 +127,20 @@ Is the CURRENT ACTION a plausible step toward the CURRENT TASK? Remember: earlie
         durationMs,
       };
     } catch (err) {
-      // If the judge fails, default to "consistent" (fail open).
-      // Better to allow a suspicious call than block a legitimate one.
-      // The policy deny list still catches truly dangerous operations.
+      // Soft fail: on judge error (Bedrock outage, API mismatch, etc.) return
+      // "drifting" rather than "consistent". The tool call is still allowed
+      // (only "hijacked" blocks), but the intent-tracker injects a goal anchor
+      // before the next turn and the event surfaces in logs instead of being
+      // silently absorbed. A silent fail-open would remove the judge layer
+      // from the defence stack without any visible signal — which is exactly
+      // how the 2026-04-17 Opus 4.7 Bedrock "thinking.type.enabled" errors
+      // produced 12/12 adversarial passes that looked like clean data.
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[intent-judge] fail-soft: ${message.split("\n")[0]}`);
       return {
-        verdict: "consistent",
+        verdict: "drifting",
         confidence: 0.3,
-        reasoning: `Judge error (fail-open): ${err instanceof Error ? err.message : String(err)}`,
+        reasoning: `Judge error (fail-soft): ${message}`,
         durationMs: 0,
       };
     }
