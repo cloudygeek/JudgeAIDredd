@@ -1,27 +1,67 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run Test 1 locally with effort sweep against Bedrock eu-central-1
-# Usage: ./run-test1-local.sh
+# Run Test 1 locally with a clean env (no inherited Claude session tokens).
+# Uses eu-west-2 for Bedrock so Nemotron works.
+# Ollama must be running locally for nomic-embed-text configs (A,C,E,G).
+#
+# Usage: ./run-test1-local.sh [config-filter] [effort-levels]
+#   e.g.  ./run-test1-local.sh A,C,G default,medium,high
 
-export AWS_REGION=eu-central-1
+CONFIG_FILTER="${1:-A,C,E,G}"
+EFFORT_LEVELS="${2:-default,medium,high}"
 
-echo "Testing Bedrock access (eu-central-1)..."
-aws bedrock-runtime converse \
-  --region eu-central-1 \
-  --model-id "eu.anthropic.claude-haiku-4-5-20251001-v1:0" \
-  --messages '[{"role":"user","content":[{"text":"ok"}]}]' \
-  --inference-config '{"maxTokens":1}' \
-  --output text --query "output.message.content[0].text" >/dev/null 2>&1 \
-  && echo "  Bedrock OK" \
-  || { echo "  FATAL: Bedrock access denied in eu-central-1"; exit 1; }
+# Strip the current Claude session's env to avoid inheriting Bedrock tokens
+# that are scoped to eu-central-1 / this process.
+exec env -i \
+  HOME="$HOME" \
+  PATH="$PATH" \
+  SHELL="$SHELL" \
+  TERM="${TERM:-xterm-256color}" \
+  USER="$USER" \
+  AWS_REGION=eu-west-2 \
+  AWS_DEFAULT_REGION=eu-west-2 \
+  bash -c "
+set -euo pipefail
 
-echo ""
-echo "Running Test 1: all 8 configs × 3 effort levels (default, medium, high)"
-echo "This will take ~30-60 minutes depending on judge latency."
-echo ""
+echo '============================================================'
+echo ' Test 1 Local Runner (clean env)'
+echo ' Region:  eu-west-2'
+echo ' Configs: ${CONFIG_FILTER}'
+echo ' Effort:  ${EFFORT_LEVELS}'
+echo '============================================================'
+echo ''
 
-npx tsx src/test-pipeline-e2e.ts --judge-effort all
+echo 'Checking AWS identity...'
+aws sts get-caller-identity 2>&1 || { echo 'FATAL: No valid AWS credentials (expected SSO/profile, not session token)'; exit 1; }
+echo ''
 
-echo ""
-echo "Results saved to results/pipeline-e2e-*.json"
+echo 'Testing Bedrock access (eu-west-2)...'
+aws bedrock-runtime converse \\
+  --region eu-west-2 \\
+  --model-id 'eu.anthropic.claude-haiku-4-5-20251001-v1:0' \\
+  --messages '[{\"role\":\"user\",\"content\":[{\"text\":\"ok\"}]}]' \\
+  --inference-config '{\"maxTokens\":1}' \\
+  --output text --query 'output.message.content[0].text' >/dev/null 2>&1 \\
+  && echo '  Bedrock Haiku OK' \\
+  || { echo '  FATAL: Bedrock access denied in eu-west-2'; exit 1; }
+
+echo 'Testing Nemotron access (eu-west-2)...'
+aws bedrock-runtime converse \\
+  --region eu-west-2 \\
+  --model-id 'nvidia.nemotron-super-3-120b' \\
+  --messages '[{\"role\":\"user\",\"content\":[{\"text\":\"ok\"}]}]' \\
+  --inference-config '{\"maxTokens\":1}' \\
+  --output text --query 'output.message.content[0].text' >/dev/null 2>&1 \\
+  && echo '  Bedrock Nemotron OK' \\
+  || echo '  WARN: Nemotron not accessible — configs A,B will fail'
+
+echo ''
+echo 'Starting Test 1...'
+echo ''
+
+npx tsx src/test-pipeline-e2e.ts --config '${CONFIG_FILTER}' --judge-effort '${EFFORT_LEVELS}'
+
+echo ''
+echo 'Results saved to results/pipeline-e2e-*.json'
+"
