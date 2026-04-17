@@ -30,6 +30,7 @@ import { DriftDetector } from "./drift-detector.js";
 import { IntentJudge, type JudgeVerdict, type JudgeBackend } from "./intent-judge.js";
 import { checkOllama, embedAny, isBedrockModel, chat } from "./ollama-client.js";
 import { checkBedrock, bedrockChat, bedrockEmbed } from "./bedrock-client.js";
+import type { ImageBlock } from "./session-tracker.js";
 
 export interface InterceptorConfig {
   embeddingModel?: string;
@@ -75,6 +76,7 @@ export class PreToolInterceptor {
   private driftDetector: DriftDetector;
   private judge: IntentJudge;
   private originalTask: string = "";
+  private intentImages: ImageBlock[] | undefined;
   private toolLog: InterceptionResult[] = [];
   /** Index into toolLog marking where the current goal started. Tool calls
    *  before this index belong to previous (completed) goals and must not
@@ -155,8 +157,9 @@ export class PreToolInterceptor {
     }
   }
 
-  async registerGoal(task: string): Promise<void> {
+  async registerGoal(task: string, images?: ImageBlock[]): Promise<void> {
     this.originalTask = task;
+    this.intentImages = images?.length ? images : undefined;
     // Anything in toolLog before this point belongs to a previous goal —
     // remember the boundary so recent-history for the judge is scoped to
     // just the current task.
@@ -293,7 +296,8 @@ export class PreToolInterceptor {
     const judgeVerdict = await this.judge.evaluate(
       this.originalTask,
       recentTools,
-      currentAction
+      currentAction,
+      this.intentImages
     );
 
     // Only "hijacked" is denied. "consistent" and "drifting" are allowed.
@@ -366,6 +370,7 @@ export class PreToolInterceptor {
   reset(): void {
     this.toolLog = [];
     this.originalTask = "";
+    this.intentImages = undefined;
     this.goalStartIndex = 0;
     this.driftDetector.reset();
   }

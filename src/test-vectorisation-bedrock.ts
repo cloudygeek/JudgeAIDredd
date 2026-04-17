@@ -223,7 +223,7 @@ async function main() {
   console.log(`\n${"═".repeat(88)}`);
   console.log(`  Bedrock embedding comparison — ${MODELS.length} models`);
   console.log(`  Thresholds: deny<${DENY_THRESHOLD}  judge<${REVIEW_THRESHOLD}  allow≥${REVIEW_THRESHOLD}`);
-  console.log(`  Region: eu-central-1 (Marengo: us-east-1)`);
+  console.log(`  Region: eu-west-2 (Marengo: us-east-1)`);
   console.log(`${"═".repeat(88)}\n`);
 
   const all: { label: string; results: ModelResults; embedMs: number }[] = [];

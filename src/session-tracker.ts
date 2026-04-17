@@ -18,11 +18,20 @@ import { DriftDetector } from "./drift-detector.js";
 import { embedAny, cosineSimilarity } from "./ollama-client.js";
 import { CANARY_PREFIXES } from "./types.js";
 
+export interface ImageBlock {
+  /** Base64-encoded image data */
+  data: string;
+  /** MIME type, e.g. "image/png", "image/jpeg", "image/webp", "image/gif" */
+  mediaType: string;
+}
+
 export interface TurnIntent {
   turnNumber: number;
   timestamp: string;
   prompt: string;
   embedding: number[];
+  /** Images attached to this prompt (from pasted screenshots etc.) */
+  images?: ImageBlock[];
 }
 
 export interface ToolCallRecord {
@@ -213,7 +222,7 @@ export class SessionTracker {
     // toolHistory and turnMetrics are preserved for the full session log
   }
 
-  async registerIntent(sessionId: string, prompt: string, skipDrift = false): Promise<{
+  async registerIntent(sessionId: string, prompt: string, skipDrift = false, images?: ImageBlock[]): Promise<{
     isOriginal: boolean;
     turnNumber: number;
     driftFromOriginal: number | null;
@@ -232,6 +241,7 @@ export class SessionTracker {
       timestamp: new Date().toISOString(),
       prompt,
       embedding: promptEmbedding ?? [],
+      images: images?.length ? images : undefined,
     };
 
     let driftFromOriginal: number | null = null;
@@ -297,14 +307,19 @@ export class SessionTracker {
     recentTools: ToolCallRecord[];
     turnIntents: TurnIntent[];
     originalEmbedding: number[] | null;
+    intentImages: ImageBlock[] | undefined;
   } {
     const session = this.getSession(sessionId);
+    const latestIntent = session.turnIntents.length > 0
+      ? session.turnIntents[session.turnIntents.length - 1]
+      : session.originalIntent;
     return {
       originalTask: session.originalIntent?.prompt ?? null,
       currentTurn: session.currentTurn,
       recentTools: session.toolHistory.slice(-10),
       turnIntents: session.turnIntents,
       originalEmbedding: session.originalEmbedding,
+      intentImages: latestIntent?.images,
     };
   }
 

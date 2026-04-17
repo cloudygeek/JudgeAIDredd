@@ -6,7 +6,7 @@
  *
  * Interface is identical to runner.ts — all the same flags work.
  * The only behavioural difference: --model values are mapped to
- * eu-central-1 Bedrock inference profile IDs (see executor-bedrock.ts).
+ * eu-west-2 Bedrock inference profile IDs (see executor-bedrock.ts).
  *
  * Usage (same as runner.ts, just drop in --bedrock):
  *   npx tsx src/runner-bedrock.ts --scenario intermediate --defence none --model claude-opus-4-6 --repetitions 20

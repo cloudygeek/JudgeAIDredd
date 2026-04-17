@@ -15,7 +15,7 @@
 #   S3_BUCKET       Results bucket       (default: cko-results)
 #   S3_PREFIX       S3 key prefix        (default: test7)
 #   S3_REGION       Region of S3 bucket  (default: eu-west-1)
-#   AWS_REGION      Region for Bedrock   (default: eu-central-1)
+#   AWS_REGION      Region for Bedrock   (default: eu-west-2)
 #   TEST7_RUN_ID    Unique run label     (default: ISO timestamp)
 #
 # Parallelism: run one Fargate task per model by overriding TEST7_MODELS.
@@ -46,7 +46,7 @@ REPS="${TEST7_REPS:-20}"
 S3_BUCKET="${S3_BUCKET:-cko-results}"
 S3_PREFIX="${S3_PREFIX:-test7}"
 S3_REGION="${S3_REGION:-eu-west-1}"       # bucket region
-AWS_REGION="${AWS_REGION:-eu-central-1}"  # Bedrock region
+AWS_REGION="${AWS_REGION:-eu-west-2}"  # Bedrock region
 RUN_ID="${TEST7_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 # Recommended config from test_plan.md

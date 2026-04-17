@@ -12,7 +12,7 @@ CONFIG_FILTER="${1:-A,C,E,G}"
 EFFORT_LEVELS="${2:-default,medium,high}"
 
 # Strip the current Claude session's env to avoid inheriting Bedrock tokens
-# that are scoped to eu-central-1 / this process.
+# that are scoped to eu-west-2 / this process.
 exec env -i \
   HOME="$HOME" \
   PATH="$PATH" \

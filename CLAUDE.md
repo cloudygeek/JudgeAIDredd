@@ -32,7 +32,7 @@ npm run review:bedrock          # uses Bedrock
 npm run ollama:pull             # nomic-embed-text + llama3.2
 ```
 
-Bedrock mode uses `eu-central-1` and shells out to `aws bedrock-runtime converse` — needs AWS creds. Ollama mode needs `ollama serve` running locally.
+Bedrock mode uses `eu-west-2` and shells out to `aws bedrock-runtime converse` — needs AWS creds. Ollama mode needs `ollama serve` running locally.
 
 ## Architecture
 
@@ -128,7 +128,7 @@ docker build -f fargate/Dockerfile -t judge-ai-dredd-test7 .
 | `fargate/docker-entrypoint-test9.sh` | Test 9: Latency Impact |
 | `fargate/docker-entrypoint-test9a.sh` | Test 9a: Latency Impact — effort dimension |
 | `fargate/api-server.cjs` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
-| `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-central-1.amazonaws.com`) |
+| `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-west-2.amazonaws.com`) |
 | `fargate/infra/` | Terraform for the Fargate task definition and supporting resources |
 
 ## Drift thresholds

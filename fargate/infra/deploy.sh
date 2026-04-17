@@ -20,7 +20,7 @@ set -euo pipefail
 
 # ── Config — edit these ───────────────────────────────────────────────────────
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-REGION="eu-central-1"
+REGION="eu-west-2"
 ECR_REPO="judge-ai-dredd-test7"
 CLUSTER="judge-ai-dredd"
 RESULTS_BUCKET="judge-ai-dredd-results-${ACCOUNT_ID}"

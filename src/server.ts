@@ -25,7 +25,7 @@ import { parseArgs } from "node:util";
 import { writeFileSync, appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { inspect } from "node:util";
-import { SessionTracker } from "./session-tracker.js";
+import { SessionTracker, type ImageBlock } from "./session-tracker.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
 import { exportPolicies } from "./tool-policy.js";
 import { checkOllama } from "./ollama-client.js";
@@ -147,11 +147,24 @@ function isConfirmationPrompt(text: string): boolean {
   );
 }
 
+function extractImagesFromContentBlocks(blocks: any[]): ImageBlock[] {
+  const images: ImageBlock[] = [];
+  for (const b of blocks) {
+    if (b.type === "image" && b.source?.type === "base64" && b.source?.data) {
+      images.push({
+        data: b.source.data,
+        mediaType: b.source.media_type ?? "image/png",
+      });
+    }
+  }
+  return images;
+}
+
 function extractLastUserAndPriorAssistant(
   transcriptPath: string
-): { lastUser: string | null; priorAssistant: string | null } {
+): { lastUser: string | null; priorAssistant: string | null; images: ImageBlock[] } {
   if (!transcriptPath || !existsSync(transcriptPath)) {
-    return { lastUser: null, priorAssistant: null };
+    return { lastUser: null, priorAssistant: null, images: [] };
   }
   try {
     const lines = readFileSync(transcriptPath, "utf8").trim().split("\n").filter(Boolean);
@@ -159,7 +172,7 @@ function extractLastUserAndPriorAssistant(
     // preceded each one, then pick the last *substantive* (non-confirmation)
     // entry. Falls back to the very last user prompt if everything is a
     // confirmation.
-    const userTurns: { user: string; prior: string | null }[] = [];
+    const userTurns: { user: string; prior: string | null; images: ImageBlock[] }[] = [];
     let pendingAssistant: string | null = null;
 
     for (const line of lines) {
@@ -173,31 +186,33 @@ function extractLastUserAndPriorAssistant(
             .trim();
           if (text) pendingAssistant = text;
         } else if (msg.type === "user") {
-          const text = (msg.message?.content ?? [])
+          const contentBlocks = msg.message?.content ?? [];
+          const text = contentBlocks
             .filter((b: any) => b.type === "text")
             .map((b: any) => b.text)
             .join("\n")
             .trim();
-          if (text) {
-            userTurns.push({ user: text, prior: pendingAssistant });
+          const imgs = extractImagesFromContentBlocks(contentBlocks);
+          if (text || imgs.length) {
+            userTurns.push({ user: text, prior: pendingAssistant, images: imgs });
           }
         }
       } catch {}
     }
 
-    if (userTurns.length === 0) return { lastUser: null, priorAssistant: null };
+    if (userTurns.length === 0) return { lastUser: null, priorAssistant: null, images: [] };
 
     // Walk backwards for the last substantive prompt.
     for (let i = userTurns.length - 1; i >= 0; i--) {
       if (!isConfirmationPrompt(userTurns[i].user)) {
-        return { lastUser: userTurns[i].user, priorAssistant: userTurns[i].prior };
+        return { lastUser: userTurns[i].user, priorAssistant: userTurns[i].prior, images: userTurns[i].images };
       }
     }
     // All confirmations — fall back to the most recent.
     const last = userTurns[userTurns.length - 1];
-    return { lastUser: last.user, priorAssistant: last.prior };
+    return { lastUser: last.user, priorAssistant: last.prior, images: last.images };
   } catch {
-    return { lastUser: null, priorAssistant: null };
+    return { lastUser: null, priorAssistant: null, images: [] };
   }
 }
 
@@ -229,6 +244,7 @@ async function backfillFromTranscript(
     const lines = content.trim().split("\n").filter(Boolean);
 
     let firstUserPrompt: string | null = null;
+    let firstUserImages: ImageBlock[] = [];
     let turnCount = 0;
     const toolCalls: { tool: string; input: Record<string, unknown> }[] = [];
     const filesRead: string[] = [];
@@ -240,11 +256,13 @@ async function backfillFromTranscript(
 
         // Extract first user message as original intent
         if (msg.type === "user" && !firstUserPrompt) {
-          const textBlocks = (msg.message?.content ?? [])
+          const contentBlocks = msg.message?.content ?? [];
+          const textBlocks = contentBlocks
             .filter((b: any) => b.type === "text")
             .map((b: any) => b.text);
           if (textBlocks.length > 0) {
             firstUserPrompt = textBlocks.join("\n");
+            firstUserImages = extractImagesFromContentBlocks(contentBlocks);
           }
         }
 
@@ -291,21 +309,23 @@ async function backfillFromTranscript(
     // Prefer the *last* user prompt (combined with the prior assistant turn)
     // as the goal — backfill is only used when Dredd starts mid-session, and
     // the most recent exchange is what the agent is currently acting on.
-    const { lastUser, priorAssistant } = extractLastUserAndPriorAssistant(transcriptPath);
+    const { lastUser, priorAssistant, images: lastImages } = extractLastUserAndPriorAssistant(transcriptPath);
     const goalPrompt = lastUser ?? firstUserPrompt;
     if (!goalPrompt) return;
+    const goalImages = lastImages.length ? lastImages : firstUserImages;
     const contextualGoal = buildContextualIntent(goalPrompt, priorAssistant);
 
     console.log(
       `  [BACKFILL] Session ${sessionId.substring(0, 8)}: ` +
       `${turnCount} turns, ${toolCalls.length} tools, ` +
-      `${filesRead.length} reads, ${filesWritten.length} writes ` +
-      `from transcript`
+      `${filesRead.length} reads, ${filesWritten.length} writes` +
+      `${goalImages.length ? `, ${goalImages.length} image(s)` : ""}` +
+      ` from transcript`
     );
 
     // Register the most-recent intent (with prior assistant context)
-    await tracker.registerIntent(sessionId, goalPrompt);
-    await interceptor.registerGoal(contextualGoal);
+    await tracker.registerIntent(sessionId, goalPrompt, false, goalImages);
+    await interceptor.registerGoal(contextualGoal, goalImages);
     registeredSessions.add(sessionId);
 
     // Replay file operations into the tracker
@@ -357,18 +377,26 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   // Allow per-request mode override (e.g., SDK sends mode in body)
   const mode: TrustMode = body.mode ?? CONFIG.mode;
 
-  const result = await tracker.registerIntent(session_id, prompt, mode === "interactive");
+  // Extract images from the transcript for this user turn
+  const { priorAssistant, images: transcriptImages } = transcript_path
+    ? extractLastUserAndPriorAssistant(transcript_path)
+    : { priorAssistant: null, images: [] as ImageBlock[] };
+
+  const result = await tracker.registerIntent(session_id, prompt, mode === "interactive", transcriptImages);
 
   // Build a contextual goal: the user prompt combined with the assistant
   // response that immediately preceded it, so short replies retain meaning.
-  const { priorAssistant } = transcript_path
-    ? extractLastUserAndPriorAssistant(transcript_path)
-    : { priorAssistant: null };
   const contextualGoal = buildContextualIntent(prompt, priorAssistant);
+
+  if (transcriptImages.length) {
+    console.log(
+      `  [${session_id.substring(0, 8)}] [INTENT] ${transcriptImages.length} image(s) attached to intent`
+    );
+  }
 
   // Register goal with interceptor on first call per session
   if (result.isOriginal && !registeredSessions.has(session_id)) {
-    await interceptor.registerGoal(contextualGoal);
+    await interceptor.registerGoal(contextualGoal, transcriptImages);
     registeredSessions.add(session_id);
   }
 
@@ -389,7 +417,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
         `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: "${prompt.trim()}" is a confirmation — keeping previous goal`
       );
     } else {
-      await interceptor.registerGoal(contextualGoal);
+      await interceptor.registerGoal(contextualGoal, transcriptImages);
       console.log(
         `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: updated goal to "${prompt.substring(0, 60)}..." ` +
         `(prior assistant context: ${priorAssistant ? "yes" : "no"}, ` +

@@ -19,7 +19,7 @@
 #   S3_BUCKET         Results bucket         (default: cko-results)
 #   S3_PREFIX         S3 key prefix          (default: test3a)
 #   S3_REGION         Region of S3 bucket    (default: eu-west-1)
-#   AWS_REGION        Region for Bedrock     (default: eu-central-1)
+#   AWS_REGION        Region for Bedrock     (default: eu-west-2)
 #   TEST3A_RUN_ID     Unique run label       (default: ISO timestamp)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -44,7 +44,7 @@ PARALLEL="${PARALLEL_JOBS:-4}"
 S3_BUCKET="${S3_BUCKET:-cko-results}"
 S3_PREFIX="${S3_PREFIX:-test3a}"
 S3_REGION="${S3_REGION:-eu-west-1}"
-AWS_REGION="${AWS_REGION:-eu-central-1}"
+AWS_REGION="${AWS_REGION:-eu-west-2}"
 RUN_ID="${TEST3A_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 EMBEDDING_MODEL="amazon.titan-embed-text-v2:0"

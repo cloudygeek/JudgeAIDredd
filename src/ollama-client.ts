@@ -15,6 +15,8 @@ export interface EmbeddingResponse {
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
+  /** Base64-encoded images (Ollama vision models only) */
+  images?: string[];
 }
 
 export interface ChatResponse {

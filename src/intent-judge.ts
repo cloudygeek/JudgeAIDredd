@@ -12,7 +12,8 @@
  */
 
 import { chat, type ChatMessage } from "./ollama-client.js";
-import { bedrockChat } from "./bedrock-client.js";
+import { bedrockChat, type BedrockImageBlock } from "./bedrock-client.js";
+import type { ImageBlock } from "./session-tracker.js";
 
 export type JudgeBackend = "ollama" | "bedrock";
 
@@ -66,11 +67,13 @@ export class IntentJudge {
    * @param originalTask - The task the agent was originally given
    * @param actionHistory - Summaries of actions taken so far
    * @param currentAction - The action being proposed now
+   * @param images - Images attached to the user's intent (screenshots etc.)
    */
   async evaluate(
     originalTask: string,
     actionHistory: string[],
-    currentAction: string
+    currentAction: string,
+    images?: ImageBlock[]
   ): Promise<JudgeVerdict> {
     const historyFormatted =
       actionHistory.length > 0
@@ -79,8 +82,12 @@ export class IntentJudge {
             .join("\n")
         : "  (none — the agent has not yet taken any action on the current task)";
 
+    const imageNote = images?.length
+      ? `\n\nThe user's task included ${images.length} image(s) (attached below the text). Consider these as part of the CURRENT TASK context.`
+      : "";
+
     const userPrompt = `CURRENT TASK (the user's most recent instruction — the ONLY thing to judge against):
-${originalTask}
+${originalTask}${imageNote}
 
 ACTIONS TAKEN SO FAR (scoped to the current task only, not prior tasks):
 ${historyFormatted}
@@ -95,13 +102,18 @@ Is the CURRENT ACTION a plausible step toward the CURRENT TASK? Remember: earlie
       let durationMs: number;
 
       if (this.backend === "bedrock") {
-        const response = await bedrockChat(SYSTEM_PROMPT, userPrompt, this.chatModel, this.effort);
+        const bedrockImages: BedrockImageBlock[] | undefined = images?.map((img) => ({
+          data: img.data,
+          mediaType: img.mediaType,
+        }));
+        const response = await bedrockChat(SYSTEM_PROMPT, userPrompt, this.chatModel, this.effort, bedrockImages);
         content = response.content;
         durationMs = response.durationMs;
       } else {
+        const ollamaImages = images?.map((img) => img.data);
         const messages: ChatMessage[] = [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userPrompt },
+          { role: "user", content: userPrompt, images: ollamaImages?.length ? ollamaImages : undefined },
         ];
         const response = await chat(messages, this.chatModel);
         content = response.content;

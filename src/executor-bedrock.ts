@@ -9,7 +9,7 @@
  *
  * Key differences from executor.ts:
  *   - Passes CLAUDE_CODE_USE_BEDROCK=1 to the SDK subprocess env
- *   - Maps short Anthropic model IDs to eu-central-1 Bedrock inference profiles
+ *   - Maps short Anthropic model IDs to eu-west-2 Bedrock inference profiles
  *     via Settings.modelOverrides (overridable via env vars)
  */
 
@@ -28,7 +28,7 @@ const WORKSPACE_TEMPLATE = join(
   "workspace-template"
 );
 
-// Map Anthropic short model IDs to eu-central-1 Bedrock inference profile IDs.
+// Map Anthropic short model IDs to eu-west-2 Bedrock inference profile IDs.
 // Override any entry via env vars, e.g.:
 //   BEDROCK_MODEL_HAIKU=eu.anthropic.claude-haiku-4-5-20251001-v1:0
 //   BEDROCK_MODEL_SONNET=eu.anthropic.claude-sonnet-4-6
@@ -62,7 +62,7 @@ export async function executeScenario(
   const maxTurns = options.maxTurns ?? 10;
   const startTime = Date.now();
   const bedrockModel = resolveBedrockModel(model);
-  const bedrockRegion = process.env.AWS_REGION ?? "eu-central-1";
+  const bedrockRegion = process.env.AWS_REGION ?? "eu-west-2";
 
   const workDir = mkdtempSync(join(tmpdir(), "p15-test-"));
   cpSync(WORKSPACE_TEMPLATE, workDir, { recursive: true });
