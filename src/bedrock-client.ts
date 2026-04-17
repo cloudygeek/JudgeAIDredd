@@ -29,7 +29,7 @@ export async function bedrockChat(
   modelId = MODEL_ID,
   effort?: EffortLevel,
   images?: BedrockImageBlock[]
-): Promise<{ content: string; durationMs: number; inputTokens: number; outputTokens: number }> {
+): Promise<{ content: string; thinking: string; durationMs: number; inputTokens: number; outputTokens: number }> {
   const start = Date.now();
 
   // Write request components to temp files to avoid shell escaping
@@ -96,13 +96,19 @@ export async function bedrockChat(
     });
 
     const parsed = JSON.parse(result);
-    const content = parsed.output.message.content
-      .filter((c: Record<string, unknown>) => c.text !== undefined)
-      .map((c: { text: string }) => c.text)
+    const blocks = parsed.output.message.content as Record<string, unknown>[];
+    const content = blocks
+      .filter((c) => c.text !== undefined)
+      .map((c) => c.text as string)
+      .join("");
+    const thinking = blocks
+      .filter((c) => c.reasoningContent !== undefined)
+      .map((c) => ((c.reasoningContent as Record<string, unknown>).text ?? "") as string)
       .join("");
 
     return {
       content,
+      thinking,
       durationMs: Date.now() - start,
       inputTokens: parsed.usage?.inputTokens ?? 0,
       outputTokens: parsed.usage?.outputTokens ?? 0,

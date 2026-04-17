@@ -9,8 +9,9 @@ set -euo pipefail
 #
 # Env overrides:
 #   TEST8_MODELS    comma-separated model filters (default: all)
-#   TEST8_EFFORT  effort levels (default: none,medium,high)
-#   S3_BUCKET       results bucket (default: judge-ai-dredd-results)
+#   TEST8_EFFORT    effort levels (default: default,low,medium,high,max)
+#   TEST8_REPS      repetitions per case (default: 1)
+#   S3_BUCKET       results bucket (default: cko-results)
 #   S3_PREFIX       results prefix (default: test8)
 # ============================================================================
 
@@ -20,10 +21,14 @@ exec > >(tee -a "${LOG_FILE}") 2>&1
 S3_BUCKET="${S3_BUCKET:-cko-results}"
 S3_PREFIX="${S3_PREFIX:-test8}"
 EFFORT_LEVELS="${TEST8_EFFORT:-default,low,medium,high,max}"
+REPETITIONS="${TEST8_REPS:-1}"
+MODEL_FILTERS="${TEST8_MODELS:-}"
 
 echo "============================================================"
 echo " Test 8: Adversarial Judge Robustness"
 echo " Effort levels: ${EFFORT_LEVELS}"
+echo " Repetitions:   ${REPETITIONS}"
+echo " Models:        ${MODEL_FILTERS:-all}"
 echo " S3: s3://${S3_BUCKET}/${S3_PREFIX}/"
 echo "============================================================"
 
@@ -52,40 +57,52 @@ aws s3 rm "s3://${S3_BUCKET}/${S3_TEST_KEY}" --region "${AWS_REGION:-eu-west-2}"
 # ── Run ────────────────────────────────────────────────────────────────────
 IFS=',' read -ra EFFORTS <<< "${EFFORT_LEVELS}"
 
+# If MODEL_FILTERS is set, split into an array; otherwise use a single empty entry (= all models)
+if [ -n "${MODEL_FILTERS}" ]; then
+  IFS=',' read -ra MODELS <<< "${MODEL_FILTERS}"
+else
+  MODELS=("")
+fi
+
 COMBO=0
-TOTAL=${#EFFORTS[@]}
-echo ">>> ${TOTAL} effort levels queued"
+TOTAL=$(( ${#EFFORTS[@]} * ${#MODELS[@]} ))
+echo ">>> ${TOTAL} combinations queued (${#MODELS[@]} model filter(s) × ${#EFFORTS[@]} effort levels, ${REPETITIONS} reps each)"
 
-for effort in "${EFFORTS[@]}"; do
-  COMBO=$((COMBO + 1))
-  echo ""
-  echo "============================================================"
-  echo " [${COMBO}/${TOTAL}] Effort: ${effort}"
-  echo "============================================================"
+for model in "${MODELS[@]}"; do
+  for effort in "${EFFORTS[@]}"; do
+    COMBO=$((COMBO + 1))
+    echo ""
+    echo "============================================================"
+    echo " [${COMBO}/${TOTAL}] Model: ${model:-all}  Effort: ${effort}  Reps: ${REPETITIONS}"
+    echo "============================================================"
 
-  START_TIME=$(date +%s)
+    START_TIME=$(date +%s)
 
-  EFFORT_FLAG=""
-  if [ "${effort}" != "default" ]; then
-    EFFORT_FLAG="--effort ${effort}"
-  fi
+    CMD_ARGS="--repetitions ${REPETITIONS}"
+    if [ -n "${model}" ]; then
+      CMD_ARGS="${CMD_ARGS} --model ${model}"
+    fi
+    if [ "${effort}" != "default" ]; then
+      CMD_ARGS="${CMD_ARGS} --effort ${effort}"
+    fi
 
-  npx tsx src/test-adversarial-judge.ts ${EFFORT_FLAG} || {
-    echo "  FAILED: effort=${effort}"
-    continue
-  }
+    npx tsx src/test-adversarial-judge.ts ${CMD_ARGS} || {
+      echo "  FAILED: model=${model:-all} effort=${effort}"
+      continue
+    }
 
-  END_TIME=$(date +%s)
-  ELAPSED=$((END_TIME - START_TIME))
-  echo "  [${COMBO}/${TOTAL}] DONE in ${ELAPSED}s"
+    END_TIME=$(date +%s)
+    ELAPSED=$((END_TIME - START_TIME))
+    echo "  [${COMBO}/${TOTAL}] DONE in ${ELAPSED}s"
 
-  # Upload results
-  echo "  Uploading results to S3..."
-  aws s3 sync results/ "s3://${S3_BUCKET}/${S3_PREFIX}/" \
-    --exclude "*" --include "adversarial-judge-*" \
-    --region "${AWS_REGION:-eu-west-2}" 2>/dev/null \
-    && echo "  S3 sync OK" \
-    || echo "  WARN: S3 sync failed"
+    # Upload results after each combo
+    echo "  Uploading results to S3..."
+    aws s3 sync results/ "s3://${S3_BUCKET}/${S3_PREFIX}/" \
+      --exclude "*" --include "adversarial-judge-*" \
+      --region "${AWS_REGION:-eu-west-2}" 2>/dev/null \
+      && echo "  S3 sync OK" \
+      || echo "  WARN: S3 sync failed"
+  done
 done
 
 # ── Final upload ───────────────────────────────────────────────────────────

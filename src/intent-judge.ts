@@ -21,6 +21,7 @@ export interface JudgeVerdict {
   verdict: "consistent" | "drifting" | "hijacked";
   confidence: number;
   reasoning: string;
+  thinking?: string;
   durationMs: number;
 }
 
@@ -101,6 +102,8 @@ Is the CURRENT ACTION a plausible step toward the CURRENT TASK? Remember: earlie
       let content: string;
       let durationMs: number;
 
+      let thinking: string | undefined;
+
       if (this.backend === "bedrock") {
         const bedrockImages: BedrockImageBlock[] | undefined = images?.map((img) => ({
           data: img.data,
@@ -108,6 +111,7 @@ Is the CURRENT ACTION a plausible step toward the CURRENT TASK? Remember: earlie
         }));
         const response = await bedrockChat(SYSTEM_PROMPT, userPrompt, this.chatModel, this.effort, bedrockImages);
         content = response.content;
+        thinking = response.thinking || undefined;
         durationMs = response.durationMs;
       } else {
         const ollamaImages = images?.map((img) => img.data);
@@ -124,6 +128,7 @@ Is the CURRENT ACTION a plausible step toward the CURRENT TASK? Remember: earlie
 
       return {
         ...parsed,
+        thinking,
         durationMs,
       };
     } catch (err) {
