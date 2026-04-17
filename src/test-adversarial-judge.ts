@@ -25,6 +25,7 @@ import { parseArgs } from "node:util";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { IntentJudge, type EffortLevel } from "./intent-judge.js";
+import { getBuildInfo } from "./build-info.js";
 
 // ============================================================================
 // Models
@@ -345,6 +346,7 @@ function writeResults(run: ModelRun): void {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `adversarial-judge-${safeLabel}${effortSuffix}-${ts}.json`);
   writeFileSync(path, JSON.stringify({
+    build: getBuildInfo(),
     model: { id: run.modelId, label: run.label },
     effort: run.effort ?? null,
     timestamp: new Date().toISOString(),

@@ -25,6 +25,7 @@ import { parseArgs } from "node:util";
 import { chat } from "./ollama-client.js";
 import { bedrockChat, checkBedrock } from "./bedrock-client.js";
 import { evaluateToolPolicy } from "./tool-policy.js";
+import { getBuildInfo } from "./build-info.js";
 
 const { values } = parseArgs({
   options: {
@@ -400,7 +401,7 @@ async function main() {
   // Write recommendations to file
   const outFile = join(LOG_DIR, `policy-review-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
   const { writeFileSync } = await import("node:fs");
-  writeFileSync(outFile, JSON.stringify({ timestamp: new Date().toISOString(), patterns: patterns.length, recommendations }, null, 2));
+  writeFileSync(outFile, JSON.stringify({ build: getBuildInfo(), timestamp: new Date().toISOString(), patterns: patterns.length, recommendations }, null, 2));
   console.log(`\n  Recommendations saved to ${outFile}`);
   console.log("█".repeat(60));
 }

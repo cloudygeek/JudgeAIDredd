@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { executeScenario } from "./executor.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { legitimateTasks, getLegitimateScenarios } from "../scenarios/legitimate-tasks.js";
+import { getBuildInfo } from "./build-info.js";
 import type { IntentVerdict } from "./types.js";
 
 const { values } = parseArgs({
@@ -185,6 +186,7 @@ async function main() {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const outFile = join("results", `fpr-${timestamp}.json`);
   writeFileSync(outFile, JSON.stringify({
+    build: getBuildInfo(),
     timestamp: new Date().toISOString(),
     config: { model: MODEL, judgeModel: JUDGE_MODEL, embeddingModel: EMBED_MODEL, reps: REPS },
     summary: {

@@ -24,6 +24,7 @@
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import { embedAny, cosineSimilarity } from "./ollama-client.js";
+import { getBuildInfo } from "./build-info.js";
 
 // ============================================================================
 // Embedding models and threshold grid
@@ -313,6 +314,7 @@ async function main() {
     const safeModel = model.replace(/[^a-z0-9]/gi, "-");
     const outPath = `results/threshold-sweep-${safeModel}-${timestamp}.json`;
     writeFileSync(outPath, JSON.stringify({
+      build: getBuildInfo(),
       model,
       timestamp,
       cases: CASES.length,

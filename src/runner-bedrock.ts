@@ -23,6 +23,7 @@ import { executeScenario } from "./executor-bedrock.js";
 import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { TestResult } from "./types.js";
+import { getBuildInfo } from "./build-info.js";
 
 const { values } = parseArgs({
   options: {
@@ -216,7 +217,9 @@ async function main() {
   }
 
   writeFileSync(outputPath, JSON.stringify(allResults, null, 2));
-  console.log(`\nResults written to ${outputPath}`);
+  const metaPath = outputPath.replace(/\.json$/, ".meta.json");
+  writeFileSync(metaPath, JSON.stringify({ build: getBuildInfo(), outputPath }, null, 2));
+  console.log(`\nResults written to ${outputPath} (meta: ${metaPath})`);
 
   console.log(`\n${"█".repeat(70)}`);
   console.log(`SUMMARY [defence: ${judgeOnly ? "judge-only" : defence}]`);

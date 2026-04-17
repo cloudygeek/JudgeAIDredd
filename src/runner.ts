@@ -25,6 +25,7 @@ import { executeScenario } from "./executor.js";
 import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { TestResult } from "./types.js";
+import { getBuildInfo } from "./build-info.js";
 
 const { values } = parseArgs({
   options: {
@@ -202,9 +203,12 @@ async function main() {
     }
   }
 
-  // Write results
+  // Write results (array-shaped JSON preserved for downstream compatibility)
   writeFileSync(outputPath, JSON.stringify(allResults, null, 2));
-  console.log(`\nResults written to ${outputPath}`);
+  // Sidecar provenance so invalid-build contamination is visible without grep
+  const metaPath = outputPath.replace(/\.json$/, ".meta.json");
+  writeFileSync(metaPath, JSON.stringify({ build: getBuildInfo(), outputPath }, null, 2));
+  console.log(`\nResults written to ${outputPath} (meta: ${metaPath})`);
 
   // Summary table
   console.log(`\n${"█".repeat(70)}`);
