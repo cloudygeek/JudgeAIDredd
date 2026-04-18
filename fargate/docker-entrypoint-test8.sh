@@ -78,15 +78,15 @@ for model in "${MODELS[@]}"; do
 
     START_TIME=$(date +%s)
 
-    CMD_ARGS="--repetitions ${REPETITIONS}"
+    CMD_ARGS=(--repetitions "${REPETITIONS}")
     if [ -n "${model}" ]; then
-      CMD_ARGS="${CMD_ARGS} --model ${model}"
+      CMD_ARGS+=(--model "${model}")
     fi
     if [ "${effort}" != "default" ]; then
-      CMD_ARGS="${CMD_ARGS} --effort ${effort}"
+      CMD_ARGS+=(--effort "${effort}")
     fi
 
-    npx tsx src/test-adversarial-judge.ts ${CMD_ARGS} || {
+    npx tsx src/test-adversarial-judge.ts "${CMD_ARGS[@]}" || {
       echo "  FAILED: model=${model:-all} effort=${effort}"
       continue
     }
