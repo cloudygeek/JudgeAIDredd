@@ -21,7 +21,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { embedAny, cosineSimilarity, isBedrockModel } from "./ollama-client.js";
 import { IntentJudge, type JudgeBackend, type EffortLevel } from "./intent-judge.js";
-import { getBuildInfo } from "./build-info.js";
+import { getBuildInfo, makeRunInvocation } from "./build-info.js";
 
 // ============================================================================
 // CLI args
@@ -471,6 +471,7 @@ async function main() {
       const outPath = `results/pipeline-e2e-${cfg.name}${effortSuffix}-${timestamp}.json`;
       writeFileSync(outPath, JSON.stringify({
         build: getBuildInfo(),
+        invocation: makeRunInvocation(cfg.judgeModel),
         config: cfg,
         judgeEffort: effort ?? null,
         timestamp,

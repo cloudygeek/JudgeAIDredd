@@ -22,6 +22,15 @@ export interface BuildInfo {
   sdkVersion: string;
   /** ISO timestamp at capture */
   capturedAt: string;
+  /** AWS region used for Bedrock calls */
+  bedrockRegion: string;
+}
+
+export interface RunInvocation {
+  /** Full Bedrock model ID used for this run */
+  modelId: string;
+  /** ISO timestamp of the first model call in the run */
+  modelInvokedAt: string;
 }
 
 let cached: BuildInfo | null = null;
@@ -55,6 +64,11 @@ export function getBuildInfo(): BuildInfo {
     gitDirty,
     sdkVersion,
     capturedAt: new Date().toISOString(),
+    bedrockRegion: process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "unknown",
   };
   return cached;
+}
+
+export function makeRunInvocation(modelId: string): RunInvocation {
+  return { modelId, modelInvokedAt: new Date().toISOString() };
 }
