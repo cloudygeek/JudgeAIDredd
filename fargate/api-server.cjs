@@ -30,6 +30,7 @@ const ENTRYPOINTS = {
   "8": "/docker-entrypoint-test8.sh",
   "9": "/docker-entrypoint-test9.sh",
   "9a": "/docker-entrypoint-test9a.sh",
+  "10": "/docker-entrypoint-test10.sh",
 };
 const DEFAULT_TEST = process.env.TEST_NUM || "7";
 const BUILD_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
@@ -131,6 +132,13 @@ function startRun(params) {
   if (params.effort)    env.TEST8_EFFORT    = String(params.effort);
   if (params.reps)      env.TEST8_REPS      = String(params.reps);
   if (params.models)    env.TEST8_MODELS    = String(params.models);
+
+  // Test 10/11 env vars
+  if (params.defences)      env.TEST10_DEFENCES     = String(params.defences);
+  if (params.model)         env.TEST10_MODEL        = String(params.model);
+  if (params.effort)        env.TEST10_EFFORT       = String(params.effort);
+  if (params.judgeEffort)   env.TEST10_JUDGE_EFFORT = String(params.judgeEffort);
+  if (params.reps)          env.TEST10_REPS         = String(params.reps);
 
   // Shared env vars
   if (params.s3Bucket)  env.S3_BUCKET       = String(params.s3Bucket);
