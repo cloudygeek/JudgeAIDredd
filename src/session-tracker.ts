@@ -124,6 +124,8 @@ export interface SessionState {
   turnMetrics: TurnMetrics[];
   /** Working directory of the Claude instance — defines the sandbox boundary */
   projectRoot: string | null;
+  /** CLAUDE.md scan results (if suspicious patterns found on session start) */
+  claudeMdScan: import("./claudemd-scanner.js").ClaudeMdScanResult | null;
 }
 
 export class SessionTracker {
@@ -152,6 +154,7 @@ export class SessionTracker {
         envVars: new Map(),
         turnMetrics: [],
         projectRoot: null,
+        claudeMdScan: null,
       });
     }
     return this.sessions.get(sessionId)!;
@@ -171,6 +174,15 @@ export class SessionTracker {
 
   getProjectRoot(sessionId: string): string | null {
     return this.sessions.get(sessionId)?.projectRoot ?? null;
+  }
+
+  recordClaudeMdScan(sessionId: string, scan: import("./claudemd-scanner.js").ClaudeMdScanResult): void {
+    const session = this.getSession(sessionId);
+    session.claudeMdScan = scan;
+  }
+
+  getClaudeMdScan(sessionId: string): import("./claudemd-scanner.js").ClaudeMdScanResult | null {
+    return this.sessions.get(sessionId)?.claudeMdScan ?? null;
   }
 
   /**

@@ -28,6 +28,7 @@ import { inspect } from "node:util";
 import { SessionTracker, type ImageBlock } from "./session-tracker.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
 import { exportPolicies } from "./tool-policy.js";
+import { scanClaudeMd, type ClaudeMdScanResult } from "./claudemd-scanner.js";
 import { checkOllama } from "./ollama-client.js";
 
 const { values } = parseArgs({
@@ -367,6 +368,18 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   // setProjectRoot ignores subsequent calls so the first cwd wins.
   if (cwd) {
     tracker.setProjectRoot(session_id, cwd);
+
+    // Scan CLAUDE.md on first session contact for injection patterns
+    if (!registeredSessions.has(session_id)) {
+      const scan = scanClaudeMd(cwd);
+      if (scan.findings.length > 0) {
+        console.warn(`  [${session_id.substring(0, 8)}] [CLAUDEMD-SCAN] ${scan.summary}`);
+        for (const f of scan.findings) {
+          console.warn(`    ${f.severity.toUpperCase()} ${f.pattern} (${f.file}:${f.line}): ${f.snippet}`);
+        }
+        tracker.recordClaudeMdScan(session_id, scan);
+      }
+    }
   }
 
   // If this is a session we haven't seen and there's a transcript, backfill
