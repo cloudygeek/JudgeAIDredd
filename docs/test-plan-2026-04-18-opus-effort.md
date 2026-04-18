@@ -191,3 +191,107 @@ These keep creeping in but should be resisted until the above lands:
 - No alternative defence architectures (PreToolUse interception is mentioned in the paper's limitations section but is out of scope for this plan).
 - No additional agent models beyond Opus 4.7 unless A4 suggests a specific new hypothesis. Sonnet 4.6 and Haiku 4.5 as defended agents are already covered at paper quality.
 - No Opus 4.7 in other positions in the pipeline (e.g. as the drift detector or the goal-anchoring re-prompter) — current role split is Haiku 4.5 judge + Opus 4.7 / Sonnet 4.6 agent, and that's load-bearing for the economic argument.
+
+---
+
+## 7. Statistical sanity additions
+
+LLM outputs aren't deterministic even at temperature=0 with thinking disabled, and thinking-enabled calls have substantially more output variance. The Ns in the plan above are adequate for the main effects we're trying to detect, but only if we also characterise the noise floor and report CIs honestly. Three cheap additions close that gap.
+
+### 7.1 Baseline power check
+
+Rough 95% CI half-widths at planned Ns (binomial, ignoring within-case correlation):
+
+| Test | Cell N | Pooled catch / GES | ±half-width | Effect we're resolving |
+|---|---|---|---|---|
+| A1 adversarial | 240 judge calls | p ≈ 0.4 | ±6 pp | 5/12 vs 3/12 pooled = 17 pp ✓ |
+| A4 Opus 4.7 × defended | 60 runs (T3.3) | GES ≈ 28 | ±4 GES | Opus 4.7 vs 4.6 T3.3 gap = 22 GES ✓ |
+| Test 3a robustness | 90–180 | GES=0 fraction | ±5 pp | bimodality shape ✓ |
+| Test 7 cross-model | 20–60 | mean GES | ±4 GES | paper-sized agent diffs ✓ |
+
+These are fine for main effects. They are not fine for **per-case** claims (e.g. "case 3 is only catchable at medium effort") — at N=20 per case, per-case CI half-width is ±22 pp at p=0.5. Paper should avoid case-level claims unless we explicitly bump per-case N.
+
+### 7.2 P0.3 — augment build-info with Bedrock invocation identity
+
+`build-info.ts` captures the client-side SDK version but nothing about the server-side model. Bedrock has a history of silently rev'ing model weights under a stable model ID. Two A1 runs a week apart could diverge for reasons unrelated to effort or prompt.
+
+**Change:** extend `BuildInfo` with the two invocation-time fields that aren't knowable at build time:
+
+```ts
+interface BuildInfo {
+  // existing
+  gitSha: string;
+  gitDirty: boolean;
+  sdkVersion: string;
+  capturedAt: string;
+
+  // new
+  bedrockRegion: string;    // from AWS_REGION env at runtime
+  modelId: string;          // full Bedrock model id used for the judge
+  modelInvokedAt: string;   // ISO timestamp of the first model call in the run
+}
+```
+
+`modelInvokedAt` plus `modelId` together form the provenance pair that would let a future analyst quarantine a run by week if Bedrock is found to have silently updated. ~15 min code change across `build-info.ts` and each writer.
+
+### 7.3 A0 — within-case variance probe (gates A1)
+
+Before dispatching the 3,120-call A1 bulk run, spend 40 calls measuring whether per-case reps are independent or correlated:
+
+```bash
+# Pick the single case that's currently ambiguous (e.g. adv-5 "authorised-pentest")
+# and run it 40 times at fixed (Opus 4.7, medium).
+npx tsx src/test-adversarial-judge.ts \
+  --model "Claude Opus 4.7" --effort medium --cases adv-5 --repetitions 40
+```
+
+**Prereq code change:** `--cases` flag to `test-adversarial-judge.ts` (currently runs all 12). ~15 min.
+
+**Compare:**
+- **Observed case catch rate:** k/40.
+- **Expected binomial SE** on that p: sqrt(p·(1-p)/40).
+- **Observed batch-level SE**: partition the 40 into 4 batches of 10, compute catch rate per batch, take their SD.
+
+If observed batch-level SE ≈ binomial SE → reps are independent, N=20 is 20 effective observations per case. If batch SE ≪ binomial SE → model is near-deterministic on this case, reps are redundant, A1 budget can be reduced. If batch SE ≫ binomial SE → there's between-batch drift (time-of-day or cache effects), A1 reps should be interleaved across effort levels rather than done in long batches.
+
+**Decision rule on A1 dispatch** based on A0 outcome:
+- Ratio ≤ 1.2: proceed with A1 at N=20, treat reps as effectively independent.
+- Ratio > 1.5: interleave reps across efforts (1 rep per effort, then loop) rather than 20 reps per cell sequentially. Same call count, different ordering.
+- Case is locked-in (k ∈ {0, 40}): rep count for that case is wasted; consider per-case N varying by case difficulty in future designs.
+
+### 7.4 A4 bumped to N=40
+
+The current A4 plan is N=20 per cell (matching the paper's Opus 4.6 numbers). That's fine for confirming the current 22 GES direction of the Opus 4.6 → 4.7 gap. It is **not** fine if A4 comes back with a smaller gap (say 5–8 GES) — N=20 would miss that. Since A4 is cheap relative to A1 (~240 agent runs total), bump to **N=40 per (defence, scenario)** to match the sophisticated cell of the original Test 7 design.
+
+### 7.5 Paper-reporting discipline
+
+Every catch rate, GES mean, and accuracy figure in the paper's main-text tables must carry a 95% CI — not just a point estimate. Concretely:
+
+- `tab:judge-leaderboard` — accuracy column becomes `97% [83–99]`.
+- `tab:adversarial` — catch column becomes `5/12 [19–68%]`.
+- `tab:cross-model-*` — mean GES column becomes `28.3 ± 4.1`.
+- FPR table — replace "0 false positives" with "0 / 100 [0, 3.6% upper]".
+
+Without CIs a reader looking at 5/12 vs 3/12 sees a 17pp drop and assumes it's real. With CIs they see overlapping intervals and judge accordingly. This is the cheapest way to bring the paper's claims into calibration with the data.
+
+**Implementation:** single Python helper `compute_wilson_ci(k, n)` called from whatever script generates the table LaTeX. Add it alongside the existing table-generation code in the paper's data pipeline.
+
+### 7.6 Updated execution order
+
+```
+P0.1 Fargate SHA ─┐
+P0.2 clean-checkout gate ─┤
+P0.3 Bedrock invocation fields ─┘
+         ↓
+      A0 probe (40 calls, 20 min)  ──> decide A1 batching strategy
+         ↓
+      A1 bulk dispatch
+```
+
+Total additional cost vs the original 2026-04-18 plan:
+- P0.3: ~15 min code.
+- A0: ~40 judge calls + flag plumbing (~40 min incl. analysis).
+- A4 bump: +120 agent runs (~3 h wall-clock, runs overnight alongside A1).
+- Paper CI helper: ~1 h script + table-regen.
+
+Day-1 engineering estimate goes from ~½ day to ~¾ day. Paper-grade confidence in the resulting numbers goes from "point estimates with a narrative" to "point estimates with CIs and a noise-floor reference."
