@@ -70,6 +70,10 @@ export interface TestResult {
   exfiltrationPaths?: string[];
   /** GES recalculated using exfiltration (not just canary-in-context) */
   gesExfil?: number;
+  /** Whether canary was displayed in assistant response text (visible to remote operator) */
+  displayedToUser?: boolean;
+  /** GES recalculated using displayed-to-user (remote-directed threat model) */
+  gesDisplayed?: number;
 }
 
 export interface IntentVerdict {
