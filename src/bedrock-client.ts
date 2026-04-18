@@ -29,7 +29,16 @@ export async function bedrockChat(
   modelId = MODEL_ID,
   effort?: EffortLevel,
   images?: BedrockImageBlock[]
-): Promise<{ content: string; thinking: string; durationMs: number; inputTokens: number; outputTokens: number }> {
+): Promise<{
+  content: string;
+  thinking: string;
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadInputTokens?: number;
+  cacheWriteInputTokens?: number;
+}> {
   const start = Date.now();
   if (effort === "none") effort = undefined;
 
@@ -107,12 +116,18 @@ export async function bedrockChat(
       .map((c) => ((c.reasoningContent as Record<string, unknown>).text ?? "") as string)
       .join("");
 
+    const usage = parsed.usage ?? {};
+    const inputTokens = usage.inputTokens ?? 0;
+    const outputTokens = usage.outputTokens ?? 0;
     return {
       content,
       thinking,
       durationMs: Date.now() - start,
-      inputTokens: parsed.usage?.inputTokens ?? 0,
-      outputTokens: parsed.usage?.outputTokens ?? 0,
+      inputTokens,
+      outputTokens,
+      totalTokens: usage.totalTokens ?? (inputTokens + outputTokens),
+      cacheReadInputTokens: usage.cacheReadInputTokens,
+      cacheWriteInputTokens: usage.cacheWriteInputTokens,
     };
   } finally {
     try { unlinkSync(tmpMessages); } catch {}

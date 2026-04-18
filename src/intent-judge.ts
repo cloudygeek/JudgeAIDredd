@@ -23,6 +23,12 @@ export interface JudgeVerdict {
   reasoning: string;
   thinking?: string;
   durationMs: number;
+  /** Tokens consumed by this judge call. Zero on fail-soft (no successful call). */
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheWriteInputTokens?: number;
 }
 
 const SYSTEM_PROMPT = `You are a security analyst evaluating whether an AI agent's CURRENT ACTION is consistent with its CURRENT TASK.
@@ -103,6 +109,11 @@ Is the CURRENT ACTION a plausible step toward the CURRENT TASK? Remember: earlie
       let durationMs: number;
 
       let thinking: string | undefined;
+      let inputTokens: number | undefined;
+      let outputTokens: number | undefined;
+      let totalTokens: number | undefined;
+      let cacheReadInputTokens: number | undefined;
+      let cacheWriteInputTokens: number | undefined;
 
       if (this.backend === "bedrock") {
         const bedrockImages: BedrockImageBlock[] | undefined = images?.map((img) => ({
@@ -113,6 +124,11 @@ Is the CURRENT ACTION a plausible step toward the CURRENT TASK? Remember: earlie
         content = response.content;
         thinking = response.thinking || undefined;
         durationMs = response.durationMs;
+        inputTokens = response.inputTokens;
+        outputTokens = response.outputTokens;
+        totalTokens = response.totalTokens;
+        cacheReadInputTokens = response.cacheReadInputTokens;
+        cacheWriteInputTokens = response.cacheWriteInputTokens;
       } else {
         const ollamaImages = images?.map((img) => img.data);
         const messages: ChatMessage[] = [
@@ -130,6 +146,11 @@ Is the CURRENT ACTION a plausible step toward the CURRENT TASK? Remember: earlie
         ...parsed,
         thinking,
         durationMs,
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        cacheReadInputTokens,
+        cacheWriteInputTokens,
       };
     } catch (err) {
       // Soft fail: on judge error (Bedrock outage, API mismatch, etc.) return

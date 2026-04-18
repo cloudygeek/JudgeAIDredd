@@ -167,6 +167,9 @@ interface RepResult {
   thinking?: string;
   durationMs: number;
   caught: boolean;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
 }
 
 interface CaseResult {
@@ -184,6 +187,13 @@ interface CaseResult {
   catchRate?: number;
   wilsonLo?: number;
   wilsonHi?: number;
+  /** Per-case token totals summed across reps. Useful for token-vs-catch Pareto analysis. */
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  meanInputTokens?: number;
+  meanOutputTokens?: number;
+  meanTotalTokens?: number;
 }
 
 interface ModelRun {
@@ -194,6 +204,13 @@ interface ModelRun {
   results: CaseResult[];
   totalMs: number;
   error?: string;
+  /** Run-level token totals summed across every rep of every case. */
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  totalTokens?: number;
+  meanInputTokensPerCall?: number;
+  meanOutputTokensPerCall?: number;
+  meanTotalTokensPerCall?: number;
 }
 
 // ============================================================================
@@ -227,6 +244,9 @@ async function runModel(modelId: string, label: string, effort?: EffortLevel, re
           thinking: v.thinking,
           durationMs: v.durationMs,
           caught: v.verdict === "hijacked",
+          inputTokens: v.inputTokens,
+          outputTokens: v.outputTokens,
+          totalTokens: v.totalTokens,
         });
         if (repetitions > 1 && (rep + 1) % 5 === 0) {
           const soFar = reps.filter(r => r.caught).length;
@@ -248,6 +268,10 @@ async function runModel(modelId: string, label: string, effort?: EffortLevel, re
     const caughtCount = reps.filter(r => r.caught).length;
     const lastRep = reps[reps.length - 1];
     const ci = wilsonCI(caughtCount, reps.length);
+    const nInputTokens = reps.reduce((s, r) => s + (r.inputTokens ?? 0), 0);
+    const nOutputTokens = reps.reduce((s, r) => s + (r.outputTokens ?? 0), 0);
+    const nTotalTokens = reps.reduce((s, r) => s + (r.totalTokens ?? 0), 0);
+    const repsWithTokens = reps.filter(r => (r.totalTokens ?? 0) > 0).length || 1;
 
     results.push({
       caseId: c.id,
@@ -264,10 +288,34 @@ async function runModel(modelId: string, label: string, effort?: EffortLevel, re
       catchRate: repetitions > 1 ? caughtCount / reps.length : undefined,
       wilsonLo: repetitions > 1 ? ci.lo : undefined,
       wilsonHi: repetitions > 1 ? ci.hi : undefined,
+      inputTokens: nInputTokens || undefined,
+      outputTokens: nOutputTokens || undefined,
+      totalTokens: nTotalTokens || undefined,
+      meanInputTokens: nInputTokens ? nInputTokens / repsWithTokens : undefined,
+      meanOutputTokens: nOutputTokens ? nOutputTokens / repsWithTokens : undefined,
+      meanTotalTokens: nTotalTokens ? nTotalTokens / repsWithTokens : undefined,
     });
   }
 
-  return { modelId, label, effort, repetitions, results, totalMs: Date.now() - start };
+  const totalInputTokens = results.reduce((s, r) => s + (r.inputTokens ?? 0), 0);
+  const totalOutputTokens = results.reduce((s, r) => s + (r.outputTokens ?? 0), 0);
+  const totalTokens = totalInputTokens + totalOutputTokens;
+  const totalCalls = results.reduce((s, r) => s + (r.reps?.length ?? 1), 0);
+
+  return {
+    modelId,
+    label,
+    effort,
+    repetitions,
+    results,
+    totalMs: Date.now() - start,
+    totalInputTokens: totalInputTokens || undefined,
+    totalOutputTokens: totalOutputTokens || undefined,
+    totalTokens: totalTokens || undefined,
+    meanInputTokensPerCall: totalInputTokens ? totalInputTokens / totalCalls : undefined,
+    meanOutputTokensPerCall: totalOutputTokens ? totalOutputTokens / totalCalls : undefined,
+    meanTotalTokensPerCall: totalTokens ? totalTokens / totalCalls : undefined,
+  };
 }
 
 // ============================================================================
@@ -450,6 +498,14 @@ function writeResults(run: ModelRun): void {
     total: totalEvals,
     catchRate: totalEvals > 0 ? totalCaught / totalEvals : null,
     wilsonCI95: overallCI ? { lo: overallCI.lo, hi: overallCI.hi } : null,
+    tokens: {
+      totalInput: run.totalInputTokens ?? null,
+      totalOutput: run.totalOutputTokens ?? null,
+      total: run.totalTokens ?? null,
+      meanInputPerCall: run.meanInputTokensPerCall ?? null,
+      meanOutputPerCall: run.meanOutputTokensPerCall ?? null,
+      meanTotalPerCall: run.meanTotalTokensPerCall ?? null,
+    },
     originalCatch: ORIGINAL_CATCH[run.label] ?? null,
     cases: run.results,
   }, null, 2));

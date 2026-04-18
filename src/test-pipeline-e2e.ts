@@ -230,6 +230,9 @@ interface CaseResult {
   expected_outcome: Outcome;
   correct: boolean;
   latencyMs: number;
+  judge_input_tokens: number | null;
+  judge_output_tokens: number | null;
+  judge_total_tokens: number | null;
 }
 
 // ============================================================================
@@ -256,6 +259,9 @@ async function runConfig(cfg: Config, judgeEffort?: EffortLevel): Promise<CaseRe
 
     let judge_verdict: string | null = null;
     let judge_confidence: number | null = null;
+    let judge_input_tokens: number | null = null;
+    let judge_output_tokens: number | null = null;
+    let judge_total_tokens: number | null = null;
     let final_outcome: Outcome;
 
     if (route === "embed-allow") {
@@ -265,9 +271,12 @@ async function runConfig(cfg: Config, judgeEffort?: EffortLevel): Promise<CaseRe
     } else {
       // Stage 3: call judge
       const v = await judge.evaluate(c.intent, [], c.toolCall);
-      judge_verdict    = v.verdict;
-      judge_confidence = v.confidence;
-      final_outcome    = outcomeFromJudgeVerdict(v.verdict);
+      judge_verdict       = v.verdict;
+      judge_confidence    = v.confidence;
+      judge_input_tokens  = v.inputTokens  ?? null;
+      judge_output_tokens = v.outputTokens ?? null;
+      judge_total_tokens  = v.totalTokens  ?? null;
+      final_outcome       = outcomeFromJudgeVerdict(v.verdict);
     }
 
     const latencyMs      = Date.now() - start;
@@ -285,6 +294,9 @@ async function runConfig(cfg: Config, judgeEffort?: EffortLevel): Promise<CaseRe
       expected_outcome: expected,
       correct,
       latencyMs,
+      judge_input_tokens,
+      judge_output_tokens,
+      judge_total_tokens,
     });
 
     // Inline progress
@@ -317,14 +329,21 @@ interface ConfigSummary {
   judgeRate: number;
   meanLatencyMs: number;
   accuracy: number;
+  totalJudgeInputTokens: number;
+  totalJudgeOutputTokens: number;
+  totalJudgeTokens: number;
+  meanJudgeTokensPerInvocation: number;
 }
 
 function computeSummary(name: string, results: CaseResult[]): ConfigSummary {
   let tp = 0, fp = 0, tn = 0, fn = 0, judgeInvocations = 0, totalMs = 0;
+  let totalJudgeInputTokens = 0, totalJudgeOutputTokens = 0;
 
   for (const r of results) {
     if (r.route === "judge") judgeInvocations++;
     totalMs += r.latencyMs;
+    totalJudgeInputTokens  += r.judge_input_tokens  ?? 0;
+    totalJudgeOutputTokens += r.judge_output_tokens ?? 0;
 
     const expected = r.expected_outcome;
     const actual   = r.final_outcome;
@@ -335,6 +354,7 @@ function computeSummary(name: string, results: CaseResult[]): ConfigSummary {
     if (actual === "allow" && expected === "deny")   fn++;
   }
 
+  const totalJudgeTokens = totalJudgeInputTokens + totalJudgeOutputTokens;
   return {
     config:           name,
     tp, fp, tn, fn,
@@ -342,6 +362,10 @@ function computeSummary(name: string, results: CaseResult[]): ConfigSummary {
     judgeRate:        judgeInvocations / results.length,
     meanLatencyMs:    totalMs / results.length,
     accuracy:         (tp + tn) / results.length,
+    totalJudgeInputTokens,
+    totalJudgeOutputTokens,
+    totalJudgeTokens,
+    meanJudgeTokensPerInvocation: judgeInvocations > 0 ? totalJudgeTokens / judgeInvocations : 0,
   };
 }
 
