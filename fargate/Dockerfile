@@ -59,7 +59,9 @@ COPY docker-entrypoint-test8.sh /docker-entrypoint-test8.sh
 COPY docker-entrypoint-test9a.sh /docker-entrypoint-test9a.sh
 # Test 9: Latency Impact (parallel jobs)
 COPY docker-entrypoint-test9.sh /docker-entrypoint-test9.sh
-RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh
+# Test 10/11: Pipeline Exfiltration Scoring
+COPY docker-entrypoint-test10.sh /docker-entrypoint-test10.sh
+RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh /docker-entrypoint-test10.sh
 
 COPY server.js /app/server.js
 
