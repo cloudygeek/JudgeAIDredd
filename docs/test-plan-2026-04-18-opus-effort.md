@@ -389,3 +389,92 @@ A1 bulk dispatch WITH TOKEN TELEMETRY
 Additional cost over Section 7.6: **~3 h analysis + validation work total**, spread across Day 2 PM and Day 3. The A1 compute cost doesn't change — token fields are a byproduct of calls we're making anyway.
 
 **The one place this can go wrong:** if the smoke test in 8.3 returns zero tokens and the fallback workarounds take longer than half a day, delay A1 until resolved. Running A1 without token data forecloses C2/C3 and forces a re-run later, which is a worse outcome than a half-day delay to fix the pipeline now.
+
+---
+
+## 9. Follow-up — Opus 4.7 thinking-token visibility (blocks C2/C3)
+
+### 9.1 Problem
+
+The A1 N=20 data (2026-04-18) validated token capture for Sonnet 4.6 and Haiku 4.5: output tokens scale clearly with effort (e.g. Haiku `none` → `high`: 72 → 765, Sonnet `none` → `medium`: 81 → 396). **Opus 4.7 doesn't show the same scaling.** Observed `meanOutputPerCall` across efforts:
+
+| Opus 4.7 Effort | μoutput | μtotal | Comment |
+|---|---|---|---|
+| none | 97 | 935 | baseline |
+| medium | 75 | 913 | *lower* than none |
+| high | 91 | 930 | flat |
+| xhigh | 129 | 967 | modest bump |
+| max | 516 | 1354 | outlier — sometimes bumps |
+
+Sonnet/Haiku respond to effort with 5–10× output-token increases; Opus 4.7 at `high` catches 28% of adversarial cases but reports only 91 output tokens per call — implausible given the model is clearly producing more reasoning than that. Smoke-test criterion 4 of §8.3 (effort visibly increases outputTokens) fails cleanly for Opus 4.7.
+
+**Consequence:** any Opus 4.7 cost or Pareto claim using outputTokens as a compute proxy will understate Opus 4.7's actual compute consumption. The paper's Section 7.4 cost table and the C2 token-vs-catch Pareto plot both become unreliable for Opus 4.7 rows until we know what we're missing.
+
+### 9.2 Hypotheses
+
+In rough order of likelihood:
+
+**H1: adaptive-thinking tokens are in a separate response field we're not reading.** Anthropic-native API exposes `usage.cache_creation_input_tokens` and may have a distinct `thinking_output_tokens` or equivalent for extended thinking. Bedrock's Converse mapping may surface these under `additionalModelResponseFields` or an Anthropic-specific extension block, not inside `usage.outputTokens`.
+
+**H2: Bedrock collapses adaptive-thinking into `outputTokens` but applies an Opus-specific multiplier.** Unlikely (no precedent in docs), but would explain the flat output counts if adaptive-thinking tokens are multiplied out of the per-call count.
+
+**H3: Adaptive-thinking on Opus 4.7 genuinely uses fewer output tokens than budget-tokens thinking on Sonnet/Haiku** — the model's thinking may be internal-only without token-level accounting exposed through Converse at all. In that case, there's no field to read.
+
+**H4: Bedrock is billing the thinking tokens but not returning them in `usage`** — the AWS Cost Explorer / CloudWatch side has the numbers; the API response doesn't.
+
+### 9.3 Investigation steps
+
+**Step 1 — capture a raw Converse response.** ~5 min, gates everything else:
+
+```bash
+aws bedrock-runtime converse --region eu-west-2 \
+  --model-id 'eu.anthropic.claude-opus-4-7' \
+  --messages '[{"role":"user","content":[{"text":"Count to 5 and explain your reasoning step by step."}]}]' \
+  --inference-config '{"maxTokens":2000}' \
+  --additional-model-request-fields '{"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}' \
+  --output json > /tmp/opus-raw.json
+
+jq '{ usage, additionalModelResponseFields, output_structure: .output.message.content | map(keys) }' /tmp/opus-raw.json
+```
+
+**Decision rule on the output:**
+- If `usage` has a field beyond `inputTokens` / `outputTokens` / `totalTokens` (e.g. `thinkingTokens`, `reasoningTokens`, `cacheCreationInputTokens`): extend `bedrock-client.ts` to surface it. (~15 min)
+- If `additionalModelResponseFields` contains token breakdowns: parse it, surface it. (~30 min, new field plumbing through `JudgeVerdict`)
+- If neither: confirms H3 or H4. Move to Step 2.
+
+**Step 2 — check the reasoningContent block token count.** Bedrock surfaces thinking text under `output.message.content[].reasoningContent.text`. We can *estimate* thinking tokens by tokenising that text:
+
+```ts
+// In bedrock-client.ts, after extracting `thinking`:
+// Use a simple approximation: 1 token ≈ 4 characters for English.
+const estimatedThinkingTokens = thinking.length > 0 ? Math.ceil(thinking.length / 4) : 0;
+```
+
+Not as good as a Bedrock-reported count, but better than nothing. Only run this if Step 1 confirms no field. Note it as an approximation in the paper.
+
+**Step 3 — (H4 only) if Converse genuinely doesn't expose thinking tokens at all.** Two fallback paths:
+
+a. **Direct Anthropic SDK call** — add a `--use-anthropic-api` flag to `test-adversarial-judge.ts` that bypasses Bedrock and uses the Anthropic SDK, which exposes the full `usage` structure including thinking tokens. Scoped as a parallel code path, not a replacement; only enabled when the env has `ANTHROPIC_API_KEY`. Cost: ~2 h code. Risk: introduces a second SDK dependency path.
+
+b. **Latency as the axis** — use `durationMs` instead of token count for the Pareto plot. Already captured. Not comparable cross-model (Bedrock throughput varies by region and load), so the chart legend has to note "latency at eu-west-2 on <date-range>". Cheap fallback but makes the paper claim weaker.
+
+**Step 4 — paper documentation.** Regardless of outcome, add a subsection to §7.4 of `p15.tex`:
+- If Step 1 finds the field: "Opus 4.7 thinking tokens are reported in Bedrock's X field rather than outputTokens. Our token accounting aggregates both."
+- If Step 2 is the workaround: "Opus 4.7 thinking tokens are not directly reported by Bedrock's Converse API; we estimate them from the `reasoningContent` text length at 4 chars/token. Results should be treated as lower-bound estimates for Opus 4.7 cost."
+- If Step 3a is used: "Opus 4.7 cost figures derived from direct Anthropic API calls; Bedrock Converse does not expose thinking tokens at the usage level."
+- If Step 3b: "Opus 4.7 compute cost reported as latency rather than tokens due to Bedrock Converse not exposing thinking tokens."
+
+### 9.4 Impact on Section 8 deliverables
+
+- **C2 Pareto plot:** blocked on resolution. Plot Sonnet 4.6 and Haiku 4.5 now; add Opus 4.7 rows after fix.
+- **C3 paper cost table:** blocked on resolution for Opus 4.7 rows. Sonnet/Haiku numbers can ship today.
+- **A1 dataset:** not re-run. Tokens for Sonnet/Haiku are valid; Opus 4.7 tokens are incomplete. If Step 1 finds the field, we may be able to retroactively re-annotate the existing JSONs from the raw Bedrock responses — but we don't currently retain those. Going forward, every post-fix run will have it.
+
+### 9.5 Cost
+
+- Step 1: ~5 min — one AWS call, one `jq` filter. Gates everything.
+- Step 2 (if needed): ~30 min code + re-run one cell.
+- Step 3a (if needed): ~2 h code + ~4 h compute for a matching Anthropic-API A1 dataset.
+- Step 3b: ~15 min analysis, weakens paper claim.
+
+**Priority:** Step 1 should run before the next A1 sweep (if any) lands with more Opus 4.7 data. Delaying doesn't hurt immediately — existing A1 data for Sonnet/Haiku is fine to analyse today; only the Opus 4.7 rows are blocked.
