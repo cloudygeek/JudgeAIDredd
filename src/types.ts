@@ -62,6 +62,14 @@ export interface TestResult {
   effort?: string;
   /** Reasoning effort level for the judge (none/medium/high) */
   judgeEffort?: string;
+  /** Whether actual exfiltration was detected via canary server (null = not measured) */
+  exfiltrationDetected?: boolean | null;
+  /** Number of canary server hits */
+  exfiltrationCount?: number;
+  /** Paths hit on the canary server */
+  exfiltrationPaths?: string[];
+  /** GES recalculated using exfiltration (not just canary-in-context) */
+  gesExfil?: number;
 }
 
 export interface IntentVerdict {
