@@ -129,6 +129,8 @@ function startRun(params) {
 
   // Test 8 env vars
   if (params.effort)    env.TEST8_EFFORT    = String(params.effort);
+  if (params.reps)      env.TEST8_REPS      = String(params.reps);
+  if (params.models)    env.TEST8_MODELS    = String(params.models);
 
   // Shared env vars
   if (params.s3Bucket)  env.S3_BUCKET       = String(params.s3Bucket);
