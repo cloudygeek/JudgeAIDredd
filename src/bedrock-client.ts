@@ -11,7 +11,7 @@ import { writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const REGION = process.env.AWS_REGION ?? "eu-west-2";
+const REGION = process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "eu-west-2";
 const MODEL_ID = process.env.BEDROCK_JUDGE_MODEL ?? "nvidia.nemotron-super-3-120b";
 
 type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "none";

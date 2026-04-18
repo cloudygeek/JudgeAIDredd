@@ -137,6 +137,7 @@ function startRun(params) {
   if (params.s3Prefix)  env.S3_PREFIX       = String(params.s3Prefix);
   if (params.s3Region)  env.S3_REGION       = String(params.s3Region);
   if (params.awsRegion) env.AWS_REGION      = String(params.awsRegion);
+  if (params.bedrockRegion) env.BEDROCK_REGION = String(params.bedrockRegion);
 
   const runId = env.TEST7_RUN_ID || env.TEST3_RUN_ID || new Date().toISOString().replace(/[:.]/g, "");
 

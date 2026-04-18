@@ -64,7 +64,7 @@ export function getBuildInfo(): BuildInfo {
     gitDirty,
     sdkVersion,
     capturedAt: new Date().toISOString(),
-    bedrockRegion: process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "unknown",
+    bedrockRegion: process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "unknown",
   };
   return cached;
 }
