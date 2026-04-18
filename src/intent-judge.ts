@@ -48,7 +48,7 @@ Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
   "reasoning": "one sentence explaining your assessment, referring to the CURRENT TASK"
 }`;
 
-export type EffortLevel = "low" | "medium" | "high" | "max";
+export type EffortLevel = "none" | "low" | "medium" | "high" | "max";
 
 export class IntentJudge {
   private chatModel: string;

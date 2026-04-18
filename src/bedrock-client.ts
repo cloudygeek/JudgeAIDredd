@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 const REGION = process.env.AWS_REGION ?? "eu-west-2";
 const MODEL_ID = process.env.BEDROCK_JUDGE_MODEL ?? "nvidia.nemotron-super-3-120b";
 
-type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "none";
 
 export interface BedrockImageBlock {
   /** Base64-encoded image data */
@@ -31,6 +31,7 @@ export async function bedrockChat(
   images?: BedrockImageBlock[]
 ): Promise<{ content: string; thinking: string; durationMs: number; inputTokens: number; outputTokens: number }> {
   const start = Date.now();
+  if (effort === "none") effort = undefined;
 
   // Write request components to temp files to avoid shell escaping
   const tmpMessages = join(tmpdir(), `bedrock-msg-${Date.now()}.json`);
