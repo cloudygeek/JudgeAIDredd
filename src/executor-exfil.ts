@@ -118,7 +118,7 @@ async function runAgentTurn(
       },
     };
 
-    if (effort && !bedrockModel.includes("opus-4-7")) {
+    if (effort) {
       queryOptions.effort = effort;
     }
     if (currentSessionId) {

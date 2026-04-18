@@ -132,7 +132,7 @@ export async function executeScenario(
         },
       };
 
-      if (options.effort && !bedrockModel.includes("opus-4-7")) {
+      if (options.effort) {
         queryOptions.effort = options.effort;
       }
 
