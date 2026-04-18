@@ -295,3 +295,97 @@ Total additional cost vs the original 2026-04-18 plan:
 - Paper CI helper: ~1 h script + table-regen.
 
 Day-1 engineering estimate goes from ~½ day to ~¾ day. Paper-grade confidence in the resulting numbers goes from "point estimates with a narrative" to "point estimates with CIs and a noise-floor reference."
+
+---
+
+## 8. Token-based efficacy analysis
+
+### 8.1 Motivation
+
+Comparing judge efficacy by effort *label* ("medium" vs "high") is lossy: the same label consumes different token volumes on different models, and different dollar cost per case. Anthropic's own agentic-coding chart plots score against total tokens — score vs `{low, medium, high, xhigh, max}` points joined by a curve, one curve per model family — and the headline is that Opus 4.7 Pareto-dominates Opus 4.6 at every token budget. We should produce the equivalent for adversarial judging. If the shape inverts (Opus 4.7 underperforming Sonnet 4.6 at every token budget on adversarial cases), that's a publishable cross-workload finding; if it matches, it triangulates the coding-task result.
+
+The effort-label axis is also hiding non-monotonicity. The 2026-04-18 xhigh run (175/480 at Opus 4.7, N=40) sits between high and max on effort but above both on catch rate — inconsistent with a monotonic "more thinking hurts" story. Plotting against tokens may or may not remove the non-monotonicity; either way the token-axis version is what operators actually care about.
+
+### 8.2 C1 — per-call token capture (shipped b50ceb3)
+
+Landed. `bedrockChat` now surfaces `{ inputTokens, outputTokens, totalTokens, cacheReadInputTokens?, cacheWriteInputTokens? }` from the Converse `usage` object. Plumbed through `JudgeVerdict` into per-rep and per-case result fields on both `test-adversarial-judge.ts` and `test-pipeline-e2e.ts`. Every run from this commit onward carries token-per-call provenance.
+
+Fail-soft path (Bedrock outage) leaves token fields undefined — no successful call means no tokens to attribute. That means token analysis must filter for cases with defined token fields; the Python snippet from Section 7.5 already does the analogous thing for build-info.
+
+### 8.3 Validation gate before A1 bulk dispatch
+
+**A1 must not dispatch until C1 is smoke-validated on a live Bedrock call.** The Converse API's treatment of thinking tokens is undocumented in the SDK docs we rely on — Bedrock may roll thinking into `outputTokens`, may expose a separate field, or may vary by model. The bulk A1 run is 3,120 judge calls; discovering token fields are empty after the fact is expensive.
+
+**Smoke test (5 min):**
+```bash
+npx tsx src/test-adversarial-judge.ts \
+  --model "Claude Opus 4.7" --effort medium --cases adv-5 --repetitions 2
+```
+
+**Pass criteria:**
+1. `cases[0].reps[0].inputTokens` is present and > 0.
+2. `cases[0].reps[0].outputTokens` is present and > 0.
+3. `cases[0].meanTotalTokens` is present and > 0.
+4. Comparing `reps[0].outputTokens` to the same call at `effort=none`: the medium value should be meaningfully higher (thinking tokens add output length). If they're identical, thinking may not be surfaced in `outputTokens` at all.
+
+**If pass criteria 1–3 fail:** extend `bedrockChat` to dump the raw `usage` block for a single call so we can see what fields Bedrock is actually returning, then map the right field. Gate A1 on this.
+
+**If criterion 4 fails** (effort has no effect on reported outputTokens): thinking tokens are probably hidden from Converse's `usage`. Options — (a) fall back to latency as the axis (wall-clock `durationMs` is already captured), (b) add a direct Anthropic SDK path for token accounting. Either is an acceptable fallback; don't block A1 on it, but flag in the paper.
+
+**Secondary probe** (run if criterion 4 fails):
+```bash
+aws bedrock-runtime converse --region eu-west-2 \
+  --model-id 'eu.anthropic.claude-opus-4-7' \
+  --messages '[{"role":"user","content":[{"text":"count to 3"}]}]' \
+  --inference-config '{"maxTokens":200}' \
+  --additional-model-request-fields '{"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"}}' \
+  --output json | jq .usage
+```
+See if `usage` exposes any field beyond `inputTokens`/`outputTokens`/`totalTokens`. Directly tells us what to extract.
+
+### 8.4 C2 — token-vs-catch Pareto plot
+
+Once A1 lands with token telemetry:
+
+**Analysis script (`scripts/token-pareto.py`, ~1 h):**
+- Ingest every `adversarial-judge-*.json` from the A1 batch that has non-zero `tokens.meanTotalPerCall`.
+- Aggregate: for each (model, effort), compute pooled catch rate, Wilson CI, mean input tokens/case, mean output tokens/case, mean total tokens/case.
+- Emit three plots:
+  - **Primary:** x=meanTotalTokens/case, y=catchRate, one line per model, effort labels on points. Wilson CI as vertical error bars. Direct Anthropic-chart analogue.
+  - **Decomposition:** x=meanOutputTokens/case (proxy for thinking+response output), y=catchRate. Distinguishes "effort increases output tokens which hurts catching" vs "effort increases output tokens which helps catching".
+  - **Cost-frontier:** x=$/case at each model's Bedrock input/output rate, y=catchRate. This is the deployment-relevant version and replaces the current effort-indexed cost estimates in `tab:judge-cost`.
+
+**Decision rules from the plot:**
+- If Sonnet 4.6 `none` is on the Pareto frontier (strictly dominates Opus 4.7 medium on both tokens AND catch rate): confirmed, recommend Sonnet 4.6 `none` as judge. Paper recommendation unchanged from Section 6.2.
+- If Opus 4.7 at any effort appears on the frontier: re-evaluate the judge recommendation. Unlikely given current 5/12 vs 6/12 gap, but worth checking once CIs are tight.
+- If the frontier shape differs materially between standard and adversarial cases (Opus ahead on standard hijacks, Sonnet ahead on adversarial): report both frontiers in the paper and structure the recommendation around expected workload mix.
+
+### 8.5 C3 — paper cost table becomes a cost curve
+
+Current `tab:judge-cost` in `p15.tex` is a single flat-cost number per effort level derived from assumed token usage. With C1+C2 data, replace with:
+
+- **Table cells:** mean input/output tokens per judge invocation (with 95% CI), per (model, effort), measured from the A1 batch.
+- **Derived column:** $/case computed from per-model Bedrock rates × measured mean tokens.
+- **Accompanying figure:** the C2 cost-frontier plot (3rd one), placed next to `tab:judge-cost`.
+
+This also lets Section 7.4 honestly answer "how much does the defence cost" with measured numbers rather than estimates. About ~2 h once the A1 data is in hand.
+
+### 8.6 Updated execution order (incorporating Section 8)
+
+```
+C1 token capture (SHIPPED b50ceb3)
+     ↓
+8.3 smoke test (5 min) ── fail → raw-usage probe → fix bedrock-client.ts
+     ↓
+P0.1–P0.3, P0.2 gate, A0 variance probe (Section 7.3)
+     ↓
+A1 bulk dispatch WITH TOKEN TELEMETRY
+     ↓
+     ├─ C2 Pareto plot (~1 h)
+     ├─ B2/B4/B5/B6 (Section 4)
+     └─ C3 paper cost-curve revision (~2 h)
+```
+
+Additional cost over Section 7.6: **~3 h analysis + validation work total**, spread across Day 2 PM and Day 3. The A1 compute cost doesn't change — token fields are a byproduct of calls we're making anyway.
+
+**The one place this can go wrong:** if the smoke test in 8.3 returns zero tokens and the fallback workarounds take longer than half a day, delay A1 until resolved. Running A1 without token data forecloses C2/C3 and forces a re-run later, which is a worse outcome than a half-day delay to fix the pipeline now.
