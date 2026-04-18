@@ -29,14 +29,16 @@ let cached: BuildInfo | null = null;
 export function getBuildInfo(): BuildInfo {
   if (cached) return cached;
 
-  let gitSha = "unknown";
-  let gitDirty = false;
-  try {
-    gitSha = execSync("git rev-parse --short HEAD", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    const status = execSync("git status --porcelain", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    gitDirty = status.trim().length > 0;
-  } catch {
-    // Not a git repo or git unavailable — leave defaults
+  let gitSha = process.env.GIT_COMMIT ?? "unknown";
+  let gitDirty = process.env.GIT_DIRTY === "true";
+  if (gitSha === "unknown") {
+    try {
+      gitSha = execSync("git rev-parse --short HEAD", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      const status = execSync("git status --porcelain", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      gitDirty = status.trim().length > 0;
+    } catch {
+      // Not a git repo or git unavailable — leave defaults
+    }
   }
 
   let sdkVersion = "unknown";

@@ -11,6 +11,14 @@ set -euo pipefail
 CONFIG_FILTER="${1:-A,C,E,G}"
 EFFORT_LEVELS="${2:-default,medium,high}"
 
+# Gate: refuse to run with uncommitted changes unless overridden
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "FATAL: working tree dirty — commit or stash before running a reference test."
+  echo "  Override with ALLOW_DIRTY=1 for ad-hoc experimentation."
+  [[ "${ALLOW_DIRTY:-0}" == "1" ]] || exit 1
+  echo "  ALLOW_DIRTY=1 set — proceeding with dirty tree."
+fi
+
 # Strip the current Claude session's env to avoid inheriting Bedrock tokens
 # that are scoped to eu-west-2 / this process.
 exec env -i \

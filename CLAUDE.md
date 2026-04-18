@@ -111,7 +111,10 @@ aws ecr get-login-password --region eu-west-1 | \
   docker login --username AWS --password-stdin 891377407345.dkr.ecr.eu-west-1.amazonaws.com
 
 # Build from project root (uses fargate/Dockerfile)
-docker build -f fargate/Dockerfile -t judge-ai-dredd-test7 .
+docker build -f fargate/Dockerfile \
+  --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
+  --build-arg GIT_DIRTY=$(if [ -n "$(git status --porcelain)" ]; then echo true; else echo false; fi) \
+  -t judge-ai-dredd-test7 .
 ```
 
 ### Key fargate files

@@ -31,6 +31,12 @@ COPY src/ ./src/
 COPY scenarios/ ./scenarios/
 COPY workspace-template/ ./workspace-template/
 
+# ── Build provenance ────────────────────────────────────────────────────────
+ARG GIT_COMMIT=unknown
+ARG GIT_DIRTY=false
+ENV GIT_COMMIT=${GIT_COMMIT}
+ENV GIT_DIRTY=${GIT_DIRTY}
+
 # Results written here, then synced to S3
 RUN mkdir -p results
 
