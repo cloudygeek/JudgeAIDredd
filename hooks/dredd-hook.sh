@@ -9,6 +9,9 @@
 # Dredd endpoint, and prints the response to stdout (JSON) for
 # Claude Code to consume.
 #
+# Remote-compatible: sends file CONTENTS (transcript, CLAUDE.md) inline
+# so the server does not need filesystem access to the client machine.
+#
 # Prerequisites:
 #   - Judge Dredd server running: npx tsx src/server.ts
 #   - curl and jq installed
@@ -60,14 +63,61 @@ if ! curl -s --connect-timeout 1 "$DREDD_URL/health" > /dev/null 2>&1; then
   exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# Helper: read transcript content (last 200 lines to keep payload bounded)
+# ---------------------------------------------------------------------------
+read_transcript_content() {
+  local tp="$1"
+  if [ -n "$tp" ] && [ -f "$tp" ]; then
+    tail -200 "$tp"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Helper: read CLAUDE.md files from the project cwd
+# ---------------------------------------------------------------------------
+read_claudemd_content() {
+  local cwd="$1"
+  local content=""
+  if [ -n "$cwd" ]; then
+    if [ -f "$cwd/CLAUDE.md" ]; then
+      content=$(cat "$cwd/CLAUDE.md")
+    fi
+    if [ -f "$cwd/.claude/CLAUDE.md" ]; then
+      if [ -n "$content" ]; then
+        content="$content"$'\n\n--- .claude/CLAUDE.md ---\n\n'
+      fi
+      content="$content$(cat "$cwd/.claude/CLAUDE.md")"
+    fi
+  fi
+  echo "$content"
+}
+
 case "$HOOK_EVENT" in
   "UserPromptSubmit")
     PROMPT=$(echo "$INPUT" | jq -r '.prompt // .message // empty')
     TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
     CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
+
+    # Read file contents locally and send inline
+    TRANSCRIPT_CONTENT=$(read_transcript_content "$TRANSCRIPT_PATH")
+    CLAUDEMD_CONTENT=$(read_claudemd_content "$CWD")
+
     RESPONSE=$(curl -s -X POST "$DREDD_URL/intent" \
       -H "Content-Type: application/json" \
-      -d "{\"session_id\": \"$SESSION_ID\", \"prompt\": $(echo "$PROMPT" | jq -Rs .), \"transcript_path\": \"$TRANSCRIPT_PATH\", \"cwd\": $(echo "$CWD" | jq -Rs .)}" \
+      -d "$(jq -n \
+        --arg sid "$SESSION_ID" \
+        --arg prompt "$PROMPT" \
+        --arg cwd "$CWD" \
+        --arg tc "$TRANSCRIPT_CONTENT" \
+        --arg cm "$CLAUDEMD_CONTENT" \
+        '{
+          session_id: $sid,
+          prompt: $prompt,
+          cwd: $cwd,
+          transcript_content: (if $tc == "" then null else $tc end),
+          claudemd_content: (if $cm == "" then null else $cm end)
+        }')" \
       --connect-timeout 5 --max-time 30)
 
     # Extract just the hook fields (systemMessage etc), strip _meta
@@ -82,7 +132,6 @@ case "$HOOK_EVENT" in
     # Extract the last assistant message from the transcript for context
     AGENT_REASONING=""
     if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-      # Get the last assistant message (text content blocks)
       AGENT_REASONING=$(tail -20 "$TRANSCRIPT_PATH" \
         | grep -o '"type":"assistant".*' \
         | tail -1 \
@@ -90,9 +139,24 @@ case "$HOOK_EVENT" in
         | head -c 500)
     fi
 
+    # Read transcript content for backfill (only needed if server hasn't seen this session)
+    TRANSCRIPT_CONTENT=$(read_transcript_content "$TRANSCRIPT_PATH")
+
     RESPONSE=$(curl -s -X POST "$DREDD_URL/evaluate" \
       -H "Content-Type: application/json" \
-      -d "{\"session_id\": \"$SESSION_ID\", \"tool_name\": \"$TOOL_NAME\", \"tool_input\": $TOOL_INPUT, \"agent_reasoning\": $(echo "$AGENT_REASONING" | jq -Rs .), \"transcript_path\": \"$TRANSCRIPT_PATH\"}" \
+      -d "$(jq -n \
+        --arg sid "$SESSION_ID" \
+        --arg tn "$TOOL_NAME" \
+        --argjson ti "$TOOL_INPUT" \
+        --arg ar "$AGENT_REASONING" \
+        --arg tc "$TRANSCRIPT_CONTENT" \
+        '{
+          session_id: $sid,
+          tool_name: $tn,
+          tool_input: $ti,
+          agent_reasoning: $ar,
+          transcript_content: (if $tc == "" then null else $tc end)
+        }')" \
       --connect-timeout 5 --max-time 60)
 
     echo "$RESPONSE" | jq 'del(._meta)' 2>/dev/null || echo '{}'
@@ -106,7 +170,17 @@ case "$HOOK_EVENT" in
     # Async — fire and forget, don't block the agent
     curl -s -X POST "$DREDD_URL/track" \
       -H "Content-Type: application/json" \
-      -d "{\"session_id\": \"$SESSION_ID\", \"tool_name\": \"$TOOL_NAME\", \"tool_input\": $TOOL_INPUT, \"tool_output\": $(echo "$TOOL_OUTPUT" | jq -Rs .)}" \
+      -d "$(jq -n \
+        --arg sid "$SESSION_ID" \
+        --arg tn "$TOOL_NAME" \
+        --argjson ti "$TOOL_INPUT" \
+        --arg to "$TOOL_OUTPUT" \
+        '{
+          session_id: $sid,
+          tool_name: $tn,
+          tool_input: $ti,
+          tool_output: $to
+        }')" \
       --connect-timeout 2 --max-time 5 > /dev/null 2>&1 &
 
     echo '{}'
@@ -123,7 +197,7 @@ case "$HOOK_EVENT" in
   "SessionEnd")
     curl -s -X POST "$DREDD_URL/end" \
       -H "Content-Type: application/json" \
-      -d "{\"session_id\": \"$SESSION_ID\"}" \
+      -d "$(jq -n --arg sid "$SESSION_ID" '{session_id: $sid}')" \
       --connect-timeout 2 --max-time 10 > /dev/null 2>&1 &
 
     echo '{}'
@@ -133,7 +207,7 @@ case "$HOOK_EVENT" in
     # Context is being compacted — notify Dredd so it can record the boundary
     curl -s -X POST "$DREDD_URL/compact" \
       -H "Content-Type: application/json" \
-      -d "{\"session_id\": \"$SESSION_ID\"}" \
+      -d "$(jq -n --arg sid "$SESSION_ID" '{session_id: $sid}')" \
       --connect-timeout 2 --max-time 5 > /dev/null 2>&1 &
 
     echo '{}'

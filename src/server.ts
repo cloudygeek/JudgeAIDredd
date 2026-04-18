@@ -28,7 +28,7 @@ import { inspect } from "node:util";
 import { SessionTracker, type ImageBlock } from "./session-tracker.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
 import { exportPolicies } from "./tool-policy.js";
-import { scanClaudeMd, type ClaudeMdScanResult } from "./claudemd-scanner.js";
+import { scanClaudeMd, scanClaudeMdContent, type ClaudeMdScanResult } from "./claudemd-scanner.js";
 import { checkOllama } from "./ollama-client.js";
 
 const { values } = parseArgs({
@@ -162,13 +162,24 @@ function extractImagesFromContentBlocks(blocks: any[]): ImageBlock[] {
 }
 
 function extractLastUserAndPriorAssistant(
-  transcriptPath: string
+  transcriptPathOrContent: string,
+  isContent = false
 ): { lastUser: string | null; priorAssistant: string | null; images: ImageBlock[] } {
-  if (!transcriptPath || !existsSync(transcriptPath)) {
-    return { lastUser: null, priorAssistant: null, images: [] };
+  let raw: string;
+  if (isContent) {
+    raw = transcriptPathOrContent;
+  } else {
+    if (!transcriptPathOrContent || !existsSync(transcriptPathOrContent)) {
+      return { lastUser: null, priorAssistant: null, images: [] };
+    }
+    try {
+      raw = readFileSync(transcriptPathOrContent, "utf8");
+    } catch {
+      return { lastUser: null, priorAssistant: null, images: [] };
+    }
   }
   try {
-    const lines = readFileSync(transcriptPath, "utf8").trim().split("\n").filter(Boolean);
+    const lines = raw.trim().split("\n").filter(Boolean);
     // Collect all user prompts with the assistant turn that immediately
     // preceded each one, then pick the last *substantive* (non-confirmation)
     // entry. Falls back to the very last user prompt if everything is a
@@ -236,13 +247,23 @@ function buildContextualIntent(
 
 async function backfillFromTranscript(
   sessionId: string,
-  transcriptPath: string
+  transcriptPathOrContent: string,
+  isContent = false
 ): Promise<void> {
-  if (!transcriptPath || !existsSync(transcriptPath)) return;
+  let raw: string;
+  if (isContent) {
+    raw = transcriptPathOrContent;
+  } else {
+    if (!transcriptPathOrContent || !existsSync(transcriptPathOrContent)) return;
+    try {
+      raw = readFileSync(transcriptPathOrContent, "utf8");
+    } catch {
+      return;
+    }
+  }
 
   try {
-    const content = readFileSync(transcriptPath, "utf8");
-    const lines = content.trim().split("\n").filter(Boolean);
+    const lines = raw.trim().split("\n").filter(Boolean);
 
     let firstUserPrompt: string | null = null;
     let firstUserImages: ImageBlock[] = [];
@@ -310,7 +331,7 @@ async function backfillFromTranscript(
     // Prefer the *last* user prompt (combined with the prior assistant turn)
     // as the goal — backfill is only used when Dredd starts mid-session, and
     // the most recent exchange is what the agent is currently acting on.
-    const { lastUser, priorAssistant, images: lastImages } = extractLastUserAndPriorAssistant(transcriptPath);
+    const { lastUser, priorAssistant, images: lastImages } = extractLastUserAndPriorAssistant(raw, true);
     const goalPrompt = lastUser ?? firstUserPrompt;
     if (!goalPrompt) return;
     const goalImages = lastImages.length ? lastImages : firstUserImages;
@@ -359,6 +380,9 @@ async function backfillFromTranscript(
 async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
   const { session_id, prompt, transcript_path, cwd } = body;
+  // Remote-compatible fields: inline content sent by the hook
+  const transcriptContent: string | undefined = body.transcript_content;
+  const claudeMdContent: string | undefined = body.claudemd_content;
 
   if (!session_id || !prompt) {
     return json(res, 400, { error: "Missing session_id or prompt" });
@@ -371,7 +395,12 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
 
     // Scan CLAUDE.md on first session contact for injection patterns
     if (!registeredSessions.has(session_id)) {
-      const scan = scanClaudeMd(cwd);
+      let scan: ClaudeMdScanResult;
+      if (claudeMdContent) {
+        scan = scanClaudeMdContent(claudeMdContent, `${cwd}/CLAUDE.md`);
+      } else {
+        scan = scanClaudeMd(cwd);
+      }
       if (scan.findings.length > 0) {
         console.warn(`  [${session_id.substring(0, 8)}] [CLAUDEMD-SCAN] ${scan.summary}`);
         for (const f of scan.findings) {
@@ -382,18 +411,26 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     }
   }
 
-  // If this is a session we haven't seen and there's a transcript, backfill
-  if (!registeredSessions.has(session_id) && transcript_path) {
-    await backfillFromTranscript(session_id, transcript_path);
+  // If this is a session we haven't seen and there's a transcript, backfill.
+  // Prefer inline transcript_content (remote) over transcript_path (local).
+  if (!registeredSessions.has(session_id)) {
+    if (transcriptContent) {
+      await backfillFromTranscript(session_id, transcriptContent, true);
+    } else if (transcript_path) {
+      await backfillFromTranscript(session_id, transcript_path);
+    }
   }
 
   // Allow per-request mode override (e.g., SDK sends mode in body)
   const mode: TrustMode = body.mode ?? CONFIG.mode;
 
-  // Extract images from the transcript for this user turn
-  const { priorAssistant, images: transcriptImages } = transcript_path
-    ? extractLastUserAndPriorAssistant(transcript_path)
-    : { priorAssistant: null, images: [] as ImageBlock[] };
+  // Extract images from the transcript for this user turn.
+  // Prefer inline content over file path.
+  const { priorAssistant, images: transcriptImages } = transcriptContent
+    ? extractLastUserAndPriorAssistant(transcriptContent, true)
+    : transcript_path
+      ? extractLastUserAndPriorAssistant(transcript_path)
+      : { priorAssistant: null, images: [] as ImageBlock[] };
 
   const result = await tracker.registerIntent(session_id, prompt, mode === "interactive", transcriptImages);
 
@@ -478,6 +515,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
 async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
   const { session_id, tool_name, tool_input, agent_reasoning, transcript_path } = body;
+  const transcriptContent: string | undefined = body.transcript_content;
   const mode: TrustMode = body.mode ?? CONFIG.mode;
   const isLearn = mode === "learn";
 
@@ -485,9 +523,12 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     return json(res, 400, { error: "Missing session_id or tool_name" });
   }
 
-  // If no goal registered yet, try backfill or fail-open
+  // If no goal registered yet, try backfill or fail-open.
+  // Prefer inline transcript_content (remote) over transcript_path (local).
   if (!registeredSessions.has(session_id)) {
-    if (transcript_path) {
+    if (transcriptContent) {
+      await backfillFromTranscript(session_id, transcriptContent, true);
+    } else if (transcript_path) {
       await backfillFromTranscript(session_id, transcript_path);
     }
 

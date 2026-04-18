@@ -66,39 +66,25 @@ const PATTERNS: Pattern[] = [
   { name: "pre-commit-hook", regex: /pre-?commit.*\b(curl|wget|post)\b/i, severity: "high" },
 ];
 
-export function scanClaudeMd(projectRoot: string): ClaudeMdScanResult {
-  const candidates = [
-    join(projectRoot, "CLAUDE.md"),
-    join(projectRoot, ".claude", "CLAUDE.md"),
-  ];
-
-  const scanned: string[] = [];
+/**
+ * Scan a single CLAUDE.md content string for suspicious patterns.
+ * Used when content is sent inline (remote mode) or already loaded.
+ */
+export function scanClaudeMdContent(content: string, filename = "CLAUDE.md"): ClaudeMdScanResult {
   const findings: ClaudeMdFinding[] = [];
 
-  for (const filePath of candidates) {
-    if (!existsSync(filePath)) continue;
-    scanned.push(filePath);
-
-    let content: string;
-    try {
-      content = readFileSync(filePath, "utf8");
-    } catch {
-      continue;
-    }
-
-    const lines = content.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      for (const pattern of PATTERNS) {
-        if (pattern.regex.test(line)) {
-          findings.push({
-            file: filePath,
-            line: i + 1,
-            pattern: pattern.name,
-            severity: pattern.severity,
-            snippet: line.trim().substring(0, 120),
-          });
-        }
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    for (const pattern of PATTERNS) {
+      if (pattern.regex.test(line)) {
+        findings.push({
+          file: filename,
+          line: i + 1,
+          pattern: pattern.name,
+          severity: pattern.severity,
+          snippet: line.trim().substring(0, 120),
+        });
       }
     }
   }
@@ -108,13 +94,57 @@ export function scanClaudeMd(projectRoot: string): ClaudeMdScanResult {
 
   let summary: string;
   if (findings.length === 0) {
-    summary = `Scanned ${scanned.length} CLAUDE.md file(s) — no suspicious patterns found.`;
+    summary = `Scanned ${filename} — no suspicious patterns found.`;
   } else {
     summary =
-      `Scanned ${scanned.length} CLAUDE.md file(s) — ` +
+      `Scanned ${filename} — ` +
       `${findings.length} finding(s) (${highCount} high severity). ` +
       `Patterns: ${Array.from(new Set(findings.map((f) => f.pattern))).join(", ")}`;
   }
 
-  return { scanned, findings, hasCritical, summary };
+  return { scanned: [filename], findings, hasCritical, summary };
+}
+
+/**
+ * Scan CLAUDE.md files on disk (local mode).
+ * Reads from projectRoot/CLAUDE.md and projectRoot/.claude/CLAUDE.md.
+ */
+export function scanClaudeMd(projectRoot: string): ClaudeMdScanResult {
+  const candidates = [
+    join(projectRoot, "CLAUDE.md"),
+    join(projectRoot, ".claude", "CLAUDE.md"),
+  ];
+
+  const allFindings: ClaudeMdFinding[] = [];
+  const scanned: string[] = [];
+
+  for (const filePath of candidates) {
+    if (!existsSync(filePath)) continue;
+
+    let content: string;
+    try {
+      content = readFileSync(filePath, "utf8");
+    } catch {
+      continue;
+    }
+
+    const result = scanClaudeMdContent(content, filePath);
+    scanned.push(filePath);
+    allFindings.push(...result.findings);
+  }
+
+  const highCount = allFindings.filter((f) => f.severity === "high").length;
+  const hasCritical = highCount > 0;
+
+  let summary: string;
+  if (allFindings.length === 0) {
+    summary = `Scanned ${scanned.length} CLAUDE.md file(s) — no suspicious patterns found.`;
+  } else {
+    summary =
+      `Scanned ${scanned.length} CLAUDE.md file(s) — ` +
+      `${allFindings.length} finding(s) (${highCount} high severity). ` +
+      `Patterns: ${Array.from(new Set(allFindings.map((f) => f.pattern))).join(", ")}`;
+  }
+
+  return { scanned, findings: allFindings, hasCritical, summary };
 }
