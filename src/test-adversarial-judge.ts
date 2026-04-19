@@ -26,7 +26,7 @@
 import { parseArgs } from "node:util";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { IntentJudge, type EffortLevel } from "./intent-judge.js";
+import { IntentJudge, type EffortLevel, type PromptVariant } from "./intent-judge.js";
 import { getBuildInfo, makeRunInvocation } from "./build-info.js";
 
 // ============================================================================
@@ -301,6 +301,7 @@ interface ModelRun {
   label: string;
   effort?: EffortLevel;
   hardened: boolean;
+  promptVariant?: PromptVariant;
   repetitions: number;
   results: CaseResult[];
   totalMs: number;
@@ -328,8 +329,9 @@ function wilsonCI(k: number, n: number, z = 1.96): { lo: number; hi: number } {
   return { lo: Math.max(0, centre - margin), hi: Math.min(1, centre + margin) };
 }
 
-async function runModel(modelId: string, label: string, effort?: EffortLevel, repetitions = 1, cases: AdvCase[] = CASES, hardened = false): Promise<ModelRun> {
-  const judge = new IntentJudge(modelId, "bedrock", effort, hardened);
+async function runModel(modelId: string, label: string, effort?: EffortLevel, repetitions = 1, cases: AdvCase[] = CASES, hardened: boolean | PromptVariant = false): Promise<ModelRun> {
+  const promptVariant: PromptVariant = typeof hardened === "string" ? hardened : hardened ? "B7" : "standard";
+  const judge = new IntentJudge(modelId, "bedrock", effort, promptVariant);
   const results: CaseResult[] = [];
   const start = Date.now();
 
@@ -360,7 +362,8 @@ async function runModel(modelId: string, label: string, effort?: EffortLevel, re
         modelId,
         label,
         effort,
-        hardened,
+        hardened: promptVariant !== "standard",
+        promptVariant,
         repetitions,
         results,
         totalMs: Date.now() - start,
@@ -409,7 +412,8 @@ async function runModel(modelId: string, label: string, effort?: EffortLevel, re
     modelId,
     label,
     effort,
-    hardened,
+    hardened: promptVariant !== "standard",
+    promptVariant,
     repetitions,
     results,
     totalMs: Date.now() - start,
@@ -578,7 +582,7 @@ function writeResults(run: ModelRun): void {
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   const safeLabel = run.label.replace(/[^a-z0-9]/gi, "-").toLowerCase();
   const effortSuffix = run.effort ? `-${run.effort}` : "";
-  const hardenedSuffix = run.hardened ? "-B7" : "";
+  const hardenedSuffix = run.promptVariant === "B7.1" ? "-B71" : run.hardened ? "-B7" : "";
   const b6Suffix = run.b6 ? "-B6" : "";
   const dir = join(import.meta.dirname, "..", "results");
   mkdirSync(dir, { recursive: true });
@@ -596,7 +600,7 @@ function writeResults(run: ModelRun): void {
     invocation: makeRunInvocation(run.modelId),
     model: { id: run.modelId, label: run.label },
     effort: run.effort ?? null,
-    prompt: run.hardened ? "B7-hardened" : "standard",
+    prompt: run.promptVariant === "B7.1" ? "B7.1-hardened" : run.hardened ? "B7-hardened" : "standard",
     variant: run.b6 ? "B6-format-leakage" : "standard",
     repetitions: run.repetitions,
     timestamp: new Date().toISOString(),
@@ -632,11 +636,14 @@ async function main() {
       repetitions: { type: "string", default: "1" },
       cases: { type: "string", default: "" },
       hardened: { type: "boolean", default: false },
+      prompt: { type: "string", default: "" },
       b6: { type: "boolean", default: false },
     },
   });
 
-  const hardened = !!values.hardened;
+  const promptArg = (values.prompt as string).trim();
+  const hardened = promptArg ? promptArg !== "standard" : !!values.hardened;
+  const promptVariant: PromptVariant = promptArg ? promptArg as PromptVariant : (hardened ? "B7" : "standard");
   const b6 = !!values.b6;
 
   const repetitions = Math.max(1, parseInt(values.repetitions as string, 10) || 1);
@@ -673,7 +680,7 @@ async function main() {
 
   const totalEvals = totalCombos * activeCases.length * repetitions;
 
-  const promptTag = hardened ? "B7 HARDENED" : "standard";
+  const promptTag = promptVariant === "B7.1" ? "B7.1 HARDENED" : hardened ? "B7 HARDENED" : "standard";
   const variantTag = b6 ? " (B6 format-variant)" : "";
 
   console.log(`\n${"═".repeat(110)}`);
@@ -690,7 +697,7 @@ async function main() {
       const effortTag = effort ? ` [effort=${effort}]` : "";
       const repsTag = repetitions > 1 ? ` × ${repetitions} reps` : "";
       process.stdout.write(`Running ${m.label}${effortTag}${repsTag} (${m.id})... `);
-      const run = await runModel(m.id, m.label, effort, repetitions, activeCases, hardened);
+      const run = await runModel(m.id, m.label, effort, repetitions, activeCases, promptVariant);
       run.b6 = b6;
       const caught = run.results.filter(r => r.caught).length;
       const status = run.error ? `\x1b[31mFAILED after ${run.results.length} cases\x1b[0m` : `done (${(run.totalMs / 1000).toFixed(1)}s)`;

@@ -12,6 +12,8 @@ set -euo pipefail
 #   TEST8_EFFORT    effort levels (default: default,low,medium,high,max)
 #   TEST8_REPS      repetitions per case (default: 1)
 #   TEST8_HARDENED  if "true", use B7 hardened prompt
+#   TEST8_PROMPT    prompt variant: standard, B7, B7.1 (overrides TEST8_HARDENED)
+#   TEST8_B6        if "true", use B6 format-variant cases
 #   S3_BUCKET       results bucket (default: cko-results)
 #   S3_PREFIX       results prefix (default: test8)
 # ============================================================================
@@ -25,6 +27,8 @@ EFFORT_LEVELS="${TEST8_EFFORT:-default,low,medium,high,max}"
 REPETITIONS="${TEST8_REPS:-1}"
 MODEL_FILTERS="${TEST8_MODELS:-}"
 HARDENED="${TEST8_HARDENED:-false}"
+PROMPT_VARIANT="${TEST8_PROMPT:-}"
+B6="${TEST8_B6:-false}"
 
 echo "============================================================"
 echo " Test 8: Adversarial Judge Robustness"
@@ -88,8 +92,13 @@ for model in "${MODELS[@]}"; do
     if [ "${effort}" != "default" ]; then
       CMD_ARGS+=(--effort "${effort}")
     fi
-    if [ "${HARDENED}" = "true" ]; then
+    if [ -n "${PROMPT_VARIANT}" ]; then
+      CMD_ARGS+=(--prompt "${PROMPT_VARIANT}")
+    elif [ "${HARDENED}" = "true" ]; then
       CMD_ARGS+=(--hardened)
+    fi
+    if [ "${B6}" = "true" ]; then
+      CMD_ARGS+=(--b6)
     fi
 
     npx tsx src/test-adversarial-judge.ts "${CMD_ARGS[@]}" || {
