@@ -11,6 +11,7 @@ set -euo pipefail
 #   TEST8_MODELS    comma-separated model filters (default: all)
 #   TEST8_EFFORT    effort levels (default: default,low,medium,high,max)
 #   TEST8_REPS      repetitions per case (default: 1)
+#   TEST8_HARDENED  if "true", use B7 hardened prompt
 #   S3_BUCKET       results bucket (default: cko-results)
 #   S3_PREFIX       results prefix (default: test8)
 # ============================================================================
@@ -23,12 +24,14 @@ S3_PREFIX="${S3_PREFIX:-test8}"
 EFFORT_LEVELS="${TEST8_EFFORT:-default,low,medium,high,max}"
 REPETITIONS="${TEST8_REPS:-1}"
 MODEL_FILTERS="${TEST8_MODELS:-}"
+HARDENED="${TEST8_HARDENED:-false}"
 
 echo "============================================================"
 echo " Test 8: Adversarial Judge Robustness"
 echo " Effort levels: ${EFFORT_LEVELS}"
 echo " Repetitions:   ${REPETITIONS}"
 echo " Models:        ${MODEL_FILTERS:-all}"
+echo " Hardened:      ${HARDENED}"
 echo " S3: s3://${S3_BUCKET}/${S3_PREFIX}/"
 echo "============================================================"
 
@@ -84,6 +87,9 @@ for model in "${MODELS[@]}"; do
     fi
     if [ "${effort}" != "default" ]; then
       CMD_ARGS+=(--effort "${effort}")
+    fi
+    if [ "${HARDENED}" = "true" ]; then
+      CMD_ARGS+=(--hardened)
     fi
 
     npx tsx src/test-adversarial-judge.ts "${CMD_ARGS[@]}" || {

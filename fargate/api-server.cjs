@@ -133,6 +133,7 @@ function startRun(params) {
   if (params.effort)    env.TEST8_EFFORT    = String(params.effort);
   if (params.reps)      env.TEST8_REPS      = String(params.reps);
   if (params.models)    env.TEST8_MODELS    = String(params.models);
+  if (params.hardened)  env.TEST8_HARDENED   = "true";
 
   // Test 8 B6 env vars
   if (params.effort)    env.TEST8B6_EFFORT  = String(params.effort);
