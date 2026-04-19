@@ -27,7 +27,7 @@ import {
   type PolicyResult,
 } from "./tool-policy.js";
 import { DriftDetector } from "./drift-detector.js";
-import { IntentJudge, type JudgeVerdict, type JudgeBackend } from "./intent-judge.js";
+import { IntentJudge, type JudgeVerdict, type JudgeBackend, type PromptVariant } from "./intent-judge.js";
 import { checkOllama, embedAny, isBedrockModel, chat } from "./ollama-client.js";
 import { checkBedrock, bedrockChat, bedrockEmbed } from "./bedrock-client.js";
 import type { ImageBlock } from "./session-tracker.js";
@@ -43,8 +43,8 @@ export interface InterceptorConfig {
   denyThreshold?: number;
   /** Enable LLM judge for REVIEW decisions (default: true) */
   enableJudge?: boolean;
-  /** Use B7 hardened prompt (default: false) */
-  hardened?: boolean;
+  /** Prompt variant: true/false for B7/standard, or "standard"/"B7"/"B7.1" */
+  hardened?: boolean | PromptVariant;
   /** Reasoning effort for the LLM judge */
   judgeEffort?: "low" | "medium" | "high" | "max";
 }

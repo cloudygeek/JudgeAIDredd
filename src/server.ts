@@ -83,7 +83,7 @@ const CONFIG = {
   judgeModel: values["judge-model"]!,
   judgeBackend: (values.backend as "ollama" | "bedrock")!,
   embeddingModel: values["embedding-model"]!,
-  hardened: !!values.hardened,
+  hardened: values.hardened ? "B7.1" as const : false,
   judgeEffort: (values["judge-effort"] as string).trim() || undefined,
   reviewThreshold: parseFloat(values["review-threshold"]!),
   denyThreshold: parseFloat(values["deny-threshold"]!),
@@ -995,7 +995,7 @@ async function main() {
   console.log(`  Embedding model: ${CONFIG.embeddingModel}`);
   console.log(`  Judge backend:   ${CONFIG.judgeBackend}`);
   console.log(`  Judge model:     ${CONFIG.judgeModel}`);
-  console.log(`  Judge prompt:    ${CONFIG.hardened ? "B7 HARDENED" : "standard"}`);
+  console.log(`  Judge prompt:    ${CONFIG.hardened === "B7.1" ? "B7.1 HARDENED" : CONFIG.hardened ? "B7 HARDENED" : "standard"}`);
   if (CONFIG.judgeEffort) console.log(`  Judge effort:    ${CONFIG.judgeEffort}`);
   console.log(`  Thresholds:      review=${CONFIG.reviewThreshold}, deny=${CONFIG.denyThreshold}`);
   console.log(`  Log directory:   ${CONFIG.logDir}`);
