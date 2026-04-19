@@ -81,6 +81,7 @@ def load_results(base_dir):
     patterns = [
         os.path.join(base_dir, "results", "test8", "adversarial-judge-*.json"),
         os.path.join(base_dir, "results", "adversarial-judge-*-B7-*.json"),
+        os.path.join(base_dir, "results", "adversarial-judge-*-B71-*.json"),
     ]
     files = []
     for pat in patterns:
@@ -250,11 +251,13 @@ def _plot(series, x_key_label, title, out_path, log_x=False):
             yerr_lo = [y - lo for y, lo in zip(ys, ci_los)]
             yerr_hi = [hi - y for y, hi in zip(ys, ci_his)]
 
+            is_b71 = prompt == "B7.1-hardened"
             is_b7 = prompt == "B7-hardened"
-            marker = "*" if is_b7 else "o"
-            ms = 14 if is_b7 else 8
-            label_suffix = " (B7)" if is_b7 else ""
-            linestyle = "--" if is_b7 else "-"
+            is_hardened = is_b7 or is_b71
+            marker = "D" if is_b71 else ("*" if is_b7 else "o")
+            ms = 12 if is_b71 else (14 if is_b7 else 8)
+            label_suffix = " (B7.1)" if is_b71 else (" (B7)" if is_b7 else "")
+            linestyle = "-." if is_b71 else ("--" if is_b7 else "-")
 
             # Line connecting effort levels (only for standard, since B7 has
             # only one effort level per model so far)
@@ -275,7 +278,9 @@ def _plot(series, x_key_label, title, out_path, log_x=False):
             # Labels
             for x, y, effort in zip(xs, ys, efforts):
                 label_text = effort
-                if is_b7:
+                if is_b71:
+                    label_text = f"B7.1"
+                elif is_b7:
                     label_text = f"B7"
                 txt = ax.annotate(
                     label_text, (x, y),
