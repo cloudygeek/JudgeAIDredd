@@ -43,6 +43,10 @@ export interface InterceptorConfig {
   denyThreshold?: number;
   /** Enable LLM judge for REVIEW decisions (default: true) */
   enableJudge?: boolean;
+  /** Use B7 hardened prompt (default: false) */
+  hardened?: boolean;
+  /** Reasoning effort for the LLM judge */
+  judgeEffort?: "low" | "medium" | "high" | "max";
 }
 
 const DEFAULTS: Required<InterceptorConfig> = {
@@ -52,6 +56,8 @@ const DEFAULTS: Required<InterceptorConfig> = {
   reviewThreshold: 0.6,
   denyThreshold: 0.15,
   enableJudge: true,
+  hardened: false,
+  judgeEffort: undefined as any,
 };
 
 export interface InterceptionResult {
@@ -87,7 +93,7 @@ export class PreToolInterceptor {
   constructor(config?: InterceptorConfig) {
     this.config = { ...DEFAULTS, ...config };
     this.driftDetector = new DriftDetector(this.config.embeddingModel);
-    this.judge = new IntentJudge(this.config.judgeModel, this.config.judgeBackend);
+    this.judge = new IntentJudge(this.config.judgeModel, this.config.judgeBackend, this.config.judgeEffort, this.config.hardened);
   }
 
   async preflight(): Promise<void> {

@@ -38,6 +38,8 @@ const { values } = parseArgs({
     "judge-model": { type: "string", default: "nemotron-3-super" },
     backend: { type: "string", default: "ollama" },
     "embedding-model": { type: "string", default: "eu.cohere.embed-v4:0" },
+    "hardened": { type: "boolean", default: false },
+    "judge-effort": { type: "string", default: "" },
     "review-threshold": { type: "string", default: "0.6" },
     "deny-threshold": { type: "string", default: "0.15" },
     "log-dir": { type: "string", default: "./results" },
@@ -81,6 +83,8 @@ const CONFIG = {
   judgeModel: values["judge-model"]!,
   judgeBackend: (values.backend as "ollama" | "bedrock")!,
   embeddingModel: values["embedding-model"]!,
+  hardened: !!values.hardened,
+  judgeEffort: (values["judge-effort"] as string).trim() || undefined,
   reviewThreshold: parseFloat(values["review-threshold"]!),
   denyThreshold: parseFloat(values["deny-threshold"]!),
   logDir: values["log-dir"]!,
@@ -102,6 +106,8 @@ const interceptor = new PreToolInterceptor({
   embeddingModel: CONFIG.embeddingModel,
   reviewThreshold: CONFIG.reviewThreshold,
   denyThreshold: CONFIG.denyThreshold,
+  hardened: CONFIG.hardened,
+  judgeEffort: CONFIG.judgeEffort as any,
 });
 
 // Track which sessions have had their goal registered with the interceptor
@@ -989,6 +995,8 @@ async function main() {
   console.log(`  Embedding model: ${CONFIG.embeddingModel}`);
   console.log(`  Judge backend:   ${CONFIG.judgeBackend}`);
   console.log(`  Judge model:     ${CONFIG.judgeModel}`);
+  console.log(`  Judge prompt:    ${CONFIG.hardened ? "B7 HARDENED" : "standard"}`);
+  if (CONFIG.judgeEffort) console.log(`  Judge effort:    ${CONFIG.judgeEffort}`);
   console.log(`  Thresholds:      review=${CONFIG.reviewThreshold}, deny=${CONFIG.denyThreshold}`);
   console.log(`  Log directory:   ${CONFIG.logDir}`);
 

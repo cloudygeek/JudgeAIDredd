@@ -11,7 +11,7 @@ import { writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const REGION = process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "eu-west-2";
+const REGION = process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "eu-central-1";
 const MODEL_ID = process.env.BEDROCK_JUDGE_MODEL ?? "nvidia.nemotron-super-3-120b";
 
 type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "none";
@@ -113,7 +113,11 @@ export async function bedrockChat(
       .join("");
     const thinking = blocks
       .filter((c) => c.reasoningContent !== undefined)
-      .map((c) => ((c.reasoningContent as Record<string, unknown>).text ?? "") as string)
+      .map((c) => {
+        const rc = c.reasoningContent as Record<string, unknown>;
+        const rt = rc.reasoningText as Record<string, unknown> | undefined;
+        return ((rt?.text ?? rc.text ?? "") as string);
+      })
       .join("");
 
     const usage = parsed.usage ?? {};

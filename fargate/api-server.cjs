@@ -30,6 +30,7 @@ const ENTRYPOINTS = {
   "8": "/docker-entrypoint-test8.sh",
   "9": "/docker-entrypoint-test9.sh",
   "9a": "/docker-entrypoint-test9a.sh",
+  "8b6": "/docker-entrypoint-test8b6.sh",
   "10": "/docker-entrypoint-test10.sh",
 };
 const DEFAULT_TEST = process.env.TEST_NUM || "7";
@@ -132,6 +133,11 @@ function startRun(params) {
   if (params.effort)    env.TEST8_EFFORT    = String(params.effort);
   if (params.reps)      env.TEST8_REPS      = String(params.reps);
   if (params.models)    env.TEST8_MODELS    = String(params.models);
+
+  // Test 8 B6 env vars
+  if (params.effort)    env.TEST8B6_EFFORT  = String(params.effort);
+  if (params.reps)      env.TEST8B6_REPS    = String(params.reps);
+  if (params.models)    env.TEST8B6_MODELS  = String(params.models);
 
   // Test 10/11 env vars
   if (params.defences)      env.TEST10_DEFENCES     = String(params.defences);

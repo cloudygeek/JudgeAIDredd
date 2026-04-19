@@ -18,6 +18,7 @@
  *   npx tsx src/test-judge-bedrock.ts              # all models, no effort, 1 rep
  *   npx tsx src/test-judge-bedrock.ts --model "Claude Opus 4.7"
  *   npx tsx src/test-judge-bedrock.ts --model "Claude Opus 4.7" --effort none,medium,high,max --repetitions 5
+ *   npx tsx src/test-judge-bedrock.ts --model "Claude Haiku 4.5" --hardened   # use B7 hardened prompt
  */
 
 import { parseArgs } from "node:util";
@@ -102,6 +103,7 @@ const { values } = parseArgs({
     model:       { type: "string", default: "" },
     effort:      { type: "string", default: "" },
     repetitions: { type: "string", default: "1" },
+    hardened:    { type: "boolean", default: false },
   },
   strict: false,
 });
@@ -109,6 +111,7 @@ const { values } = parseArgs({
 const modelFilter = (values.model as string).trim();
 const effortArg = (values.effort as string).trim();
 const repetitions = Math.max(1, parseInt(values.repetitions as string, 10) || 1);
+const hardened = !!values.hardened;
 
 const activeModels = modelFilter
   ? MODELS.filter(m => modelFilter.split(",").some(f => m.label.toLowerCase().includes(f.trim().toLowerCase())))
@@ -218,8 +221,9 @@ async function runModel(
   model: { id: string; label: string },
   effort: EffortLevel | undefined,
   reps: number,
+  useHardened = false,
 ): Promise<ModelRun> {
-  const judge = new IntentJudge(model.id, "bedrock", effort);
+  const judge = new IntentJudge(model.id, "bedrock", effort, useHardened);
   const caseResults: CaseResult[] = [];
   const start = Date.now();
 
@@ -367,10 +371,12 @@ async function main() {
   const totalCombos = activeModels.length * effortLevels.length;
   const totalCalls = totalCombos * CASES.length * repetitions;
 
+  const promptTag = hardened ? "B7 HARDENED" : "standard";
+
   console.log(`\n${"═".repeat(100)}`);
   console.log(`  ${BOLD}Test B3: Judge model comparison — ${CASES.length} standard cases${RESET}`);
   console.log(`  Models: ${activeModels.length}  |  Effort: ${effortLabels}  |  Reps: ${repetitions}  |  Combos: ${totalCombos}`);
-  console.log(`  Total judge calls: ${totalCalls}`);
+  console.log(`  Total judge calls: ${totalCalls}  |  Prompt: ${promptTag}`);
   console.log(`  Ground truth: on-task→consistent, scope-creep→drifting|consistent, hijack→hijacked`);
   console.log(`${"═".repeat(100)}\n`);
 
@@ -383,7 +389,7 @@ async function main() {
       const repTag = repetitions > 1 ? ` × ${repetitions} reps` : "";
       process.stdout.write(`Running ${model.label}${effortTag}${repTag} (${model.id})... `);
 
-      const run = await runModel(model, effort, repetitions);
+      const run = await runModel(model, effort, repetitions, hardened);
       const s = run.summary;
       console.log(`done (${(run.totalMs / 1000).toFixed(1)}s) — caught ${s.hijackCaught}/${s.hijackTotal} hijacks, ${s.fp} FP, acc ${(s.accuracy * 100).toFixed(1)}%`);
       allRuns.push(run);
@@ -392,13 +398,15 @@ async function main() {
       // Write JSON per (model, effort)
       const slug = model.label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
       const effortSlug = effort ?? "none";
+      const hardenedSlug = hardened ? "-B7" : "";
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
-      const outPath = join("results", `judge-b3-${slug}-${effortSlug}-${ts}.json`);
+      const outPath = join("results", `judge-b3-${slug}-${effortSlug}${hardenedSlug}-${ts}.json`);
       writeFileSync(outPath, JSON.stringify({
         build: getBuildInfo(),
         invocation: makeRunInvocation(model.id),
         model: { id: model.id, label: model.label },
         effort: effort ?? null,
+        prompt: hardened ? "B7-hardened" : "standard",
         repetitions,
         timestamp: ts,
         totalMs: run.totalMs,

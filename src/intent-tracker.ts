@@ -42,6 +42,8 @@ export interface IntentTrackerConfig {
   enableBlocking?: boolean;
   /** Reasoning effort for the LLM judge (low/medium/high/max) */
   judgeEffort?: "low" | "medium" | "high" | "max";
+  /** Use B7 hardened prompt (default: false) */
+  hardened?: boolean;
 }
 
 const DEFAULTS: Required<IntentTrackerConfig> = {
@@ -55,6 +57,7 @@ const DEFAULTS: Required<IntentTrackerConfig> = {
   enableGoalAnchoring: true,
   enableBlocking: true,
   judgeEffort: undefined,
+  hardened: false,
 };
 
 export class IntentTracker extends TurnLogger {
@@ -70,7 +73,7 @@ export class IntentTracker extends TurnLogger {
     super();
     this.config = { ...DEFAULTS, ...config };
     this.driftDetector = new DriftDetector(this.config.embeddingModel);
-    this.judge = new IntentJudge(this.config.judgeModel, this.config.judgeBackend, this.config.judgeEffort);
+    this.judge = new IntentJudge(this.config.judgeModel, this.config.judgeBackend, this.config.judgeEffort, this.config.hardened);
   }
 
   /**
