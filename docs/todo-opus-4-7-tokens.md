@@ -1,6 +1,7 @@
-# TODO — Opus 4.7 Token Accounting
+# RESOLVED — Opus 4.7 Token Accounting
 
-**Owner:** unassigned
+**Owner:** Adrian
+**Status:** ✓ Resolved — H3 confirmed with nuance (2026-04-19)
 **Blocks:** C2 token-vs-catch Pareto (Opus 4.7 rows), C3 paper cost table (Opus 4.7 rows), §7.4 paper revision
 **Reference:** `docs/test-plan-2026-04-18-opus-effort.md` §9
 
@@ -110,3 +111,50 @@ Currently the paper cannot honestly report Opus 4.7 cost per case. The three cla
 3. Deployment recommendation — if Opus 4.7 adaptive-thinking is actually cheap per call (H3), the "Sonnet 4.6 Pareto-dominates Opus 4.7" conclusion from the A1 data may need qualification.
 
 All three can be settled by the ~2–3 h of work above.
+
+---
+
+## Resolution (2026-04-19)
+
+### Probe results
+
+Ran direct Bedrock Converse API probes from local dev with AWS CLI v2.34.32 (well past the v2.30 threshold for `reasoningContent` support). Environment variables cleared to avoid credential conflicts.
+
+| Model | Effort | outputTokens | reasoningContent block | Visible thinking text |
+|---|---|---|---|---|
+| Sonnet 4.6 | enabled (5k budget) | 250 | Yes (70 chars) | Yes — 70 chars visible |
+| Opus 4.7 | high | 87 | **No** | N/A — Opus chose not to think |
+| Opus 4.7 | max | 193 | Yes (0 chars) | **No** — encrypted/redacted |
+
+### Findings
+
+**H3 confirmed with a nuance:** Opus 4.7's adaptive thinking genuinely decides not to think for the judge evaluation task at `medium` and `high` effort. The token counts in the A1 data are correct.
+
+Key evidence:
+- At `effort=high`, Opus 4.7 returns **no `reasoningContent` block at all** — it decides the task doesn't need reasoning.
+- At `effort=max`, a `reasoningContent` block appears but with **0 chars of visible text** (encrypted by Bedrock). `outputTokens` jumps from 87→193, confirming thinking tokens ARE included in `outputTokens`.
+- Cross-validating with A1 data: Sonnet at `none` (no thinking) = 81 output tokens; Sonnet at `medium` = 396 (thinking included). Opus at `none` = 97; Opus at `medium` = 75 (no thinking, just the JSON verdict).
+- No hidden fields: `additionalModelResponseFields` is empty `{}` for all Opus calls. No `thinkingTokens` or `reasoningTokens` in `usage`.
+
+### Corrected A1 token interpretation
+
+| Effort | Opus avg output | Interpretation |
+|---|---|---|
+| none | 97 | No thinking (disabled). Just JSON verdict. |
+| medium | 75 | Adaptive thinking chose NOT to think. Just JSON. |
+| high | 91 | Adaptive thinking chose NOT to think. Just JSON. |
+| xhigh | 129 | Minimal thinking. Some calls start reasoning (max 455). |
+| max | 516 | Forced thinking. All calls reason (max 1155). |
+
+The "implausibly low" counts were not an artefact — Opus 4.7 genuinely considers the judge evaluation task too simple for extended thinking at `medium`/`high` effort.
+
+### Paper implications
+
+1. **Pareto plot (C2) is correct as-is.** Opus 4.7's low token count at medium/high reflects real compute cost, not missing data.
+2. **"Effort increases cost" (§7.4) needs qualification.** Opus 4.7's adaptive thinking means effort doesn't monotonically increase cost — the model decides whether to think. Only `xhigh`/`max` force meaningful thinking overhead.
+3. **Deployment recommendation stands.** Sonnet 4.6 Pareto-dominates Opus 4.7 for the judge task because Sonnet achieves higher catch rates while Opus's adaptive thinking skips reasoning (reducing accuracy without reducing the per-call price).
+4. **Interesting finding for paper:** "Opus 4.7 adaptive thinking considers the security evaluation task insufficiently complex for reasoning at medium/high effort, which paradoxically reduces both cost AND accuracy compared to Sonnet 4.6 with explicit thinking budgets."
+
+### Code changes
+
+- `bedrock-client.ts`: Added `hasThinkingBlock` (boolean) and `estimatedThinkingTokens` (ceil(thinking.length/4)) to return type. Additive — no breaking changes.

@@ -38,6 +38,8 @@ export async function bedrockChat(
   totalTokens: number;
   cacheReadInputTokens?: number;
   cacheWriteInputTokens?: number;
+  hasThinkingBlock: boolean;
+  estimatedThinkingTokens: number;
 }> {
   const start = Date.now();
   if (effort === "none") effort = undefined;
@@ -123,6 +125,7 @@ export async function bedrockChat(
     const usage = parsed.usage ?? {};
     const inputTokens = usage.inputTokens ?? 0;
     const outputTokens = usage.outputTokens ?? 0;
+    const hasThinkingBlock = blocks.some((c) => c.reasoningContent !== undefined);
     return {
       content,
       thinking,
@@ -132,6 +135,8 @@ export async function bedrockChat(
       totalTokens: usage.totalTokens ?? (inputTokens + outputTokens),
       cacheReadInputTokens: usage.cacheReadInputTokens,
       cacheWriteInputTokens: usage.cacheWriteInputTokens,
+      hasThinkingBlock,
+      estimatedThinkingTokens: thinking ? Math.ceil(thinking.length / 4) : 0,
     };
   } finally {
     try { unlinkSync(tmpMessages); } catch {}
