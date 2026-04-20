@@ -39,8 +39,13 @@ COPY workspace-template/ ./workspace-template/
 # ── AgentDojo benchmark (Python) ────────────────────────────────────────────
 # All wheels are vendored (no network access to PyPI needed).
 COPY python-wheels/ /tmp/python-wheels/
+# Install agentdojo with --no-deps to skip cohere/google-genai/langchain/torch
+# (we only use the Bedrock backend via our own BedrockAnthropicLLM bridge).
+# Then install only the transitive deps we actually need.
 RUN pip3 install --break-system-packages --no-index --find-links /tmp/python-wheels/ \
-        agentdojo anthropic openai "pydantic[email]" tenacity pyyaml \
+        --no-deps agentdojo \
+    && pip3 install --break-system-packages --no-index --find-links /tmp/python-wheels/ \
+        anthropic openai "pydantic[email]" tenacity pyyaml \
         typing-extensions rich click deepdiff docstring-parser \
         python-dotenv requests \
     && rm -rf /tmp/python-wheels/
