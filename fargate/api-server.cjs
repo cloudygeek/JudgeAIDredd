@@ -150,6 +150,13 @@ function startRun(params) {
   if (params.judgeEffort)   env.TEST10_JUDGE_EFFORT = String(params.judgeEffort);
   if (params.reps)          env.TEST10_REPS         = String(params.reps);
 
+  // Generic env passthrough (test 12 / AgentDojo uses this)
+  if (params.env && typeof params.env === "object") {
+    for (const [k, v] of Object.entries(params.env)) {
+      env[k] = String(v);
+    }
+  }
+
   // Shared env vars
   if (params.s3Bucket)  env.S3_BUCKET       = String(params.s3Bucket);
   if (params.s3Prefix)  env.S3_PREFIX       = String(params.s3Prefix);
@@ -327,6 +334,24 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ── POST /stop — kill the running process ──────────────────────────────────
+  if (req.method === "POST" && url.pathname === "/stop") {
+    if (state.status !== "running" || !currentProcess) {
+      res.writeHead(409, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "No run in progress" }));
+      return;
+    }
+    const pid = currentProcess.pid;
+    appendLog(`[STOP] Killing process ${pid} via POST /stop`);
+    currentProcess.kill("SIGTERM");
+    setTimeout(() => {
+      if (currentProcess) currentProcess.kill("SIGKILL");
+    }, 5000);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ message: "Stop signal sent", pid }));
+    return;
+  }
+
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "Not found", path: url.pathname }));
 });
@@ -337,6 +362,7 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("  GET  /status  JSON run state");
   console.log("  GET  /logs    plain-text log tail (?n=N)");
   console.log("  POST /run     start a run (JSON body with optional overrides)");
+  console.log("  POST /stop    kill the running process");
 });
 
 // ---------------------------------------------------------------------------
