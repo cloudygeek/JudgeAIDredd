@@ -37,9 +37,16 @@ COPY scenarios/ ./scenarios/
 COPY workspace-template/ ./workspace-template/
 
 # ── AgentDojo benchmark (Python) ────────────────────────────────────────────
-# Install AgentDojo from vendored copy, plus our benchmark bridge
+# Install deps first (heavy ones like cohere/google-genai/langchain need build
+# tools on slim images, but we only use the Anthropic path).  Install AgentDojo
+# with --no-deps then add the subset we actually need.
 COPY agentdojo/ /tmp/agentdojo/
-RUN pip3 install --break-system-packages /tmp/agentdojo/ requests && rm -rf /tmp/agentdojo/
+RUN pip3 install --break-system-packages --no-deps /tmp/agentdojo/ \
+    && pip3 install --break-system-packages \
+        anthropic pydantic[email] tenacity pyyaml typing-extensions \
+        rich click deepdiff docstring-parser python-dotenv requests \
+        openai \
+    && rm -rf /tmp/agentdojo/
 COPY benchmarks/ ./benchmarks/
 
 # ── Build provenance ────────────────────────────────────────────────────────
