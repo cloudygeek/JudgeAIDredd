@@ -37,17 +37,13 @@ COPY scenarios/ ./scenarios/
 COPY workspace-template/ ./workspace-template/
 
 # ── AgentDojo benchmark (Python) ────────────────────────────────────────────
-# Pre-built wheel avoids needing hatchling (not on private PyPI).
-# Only install the deps we actually use (Anthropic path) — skip cohere,
-# google-genai, langchain which need build tools on slim images.
-# PIP_INDEX_URL may be set by CodeBuild to route through a private registry.
-ARG PIP_INDEX_URL=
-COPY agentdojo-0.1.35-py3-none-any.whl /tmp/agentdojo-0.1.35-py3-none-any.whl
-RUN pip3 install --break-system-packages --no-deps /tmp/agentdojo-0.1.35-py3-none-any.whl \
-    && pip3 install --break-system-packages --extra-index-url https://pypi.org/simple/ \
-        anthropic openai pydantic[email] tenacity pyyaml typing-extensions \
-        rich click deepdiff docstring-parser python-dotenv requests \
-    && rm -f /tmp/agentdojo-0.1.35-py3-none-any.whl
+# All wheels are vendored (no network access to PyPI needed).
+COPY python-wheels/ /tmp/python-wheels/
+RUN pip3 install --break-system-packages --no-index --find-links /tmp/python-wheels/ \
+        agentdojo anthropic openai "pydantic[email]" tenacity pyyaml \
+        typing-extensions rich click deepdiff docstring-parser \
+        python-dotenv requests \
+    && rm -rf /tmp/python-wheels/
 COPY benchmarks/ ./benchmarks/
 
 # ── Build provenance ────────────────────────────────────────────────────────
