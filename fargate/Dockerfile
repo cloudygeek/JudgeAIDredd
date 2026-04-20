@@ -44,7 +44,7 @@ COPY workspace-template/ ./workspace-template/
 ARG PIP_INDEX_URL=
 COPY agentdojo-0.1.35-py3-none-any.whl /tmp/agentdojo-0.1.35-py3-none-any.whl
 RUN pip3 install --break-system-packages --no-deps /tmp/agentdojo-0.1.35-py3-none-any.whl \
-    && pip3 install --break-system-packages \
+    && pip3 install --break-system-packages --extra-index-url https://pypi.org/simple/ \
         anthropic openai pydantic[email] tenacity pyyaml typing-extensions \
         rich click deepdiff docstring-parser python-dotenv requests \
     && rm -f /tmp/agentdojo-0.1.35-py3-none-any.whl
