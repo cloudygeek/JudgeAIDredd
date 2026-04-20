@@ -19,6 +19,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /tmp/aws /tmp/awscliv2.zip \
     && rm -rf /var/lib/apt/lists/*
 
+# ── Python 3.12 + pip (for AgentDojo benchmark) ────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── Node dependencies ───────────────────────────────────────────────────────
 # tsx (devDep) is required at runtime: tsconfig rootDir=src means scenarios/
 # cannot be compiled alongside src/ without restructuring; tsx handles it fine.
@@ -30,6 +35,12 @@ COPY tsconfig.json ./
 COPY src/ ./src/
 COPY scenarios/ ./scenarios/
 COPY workspace-template/ ./workspace-template/
+
+# ── AgentDojo benchmark (Python) ────────────────────────────────────────────
+# Install AgentDojo from vendored copy, plus our benchmark bridge
+COPY agentdojo/ /tmp/agentdojo/
+RUN pip3 install --break-system-packages /tmp/agentdojo/ requests && rm -rf /tmp/agentdojo/
+COPY benchmarks/ ./benchmarks/
 
 # ── Build provenance ────────────────────────────────────────────────────────
 ARG GIT_COMMIT=unknown
@@ -63,7 +74,9 @@ COPY docker-entrypoint-test9.sh /docker-entrypoint-test9.sh
 COPY docker-entrypoint-test8b6.sh /docker-entrypoint-test8b6.sh
 # Test 10/11: Pipeline Exfiltration Scoring
 COPY docker-entrypoint-test10.sh /docker-entrypoint-test10.sh
-RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test8b6.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh /docker-entrypoint-test10.sh
+# Test 12: AgentDojo External Benchmark
+COPY docker-entrypoint-test12.sh /docker-entrypoint-test12.sh
+RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test8b6.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh /docker-entrypoint-test10.sh /docker-entrypoint-test12.sh
 
 COPY server.js /app/server.js
 

@@ -92,6 +92,13 @@ cp <project>/fargate/docker-entrypoint-test4.sh ./docker-entrypoint-test4.sh
 cp <project>/fargate/docker-entrypoint-test8.sh ./docker-entrypoint-test8.sh
 cp <project>/fargate/docker-entrypoint-test9.sh ./docker-entrypoint-test9.sh
 cp <project>/fargate/docker-entrypoint-test9a.sh ./docker-entrypoint-test9a.sh
+cp <project>/fargate/docker-entrypoint-test12.sh ./docker-entrypoint-test12.sh
+
+# AgentDojo benchmark (Python) — vendored into the image
+cp -r <project>/benchmarks ./benchmarks
+
+# AgentDojo source (Dockerfile pip installs it)
+cp -r /path/to/agentdojo ./agentdojo
 
 # API server + Dockerfile + assets
 cp <project>/fargate/api-server.cjs ./server.js
@@ -130,6 +137,7 @@ docker build -f fargate/Dockerfile \
 | `fargate/docker-entrypoint-test8.sh` | Test 8: Adversarial Judge Robustness (effort sweep) |
 | `fargate/docker-entrypoint-test9.sh` | Test 9: Latency Impact |
 | `fargate/docker-entrypoint-test9a.sh` | Test 9a: Latency Impact — effort dimension |
+| `fargate/docker-entrypoint-test12.sh` | Test 12: AgentDojo External Benchmark |
 | `fargate/api-server.cjs` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
 | `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-west-2.amazonaws.com`) |
 | `fargate/infra/` | Terraform for the Fargate task definition and supporting resources |

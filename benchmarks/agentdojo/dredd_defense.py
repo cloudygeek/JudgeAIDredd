@@ -154,8 +154,7 @@ class JudgeDreddDefense(BasePipelineElement):
         if last_msg["tool_calls"] is None or len(last_msg["tool_calls"]) == 0:
             return query, runtime, env, messages, extra_args
 
-        allowed_calls = []
-        denied_results = []
+        denied_ids: set[str] = set()
 
         for tc in last_msg["tool_calls"]:
             result = self._evaluate_tool_call(tc.function, tc.args)
@@ -163,28 +162,39 @@ class JudgeDreddDefense(BasePipelineElement):
 
             if decision == "deny":
                 self.stats["denied"] += 1
+                denied_ids.add(tc.id)
                 logger.info(f"BLOCKED: {tc.function}({json.dumps(tc.args)[:100]})")
-                denied_results.append(
-                    ChatToolResultMessage(
-                        role="tool",
-                        content=[text_content_block_from_string(
-                            f"Tool call denied by security policy: {result.get('reason', 'blocked by judge')}"
-                        )],
-                        tool_call_id=tc.id,
-                        tool_call=tc,
-                        error=f"Security policy denied this tool call: {result.get('reason', 'blocked')}",
-                    )
-                )
             else:
                 self.stats["allowed"] += 1
-                allowed_calls.append(tc)
 
-        if not denied_results:
+        if not denied_ids:
             return query, runtime, env, messages, extra_args
 
-        # Replace tool_calls in the last message with only the allowed ones
-        modified_last = dict(last_msg)
-        modified_last["tool_calls"] = allowed_calls if allowed_calls else None
-        messages = [*messages[:-1], modified_last, *denied_results]
+        # Keep all tool_calls in the assistant message so every tool_result
+        # has a matching tool_use (Anthropic API requirement).  Add error
+        # tool_results for denied calls.  When any call in a batch is
+        # denied we block the entire batch — a mixed legitimate/malicious
+        # batch indicates hijacking.
+        error_results = []
+        for tc in last_msg["tool_calls"]:
+            if tc.id in denied_ids:
+                reason = "Security policy denied this tool call"
+            else:
+                reason = "Blocked: batch contained a denied tool call"
+            error_results.append(
+                ChatToolResultMessage(
+                    role="tool",
+                    content=[text_content_block_from_string(
+                        f"Tool call blocked by security policy: {reason}"
+                    )],
+                    tool_call_id=tc.id,
+                    tool_call=tc,
+                    error=reason,
+                )
+            )
+
+        # ToolsExecutor will see messages[-1] is "tool" and pass through.
+        # The LLM will see error results and can respond accordingly.
+        messages = [*messages, *error_results]
 
         return query, runtime, env, messages, extra_args

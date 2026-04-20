@@ -116,7 +116,17 @@ def build_pipeline(
     pipeline = AgentPipeline([system_message, init_query, llm, tools_loop])
 
     defense_suffix = f"-dredd-{defense}" if defense else ""
-    pipeline.name = f"{model_id}{defense_suffix}"
+    # Pipeline name must contain a key from MODEL_NAMES for attack crafting.
+    # Bedrock model IDs (eu.anthropic.claude-...) don't match — use a
+    # synthetic name that includes "claude-3-5-sonnet-20241022" or similar.
+    friendly = model_id
+    if "haiku" in model_id:
+        friendly = "claude-3-haiku-20240307"
+    elif "sonnet" in model_id:
+        friendly = "claude-3-5-sonnet-20241022"
+    elif "opus" in model_id:
+        friendly = "claude-3-opus-20240229"
+    pipeline.name = f"{friendly}{defense_suffix}"
 
     return pipeline
 
@@ -137,14 +147,15 @@ def show_results(suite_name: str, results: SuiteResults, has_attack: bool) -> di
 
     if has_attack:
         security_results = list(results["security_results"].values())
-        avg_security = sum(security_results) / len(security_results) if security_results else 0
-        asr = 1 - avg_security
+        # security()=True means the injection succeeded (attacker wins)
+        asr = sum(security_results) / len(security_results) if security_results else 0
+        defense_rate = 1 - asr
 
-        summary["security"] = avg_security
         summary["asr"] = asr
+        summary["defense_rate"] = defense_rate
         summary["security_n"] = len(security_results)
 
-        print(f"  {suite_name}: security = {avg_security*100:.1f}% | ASR = {asr*100:.1f}% ({len(security_results)} tests)")
+        print(f"  {suite_name}: ASR = {asr*100:.1f}% | defense = {defense_rate*100:.1f}% ({len(security_results)} tests)")
 
         inj_results = results["injection_tasks_utility_results"]
         if inj_results:
