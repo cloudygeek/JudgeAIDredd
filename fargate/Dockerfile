@@ -47,7 +47,7 @@ RUN pip3 install --break-system-packages --no-index --find-links /tmp/python-whe
     && pip3 install --break-system-packages --no-index --find-links /tmp/python-wheels/ \
         anthropic openai "pydantic[email]" tenacity pyyaml \
         typing-extensions rich click deepdiff docstring-parser \
-        python-dotenv requests \
+        python-dotenv requests boto3 botocore \
     && rm -rf /tmp/python-wheels/
 COPY benchmarks/ ./benchmarks/
 
