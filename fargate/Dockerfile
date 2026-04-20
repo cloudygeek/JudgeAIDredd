@@ -19,9 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /tmp/aws /tmp/awscliv2.zip \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Python 3.12 + pip (for AgentDojo benchmark) ────────────────────────────
+# ── Python 3 + pip (for AgentDojo benchmark) ───────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-venv \
+        python3-full python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Node dependencies ───────────────────────────────────────────────────────
@@ -40,6 +40,8 @@ COPY workspace-template/ ./workspace-template/
 # Install deps first (heavy ones like cohere/google-genai/langchain need build
 # tools on slim images, but we only use the Anthropic path).  Install AgentDojo
 # with --no-deps then add the subset we actually need.
+# PIP_INDEX_URL may be set by CodeBuild to route through a private registry.
+ARG PIP_INDEX_URL=
 COPY agentdojo/ /tmp/agentdojo/
 RUN pip3 install --break-system-packages --no-deps /tmp/agentdojo/ \
     && pip3 install --break-system-packages \
