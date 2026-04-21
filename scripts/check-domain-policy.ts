@@ -104,8 +104,8 @@ check("R7 escalates unknown venue", r?.decision === "review" && r.matchedRule ==
 r = evaluateDomainPolicy("get_balance", {}, { originalTask: "check balance", priorTurnCalls: [] });
 check("No rule for plain read", r === null);
 
-// B7.2 judge instantiation
-const judge = new IntentJudge("claude-sonnet-4", "bedrock", undefined, "B7.2");
-check("B7.2 judge constructed", judge !== undefined);
+// B7.1-office judge instantiation
+const judge = new IntentJudge("claude-sonnet-4", "bedrock", undefined, "B7.1-office");
+check("B7.1-office judge constructed", judge !== undefined);
 
 console.log(process.exitCode ? "\nSOME CHECKS FAILED" : "\nAll checks passed");

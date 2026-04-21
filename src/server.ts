@@ -85,12 +85,12 @@ const CONFIG = {
   judgeModel: values["judge-model"]!,
   judgeBackend: (values.backend as "ollama" | "bedrock")!,
   embeddingModel: values["embedding-model"]!,
-  // --prompt wins over --hardened. Accepts "B7", "B7.1", "B7.2", "standard".
+  // --prompt wins over --hardened. Accepts "B7", "B7.1", "B7.1-office", "standard".
   hardened: (() => {
     const p = (values.prompt as string).trim();
-    if (p === "B7" || p === "B7.1" || p === "B7.2") return p;
+    if (p === "B7" || p === "B7.1" || p === "B7.1-office") return p;
     if (p === "standard" || p === "") return values.hardened ? "B7.1" as const : false;
-    throw new Error(`Unknown --prompt variant "${p}" (want: standard, B7, B7.1, B7.2)`);
+    throw new Error(`Unknown --prompt variant "${p}" (want: standard, B7, B7.1, B7.1-office)`);
   })(),
   judgeEffort: (values["judge-effort"] as string).trim() || undefined,
   reviewThreshold: parseFloat(values["review-threshold"]!),
