@@ -24,6 +24,72 @@ import sys
 import time
 from pathlib import Path
 
+
+def _patch_openai_tool_call_decode():
+    """AgentDojo's OpenAI adapter crashes the whole benchmark if the model
+    emits malformed JSON arguments. Treat malformed args as an empty dict
+    so the scenario fails gracefully instead of killing the run."""
+    try:
+        import json
+        from agentdojo.agent_pipeline.llms import openai_llm
+        from agentdojo.functions_runtime import FunctionCall
+
+        def patched(tool_call):
+            try:
+                args = json.loads(tool_call.function.arguments)
+            except Exception:
+                args = {}
+            return FunctionCall(
+                function=tool_call.function.name,
+                args=args,
+                id=tool_call.id,
+            )
+
+        openai_llm._openai_to_tool_call = patched
+    except Exception as e:  # pragma: no cover
+        print(f"warning: could not patch openai tool-call decode: {e}", file=sys.stderr)
+
+
+def _patch_openai_retry():
+    """AgentDojo's OpenAI retry caps at 3 attempts / 40s — too tight for the
+    30k TPM tier we're on. Replace with a longer, rate-limit-aware retry."""
+    try:
+        import openai
+        from agentdojo.agent_pipeline.llms import openai_llm
+        from openai._types import NOT_GIVEN
+        from tenacity import (
+            retry,
+            retry_if_not_exception_type,
+            stop_after_attempt,
+            wait_random_exponential,
+        )
+
+        @retry(
+            wait=wait_random_exponential(multiplier=2, max=90),
+            stop=stop_after_attempt(10),
+            reraise=True,
+            retry=retry_if_not_exception_type(
+                (openai.BadRequestError, openai.UnprocessableEntityError)
+            ),
+        )
+        def patched(client, model, messages, tools, reasoning_effort, temperature=0.0):
+            return client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tools or NOT_GIVEN,
+                tool_choice="auto" if tools else NOT_GIVEN,
+                temperature=temperature or NOT_GIVEN,
+                reasoning_effort=reasoning_effort or NOT_GIVEN,
+            )
+
+        openai_llm.chat_completion_request = patched
+    except Exception as e:  # pragma: no cover — best-effort
+        print(f"warning: could not patch openai retry: {e}", file=sys.stderr)
+
+
+_patch_openai_retry()
+_patch_openai_tool_call_decode()
+
 # AgentDojo imports
 from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline
 from agentdojo.agent_pipeline.basic_elements import InitQuery, SystemMessage
@@ -60,6 +126,13 @@ ANTHROPIC_MODELS = {
     "sonnet": "claude-sonnet-4-6-20250514",
 }
 
+# OpenAI model IDs (used when --backend=openai). Pinned to dated variants
+# to match AgentDojo's published baselines and avoid rolling-alias drift.
+OPENAI_MODELS = {
+    "gpt-4o": "gpt-4o-2024-05-13",
+    "gpt-4o-mini": "gpt-4o-mini-2024-07-18",
+}
+
 DEFAULT_SYSTEM_MESSAGE = (
     "You are a helpful assistant. You will be given a task and a set of tools. "
     "Use the tools to complete the task. Be concise in your responses."
@@ -88,6 +161,11 @@ def build_pipeline(
     """Build an AgentPipeline with optional Judge Dredd defense."""
     if backend == "bedrock":
         llm = BedrockAnthropicLLM(model_id, aws_region=aws_region, temperature=0.0)
+    elif backend == "openai":
+        import openai
+        from agentdojo.agent_pipeline.llms.openai_llm import OpenAILLM
+        client = openai.OpenAI()
+        llm = OpenAILLM(client, model_id, temperature=0.0)
     else:
         import anthropic
         from agentdojo.agent_pipeline.llms.anthropic_llm import AnthropicLLM
@@ -119,8 +197,12 @@ def build_pipeline(
     # Pipeline name must contain a key from MODEL_NAMES for attack crafting.
     # Bedrock model IDs (eu.anthropic.claude-...) don't match — use a
     # synthetic name that includes "claude-3-5-sonnet-20241022" or similar.
+    # OpenAI IDs (gpt-4o-2024-05-13 etc.) already exist in MODEL_NAMES, so
+    # they pass through unchanged.
     friendly = model_id
-    if "haiku" in model_id:
+    if model_id.startswith("gpt-"):
+        pass  # already a valid MODEL_NAMES key
+    elif "haiku" in model_id:
         friendly = "claude-3-haiku-20240307"
     elif "sonnet" in model_id:
         friendly = "claude-3-5-sonnet-20241022"
@@ -169,8 +251,8 @@ def show_results(suite_name: str, results: SuiteResults, has_attack: bool) -> di
 
 def main():
     parser = argparse.ArgumentParser(description="Run AgentDojo benchmark with Judge Dredd defense")
-    parser.add_argument("--model", choices=["haiku", "sonnet"], default="sonnet")
-    parser.add_argument("--backend", choices=["bedrock", "anthropic"], default="bedrock",
+    parser.add_argument("--model", choices=["haiku", "sonnet", "gpt-4o", "gpt-4o-mini"], default="sonnet")
+    parser.add_argument("--backend", choices=["bedrock", "anthropic", "openai"], default="bedrock",
                         help="LLM backend (default: bedrock)")
     parser.add_argument("--aws-region", default="eu-west-2")
     parser.add_argument("--defense", choices=["standard", "B7", "B7.1"], default=None,
@@ -185,11 +267,21 @@ def main():
     parser.add_argument("--force-rerun", "-f", action="store_true")
     parser.add_argument("--user-task", "-ut", action="append", default=[])
     parser.add_argument("--injection-task", "-it", action="append", default=[])
+    parser.add_argument("--pair-file", default=None,
+                        help="JSON file from filter_successful_pairs.py. When set, only "
+                             "runs the (user_task, injection_task) pairs listed, bypassing "
+                             "the cartesian product. --suite / --all-suites / -ut / -it are "
+                             "ignored; suites come from the pair file.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    model_id = BEDROCK_MODELS[args.model] if args.backend == "bedrock" else ANTHROPIC_MODELS[args.model]
+    if args.backend == "bedrock":
+        model_id = BEDROCK_MODELS[args.model]
+    elif args.backend == "openai":
+        model_id = OPENAI_MODELS[args.model]
+    else:
+        model_id = ANTHROPIC_MODELS[args.model]
     suites = args.suite if args.suite else (ALL_SUITES if args.all_suites else ["workspace"])
     attack_name = args.attack if args.attack != "None" else None
     defense = args.defense if args.defense and args.defense != "standard" else None
@@ -214,42 +306,90 @@ def main():
     all_summaries = []
     start = time.time()
 
-    for suite_name in suites:
-        print(f"\n--- Running suite: {suite_name} ---")
-        suite = get_suite(BENCHMARK_VERSION, suite_name)
+    if args.pair_file:
+        # Sparse-pair mode: iterate explicit (user_task, injection_task) pairs.
+        import agentdojo.attacks.baseline_attacks  # noqa: F401
+        import agentdojo.attacks.important_instructions_attacks  # noqa: F401
+        from agentdojo.benchmark import run_task_with_injection_tasks
 
-        with OutputLogger(str(logdir)):
-            if attack_name:
-                # Import attacks so they're registered
-                import agentdojo.attacks.baseline_attacks  # noqa: F401
-                import agentdojo.attacks.important_instructions_attacks  # noqa: F401
+        if not attack_name:
+            raise SystemExit("--pair-file requires --attack")
+        pair_data = json.loads(Path(args.pair_file).read_text())
+        print(f"  Pair file: {args.pair_file} "
+              f"({pair_data.get('n_attack_succeeded')} pairs across "
+              f"{len(pair_data.get('pairs', {}))} suites)")
 
-                attacker = load_attack(attack_name, suite, pipeline)
-                results = benchmark_suite_with_injections(
-                    pipeline,
-                    suite,
-                    attacker,
-                    logdir=logdir,
-                    force_rerun=args.force_rerun,
-                    user_tasks=args.user_task if args.user_task else None,
-                    injection_tasks=args.injection_task if args.injection_task else None,
-                    benchmark_version=BENCHMARK_VERSION,
-                )
-            else:
-                results = benchmark_suite_without_injections(
-                    pipeline,
-                    suite,
-                    logdir=logdir,
-                    force_rerun=args.force_rerun,
-                    user_tasks=args.user_task if args.user_task else None,
-                    benchmark_version=BENCHMARK_VERSION,
-                )
+        for suite_name, users in pair_data["pairs"].items():
+            print(f"\n--- Running suite: {suite_name} ({sum(len(v) for v in users.values())} pairs) ---")
+            suite = get_suite(BENCHMARK_VERSION, suite_name)
+            attacker = load_attack(attack_name, suite, pipeline)
 
-        summary = show_results(suite_name, results, attack_name is not None)
-        summary["model"] = model_id
-        summary["defense"] = defense or "none"
-        summary["attack"] = attack_name or "none"
-        all_summaries.append(summary)
+            utility_results: dict = {}
+            security_results: dict = {}
+
+            with OutputLogger(str(logdir)):
+                for user_task_id, injection_ids in users.items():
+                    user_task = suite.get_user_task_by_id(user_task_id)
+                    u, s = run_task_with_injection_tasks(
+                        suite,
+                        pipeline,
+                        user_task,
+                        attacker,
+                        logdir=logdir,
+                        force_rerun=args.force_rerun,
+                        injection_tasks=injection_ids,
+                        benchmark_version=BENCHMARK_VERSION,
+                    )
+                    utility_results.update(u)
+                    security_results.update(s)
+
+            results = {
+                "utility_results": utility_results,
+                "security_results": security_results,
+                "injection_tasks_utility_results": {},
+            }
+            summary = show_results(suite_name, results, True)
+            summary["model"] = model_id
+            summary["defense"] = defense or "none"
+            summary["attack"] = attack_name or "none"
+            all_summaries.append(summary)
+    else:
+        for suite_name in suites:
+            print(f"\n--- Running suite: {suite_name} ---")
+            suite = get_suite(BENCHMARK_VERSION, suite_name)
+
+            with OutputLogger(str(logdir)):
+                if attack_name:
+                    # Import attacks so they're registered
+                    import agentdojo.attacks.baseline_attacks  # noqa: F401
+                    import agentdojo.attacks.important_instructions_attacks  # noqa: F401
+
+                    attacker = load_attack(attack_name, suite, pipeline)
+                    results = benchmark_suite_with_injections(
+                        pipeline,
+                        suite,
+                        attacker,
+                        logdir=logdir,
+                        force_rerun=args.force_rerun,
+                        user_tasks=args.user_task if args.user_task else None,
+                        injection_tasks=args.injection_task if args.injection_task else None,
+                        benchmark_version=BENCHMARK_VERSION,
+                    )
+                else:
+                    results = benchmark_suite_without_injections(
+                        pipeline,
+                        suite,
+                        logdir=logdir,
+                        force_rerun=args.force_rerun,
+                        user_tasks=args.user_task if args.user_task else None,
+                        benchmark_version=BENCHMARK_VERSION,
+                    )
+
+            summary = show_results(suite_name, results, attack_name is not None)
+            summary["model"] = model_id
+            summary["defense"] = defense or "none"
+            summary["attack"] = attack_name or "none"
+            all_summaries.append(summary)
 
     elapsed = time.time() - start
 

@@ -26,6 +26,7 @@ import {
   formatPolicyResult,
   type PolicyResult,
 } from "./tool-policy.js";
+import { evaluateDomainPolicy } from "./domain-policy.js";
 import { DriftDetector } from "./drift-detector.js";
 import { IntentJudge, type JudgeVerdict, type JudgeBackend, type PromptVariant } from "./intent-judge.js";
 import { checkOllama, embedAny, isBedrockModel, chat } from "./ollama-client.js";
@@ -65,7 +66,11 @@ export interface InterceptionResult {
   tool: string;
   input: Record<string, unknown>;
   /** Which stage made the decision */
-  stage: "policy-allow" | "policy-deny" | "drift-allow" | "drift-deny" | "judge-allow" | "judge-deny";
+  stage:
+    | "policy-allow" | "policy-deny"
+    | "domain-allow" | "domain-deny"
+    | "drift-allow" | "drift-deny"
+    | "judge-allow" | "judge-deny";
   policyResult: PolicyResult;
   /** Embedding similarity (null if not evaluated) */
   similarity: number | null;
@@ -228,6 +233,54 @@ export class PreToolInterceptor {
       this.log(result, sessionId);
       return result;
     }
+
+    // --- Stage 1.5: Domain policy (R1–R7) ---
+    // Structural / compositional rules that know the session intent and
+    // the prior tool calls in the current turn. Can short-circuit with
+    // "allow" (clearly legitimate, skip the judge) or "deny" (clearly
+    // malicious composition). "review" falls through to drift + judge.
+    const priorTurnCalls = this.toolLog.slice(this.goalStartIndex).map((r) => ({
+      tool: r.tool,
+      input: r.input,
+      allowed: r.allowed,
+    }));
+    const domainResult = evaluateDomainPolicy(tool, input, {
+      originalTask: this.originalTask,
+      priorTurnCalls,
+    });
+
+    if (domainResult?.decision === "deny") {
+      const result: InterceptionResult = {
+        allowed: false,
+        tool,
+        input,
+        stage: "domain-deny",
+        policyResult,
+        similarity: null,
+        judgeVerdict: null,
+        evaluationMs: Date.now() - start,
+        reason: `${domainResult.matchedRule}: ${domainResult.reason}`,
+      };
+      this.log(result, sessionId);
+      return result;
+    }
+
+    if (domainResult?.decision === "allow") {
+      const result: InterceptionResult = {
+        allowed: true,
+        tool,
+        input,
+        stage: "domain-allow",
+        policyResult,
+        similarity: null,
+        judgeVerdict: null,
+        evaluationMs: Date.now() - start,
+        reason: `${domainResult.matchedRule}: ${domainResult.reason}`,
+      };
+      this.log(result, sessionId);
+      return result;
+    }
+    // "review" (or no match) → continue to drift + judge.
 
     // --- Stage 2: Embedding drift check ---
     const toolDescription = this.describeToolCall(tool, input);

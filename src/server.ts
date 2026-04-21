@@ -28,6 +28,7 @@ import { inspect } from "node:util";
 import { SessionTracker, type ImageBlock } from "./session-tracker.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
 import { exportPolicies } from "./tool-policy.js";
+import { exportDomainPolicies } from "./domain-policy.js";
 import { scanClaudeMd, scanClaudeMdContent, type ClaudeMdScanResult } from "./claudemd-scanner.js";
 import { checkOllama } from "./ollama-client.js";
 
@@ -39,6 +40,7 @@ const { values } = parseArgs({
     backend: { type: "string", default: "ollama" },
     "embedding-model": { type: "string", default: "eu.cohere.embed-v4:0" },
     "hardened": { type: "boolean", default: false },
+    "prompt": { type: "string", default: "" },
     "judge-effort": { type: "string", default: "" },
     "review-threshold": { type: "string", default: "0.6" },
     "deny-threshold": { type: "string", default: "0.15" },
@@ -83,7 +85,13 @@ const CONFIG = {
   judgeModel: values["judge-model"]!,
   judgeBackend: (values.backend as "ollama" | "bedrock")!,
   embeddingModel: values["embedding-model"]!,
-  hardened: values.hardened ? "B7.1" as const : false,
+  // --prompt wins over --hardened. Accepts "B7", "B7.1", "B7.2", "standard".
+  hardened: (() => {
+    const p = (values.prompt as string).trim();
+    if (p === "B7" || p === "B7.1" || p === "B7.2") return p;
+    if (p === "standard" || p === "") return values.hardened ? "B7.1" as const : false;
+    throw new Error(`Unknown --prompt variant "${p}" (want: standard, B7, B7.1, B7.2)`);
+  })(),
   judgeEffort: (values["judge-effort"] as string).trim() || undefined,
   reviewThreshold: parseFloat(values["review-threshold"]!),
   denyThreshold: parseFloat(values["deny-threshold"]!),
@@ -963,7 +971,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/policies") {
-      return json(res, 200, exportPolicies());
+      return json(res, 200, { ...exportPolicies(), domain: exportDomainPolicies() });
     }
 
     json(res, 404, { error: "Not found" });
