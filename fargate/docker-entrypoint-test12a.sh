@@ -5,14 +5,15 @@ set -euo pipefail
 # Test 12a — AgentDojo B7.1-office rerun (tainted-by-token-expiry scenarios)
 #
 # Reruns only the phases invalidated by AWS Bearer Token expiry mid-run:
-#   1. gpt-4o-mini security — workspace only (pair-filtered, 96 pairs)
-#   2. gpt-4o benign — all 97 tasks, all 4 suites
-#   3. gpt-4o-mini benign — all 97 tasks, all 4 suites
+#   Phase 1: gpt-4o-mini security — workspace only (pair-filtered, 96 pairs)
+#   Phase 2: gpt-4o benign — all 97 tasks, all 4 suites
+#   Phase 3: gpt-4o-mini benign — all 97 tasks, all 4 suites
 #
-# The existing clean results (gpt-4o security, gpt-4o-mini banking/slack/travel)
-# must be seeded into the logdir before running so summaries aggregate correctly.
+# Set PHASE=1|2|3 to run a single phase per container. Omit PHASE to run all
+# three serially (original behaviour).
 #
 # Env overrides:
+#   PHASE               1, 2, or 3 (default: all)
 #   OPENAI_API_KEY      required — OpenAI API key
 #   S3_BUCKET           results bucket (default: cko-results)
 #   S3_PREFIX           results prefix (default: test12a)
@@ -20,7 +21,8 @@ set -euo pipefail
 #   S3_SEED_PREFIX_MINI S3 prefix for existing gpt-4o-mini results to seed
 # ============================================================================
 
-LOG_FILE="/app/results/test12a.log"
+PHASE="${PHASE:-all}"
+LOG_FILE="/app/results/test12a-phase${PHASE}.log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 S3_BUCKET="${S3_BUCKET:-cko-results}"
@@ -32,7 +34,7 @@ JUDGE_REGION="${JUDGE_REGION:-eu-central-1}"
 
 echo "============================================================"
 echo " Test 12a: AgentDojo B7.1-office rerun"
-echo " Phases: gpt-4o-mini workspace security + both benign"
+echo " Phase:  ${PHASE}"
 echo " S3: s3://${S3_BUCKET}/${S3_PREFIX}/"
 echo "============================================================"
 
@@ -61,29 +63,31 @@ LOGDIR_4O="/app/results/agentdojo-gpt4o-office"
 LOGDIR_MINI="/app/results/agentdojo-gpt4o-mini-office"
 mkdir -p "${LOGDIR_4O}" "${LOGDIR_MINI}"
 
-if [ -n "${S3_SEED_PREFIX_4O}" ]; then
+if [ -n "${S3_SEED_PREFIX_4O}" ] && [[ "${PHASE}" == "all" || "${PHASE}" == "2" ]]; then
   echo "Seeding gpt-4o results from s3://${S3_BUCKET}/${S3_SEED_PREFIX_4O}/ ..."
   aws s3 sync "s3://${S3_BUCKET}/${S3_SEED_PREFIX_4O}/" "${LOGDIR_4O}/" \
     --region "${REGION}" --quiet
   echo "  Seeded $(find "${LOGDIR_4O}" -name '*.json' | wc -l) files"
 fi
 
-if [ -n "${S3_SEED_PREFIX_MINI}" ]; then
+if [ -n "${S3_SEED_PREFIX_MINI}" ] && [[ "${PHASE}" == "all" || "${PHASE}" == "1" || "${PHASE}" == "3" ]]; then
   echo "Seeding gpt-4o-mini results from s3://${S3_BUCKET}/${S3_SEED_PREFIX_MINI}/ ..."
   aws s3 sync "s3://${S3_BUCKET}/${S3_SEED_PREFIX_MINI}/" "${LOGDIR_MINI}/" \
     --region "${REGION}" --quiet
   echo "  Seeded $(find "${LOGDIR_MINI}" -name '*.json' | wc -l) files"
 fi
 
-# Download pair files from S3
-PAIRS_DIR="/app/results/agentdojo-gpt4o-mini-baseline"
-mkdir -p "${PAIRS_DIR}"
-echo "Downloading pair files from S3..."
-aws s3 cp "s3://${S3_BUCKET}/${S3_PREFIX}/successful-pairs-workspace.json" \
-  "${PAIRS_DIR}/successful-pairs-workspace.json" \
-  --region "${REGION}" \
-  && echo "  Workspace pair file OK" \
-  || { echo "FATAL: Cannot download workspace pair file"; exit 1; }
+# Download pair file (only needed for phase 1)
+if [[ "${PHASE}" == "all" || "${PHASE}" == "1" ]]; then
+  PAIRS_DIR="/app/results/agentdojo-gpt4o-mini-baseline"
+  mkdir -p "${PAIRS_DIR}"
+  echo "Downloading pair files from S3..."
+  aws s3 cp "s3://${S3_BUCKET}/${S3_PREFIX}/successful-pairs-workspace.json" \
+    "${PAIRS_DIR}/successful-pairs-workspace.json" \
+    --region "${REGION}" \
+    && echo "  Workspace pair file OK" \
+    || { echo "FATAL: Cannot download workspace pair file"; exit 1; }
+fi
 
 # ── Start Dredd server with B7.1-office ───────────────────────────────────
 DREDD_URL="http://localhost:3001"
@@ -113,52 +117,62 @@ fi
 START_TIME=$(date +%s)
 
 # ── Phase 1: gpt-4o-mini workspace security (pair-filtered) ──────────────
-echo ""
-echo "============================================================"
-echo " Phase 1/3: gpt-4o-mini workspace security (pair-filtered)"
-echo "============================================================"
+if [[ "${PHASE}" == "all" || "${PHASE}" == "1" ]]; then
+  echo ""
+  echo "============================================================"
+  echo " Phase 1: gpt-4o-mini workspace security (pair-filtered)"
+  echo "============================================================"
 
-python3 /app/benchmarks/agentdojo/run_benchmark.py \
-  --backend openai --model gpt-4o-mini --defense B7.1 \
-  --attack important_instructions \
-  --pair-file /app/results/agentdojo-gpt4o-mini-baseline/successful-pairs-workspace.json \
-  --logdir "${LOGDIR_MINI}" \
-  --dredd-url "${DREDD_URL}" \
-  || echo "WARN: Phase 1 exited with error"
+  python3 /app/benchmarks/agentdojo/run_benchmark.py \
+    --backend openai --model gpt-4o-mini --defense B7.1 \
+    --attack important_instructions \
+    --pair-file /app/results/agentdojo-gpt4o-mini-baseline/successful-pairs-workspace.json \
+    --logdir "${LOGDIR_MINI}" \
+    --dredd-url "${DREDD_URL}" \
+    || echo "WARN: Phase 1 exited with error"
 
-echo "Phase 1 done. Uploading intermediate results..."
-aws s3 sync "${LOGDIR_MINI}/" "s3://${S3_BUCKET}/${S3_PREFIX}/agentdojo-gpt4o-mini-office/" \
-  --region "${REGION}" --quiet 2>/dev/null || true
+  echo "Phase 1 done. Uploading results..."
+  aws s3 sync "${LOGDIR_MINI}/" "s3://${S3_BUCKET}/${S3_PREFIX}/agentdojo-gpt4o-mini-office/" \
+    --region "${REGION}" --quiet 2>/dev/null || true
+fi
 
 # ── Phase 2: gpt-4o benign (all 97 tasks) ────────────────────────────────
-echo ""
-echo "============================================================"
-echo " Phase 2/3: gpt-4o benign (97 tasks × 4 suites)"
-echo "============================================================"
+if [[ "${PHASE}" == "all" || "${PHASE}" == "2" ]]; then
+  echo ""
+  echo "============================================================"
+  echo " Phase 2: gpt-4o benign (97 tasks × 4 suites)"
+  echo "============================================================"
 
-python3 /app/benchmarks/agentdojo/run_benchmark.py \
-  --backend openai --model gpt-4o --defense B7.1 \
-  --all-suites --attack None \
-  --logdir "${LOGDIR_4O}" \
-  --dredd-url "${DREDD_URL}" \
-  || echo "WARN: Phase 2 exited with error"
+  python3 /app/benchmarks/agentdojo/run_benchmark.py \
+    --backend openai --model gpt-4o --defense B7.1 \
+    --all-suites --attack None \
+    --logdir "${LOGDIR_4O}" \
+    --dredd-url "${DREDD_URL}" \
+    || echo "WARN: Phase 2 exited with error"
 
-echo "Phase 2 done. Uploading intermediate results..."
-aws s3 sync "${LOGDIR_4O}/" "s3://${S3_BUCKET}/${S3_PREFIX}/agentdojo-gpt4o-office/" \
-  --region "${REGION}" --quiet 2>/dev/null || true
+  echo "Phase 2 done. Uploading results..."
+  aws s3 sync "${LOGDIR_4O}/" "s3://${S3_BUCKET}/${S3_PREFIX}/agentdojo-gpt4o-office/" \
+    --region "${REGION}" --quiet 2>/dev/null || true
+fi
 
 # ── Phase 3: gpt-4o-mini benign (all 97 tasks) ───────────────────────────
-echo ""
-echo "============================================================"
-echo " Phase 3/3: gpt-4o-mini benign (97 tasks × 4 suites)"
-echo "============================================================"
+if [[ "${PHASE}" == "all" || "${PHASE}" == "3" ]]; then
+  echo ""
+  echo "============================================================"
+  echo " Phase 3: gpt-4o-mini benign (97 tasks × 4 suites)"
+  echo "============================================================"
 
-python3 /app/benchmarks/agentdojo/run_benchmark.py \
-  --backend openai --model gpt-4o-mini --defense B7.1 \
-  --all-suites --attack None \
-  --logdir "${LOGDIR_MINI}" \
-  --dredd-url "${DREDD_URL}" \
-  || echo "WARN: Phase 3 exited with error"
+  python3 /app/benchmarks/agentdojo/run_benchmark.py \
+    --backend openai --model gpt-4o-mini --defense B7.1 \
+    --all-suites --attack None \
+    --logdir "${LOGDIR_MINI}" \
+    --dredd-url "${DREDD_URL}" \
+    || echo "WARN: Phase 3 exited with error"
+
+  echo "Phase 3 done. Uploading results..."
+  aws s3 sync "${LOGDIR_MINI}/" "s3://${S3_BUCKET}/${S3_PREFIX}/agentdojo-gpt4o-mini-office/" \
+    --region "${REGION}" --quiet 2>/dev/null || true
+fi
 
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
@@ -168,21 +182,11 @@ echo "Stopping Dredd server..."
 kill "${DREDD_PID}" 2>/dev/null || true
 wait "${DREDD_PID}" 2>/dev/null || true
 
-# ── Upload all results ────────────────────────────────────────────────────
-echo ""
-echo "Uploading final results to S3..."
-aws s3 sync "${LOGDIR_4O}/" "s3://${S3_BUCKET}/${S3_PREFIX}/agentdojo-gpt4o-office/" \
-  --region "${REGION}" 2>/dev/null \
-  && echo "  gpt-4o sync OK" || echo "  WARN: gpt-4o sync failed"
-
-aws s3 sync "${LOGDIR_MINI}/" "s3://${S3_BUCKET}/${S3_PREFIX}/agentdojo-gpt4o-mini-office/" \
-  --region "${REGION}" 2>/dev/null \
-  && echo "  gpt-4o-mini sync OK" || echo "  WARN: gpt-4o-mini sync failed"
-
-aws s3 cp "${LOG_FILE}" "s3://${S3_BUCKET}/${S3_PREFIX}/test12a.log" \
+# ── Upload log ────────────────────────────────────────────────────────────
+aws s3 cp "${LOG_FILE}" "s3://${S3_BUCKET}/${S3_PREFIX}/test12a-phase${PHASE}.log" \
   --region "${REGION}" 2>/dev/null || true
 
 echo ""
 echo "============================================================"
-echo " Test 12a complete — ${ELAPSED}s"
+echo " Test 12a phase ${PHASE} complete — ${ELAPSED}s"
 echo "============================================================"
