@@ -83,7 +83,9 @@ COPY docker-entrypoint-test10.sh /docker-entrypoint-test10.sh
 COPY docker-entrypoint-test12.sh /docker-entrypoint-test12.sh
 # Test 12a: AgentDojo B7.1-office rerun (token-expiry tainted scenarios)
 COPY docker-entrypoint-test12a.sh /docker-entrypoint-test12a.sh
-RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test8b6.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh /docker-entrypoint-test10.sh /docker-entrypoint-test12.sh /docker-entrypoint-test12a.sh
+# Test 12b: AgentDojo compromised-scenario repeat-runs
+COPY docker-entrypoint-test12b.sh /docker-entrypoint-test12b.sh
+RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test8b6.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh /docker-entrypoint-test10.sh /docker-entrypoint-test12.sh /docker-entrypoint-test12a.sh /docker-entrypoint-test12b.sh
 
 COPY server.js /app/server.js
 
