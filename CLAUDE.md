@@ -138,6 +138,7 @@ docker build -f fargate/Dockerfile \
 | `fargate/docker-entrypoint-test9.sh` | Test 9: Latency Impact |
 | `fargate/docker-entrypoint-test9a.sh` | Test 9a: Latency Impact — effort dimension |
 | `fargate/docker-entrypoint-test12.sh` | Test 12: AgentDojo External Benchmark |
+| `fargate/docker-entrypoint-test12a.sh` | Test 12a: AgentDojo B7.1-office rerun (token-expiry fix) |
 | `fargate/api-server.cjs` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
 | `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-west-2.amazonaws.com`) |
 | `fargate/infra/` | Terraform for the Fargate task definition and supporting resources |
