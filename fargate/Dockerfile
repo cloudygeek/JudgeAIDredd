@@ -85,7 +85,9 @@ COPY docker-entrypoint-test12.sh /docker-entrypoint-test12.sh
 COPY docker-entrypoint-test12a.sh /docker-entrypoint-test12a.sh
 # Test 12b: AgentDojo compromised-scenario repeat-runs
 COPY docker-entrypoint-test12b.sh /docker-entrypoint-test12b.sh
-RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test8b6.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh /docker-entrypoint-test10.sh /docker-entrypoint-test12.sh /docker-entrypoint-test12a.sh /docker-entrypoint-test12b.sh
+# Test 12c: AgentDojo full clean rerun (B7.1-office, OpenAI models)
+COPY docker-entrypoint-test12c.sh /docker-entrypoint-test12c.sh
+RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test8b6.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh /docker-entrypoint-test10.sh /docker-entrypoint-test12.sh /docker-entrypoint-test12a.sh /docker-entrypoint-test12b.sh /docker-entrypoint-test12c.sh
 
 COPY server.js /app/server.js
 
