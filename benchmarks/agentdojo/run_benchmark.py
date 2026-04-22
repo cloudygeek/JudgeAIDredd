@@ -108,6 +108,20 @@ sys.path.insert(0, str(Path(__file__).parent))
 from dredd_defense import JudgeDreddDefense
 from bedrock_llm import BedrockAnthropicLLM, BEDROCK_MODELS
 
+# Monkey-patch: exclude blocked tool calls from stack traces so AgentDojo's
+# security_from_traces doesn't count Dredd-blocked actions as compromises.
+import agentdojo.task_suite.task_suite as _task_suite_mod
+_original_stack_trace = _task_suite_mod.functions_stack_trace_from_messages
+
+def _filtered_stack_trace(messages):
+    blocked_ids = set()
+    for m in messages:
+        if m["role"] == "tool" and m.get("error"):
+            blocked_ids.add(m.get("tool_call_id", ""))
+    return [tc for tc in _original_stack_trace(messages) if tc.id not in blocked_ids]
+
+_task_suite_mod.functions_stack_trace_from_messages = _filtered_stack_trace
+
 AGENTDOJO_COMMIT = "18b501a630db736e1d0496a496d8d7aa947c596d"
 
 BENCHMARK_VERSION = "v1.2.2"

@@ -202,10 +202,6 @@ function checkRecipientAlignment(
   const intent = ctx.originalTask.toLowerCase();
   const allInIntent = recipients.every((r) => {
     const v = r.toLowerCase();
-    // Match if the entire value appears, or if a distinctive substring does
-    // (e.g. an @domain or an IBAN suffix). Short strings like single words
-    // are skipped to avoid false positives.
-    if (v.length < 6) return true;
     return intent.includes(v);
   });
 
