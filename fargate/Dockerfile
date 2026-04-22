@@ -37,18 +37,27 @@ COPY scenarios/ ./scenarios/
 COPY workspace-template/ ./workspace-template/
 
 # ── AgentDojo benchmark (Python) ────────────────────────────────────────────
-# All wheels are vendored (no network access to PyPI needed).
-COPY python-wheels/ /tmp/python-wheels/
-# Install agentdojo with --no-deps to skip cohere/google-genai/langchain/torch
-# (we only use the Bedrock backend via our own BedrockAnthropicLLM bridge).
-# Then install only the transitive deps we actually need.
-RUN pip3 install --break-system-packages --no-index --find-links /tmp/python-wheels/ \
-        --no-deps agentdojo \
-    && pip3 install --break-system-packages --no-index --find-links /tmp/python-wheels/ \
-        anthropic openai "pydantic[email]" tenacity pyyaml \
-        typing-extensions rich click deepdiff docstring-parser \
-        python-dotenv requests boto3 botocore \
-    && rm -rf /tmp/python-wheels/
+# Install from vendored wheels if present, otherwise pip install from network.
+# CodeBuild provides PIP_INDEX_URL pointing at CodeArtifact for network installs.
+ARG PIP_INDEX_URL=""
+COPY python-wheel[s]/ /tmp/python-wheels/
+RUN if [ -d /tmp/python-wheels ] && [ "$(ls /tmp/python-wheels/*.whl 2>/dev/null)" ]; then \
+        echo "Installing from vendored wheels..." \
+        && pip3 install --break-system-packages --no-index --find-links /tmp/python-wheels/ \
+               --no-deps agentdojo \
+        && pip3 install --break-system-packages --no-index --find-links /tmp/python-wheels/ \
+               anthropic openai "pydantic[email]" tenacity pyyaml \
+               typing-extensions rich click deepdiff docstring-parser \
+               python-dotenv requests boto3 botocore \
+        && rm -rf /tmp/python-wheels/ ; \
+    else \
+        echo "No vendored wheels — installing from network..." \
+        && pip3 install --break-system-packages --no-deps agentdojo \
+        && pip3 install --break-system-packages \
+               anthropic openai "pydantic[email]" tenacity pyyaml \
+               typing-extensions rich click deepdiff docstring-parser \
+               python-dotenv requests boto3 botocore ; \
+    fi
 COPY benchmarks/ ./benchmarks/
 
 # ── Build provenance ────────────────────────────────────────────────────────
