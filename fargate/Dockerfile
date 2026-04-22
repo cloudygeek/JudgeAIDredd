@@ -43,11 +43,12 @@ COPY python-wheels/ /tmp/python-wheels/
 # (we only use the Bedrock backend via our own BedrockAnthropicLLM bridge).
 # Then install only the transitive deps we actually need.
 RUN pip3 install --break-system-packages --no-index --find-links /tmp/python-wheels/ \
-        --no-deps agentdojo cohere \
+        --no-deps agentdojo cohere google-genai \
     && pip3 install --break-system-packages --no-index --find-links /tmp/python-wheels/ \
         anthropic openai "pydantic[email]" tenacity pyyaml \
         typing-extensions rich click deepdiff docstring-parser \
-        python-dotenv requests boto3 botocore \
+        python-dotenv requests boto3 botocore google-auth \
+    && python3 -c "from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline; print('agentdojo import OK')" \
     && rm -rf /tmp/python-wheels/
 COPY benchmarks/ ./benchmarks/
 
