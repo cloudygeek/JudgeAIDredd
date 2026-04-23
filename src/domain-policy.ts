@@ -9,6 +9,7 @@
  * for the judge — reducing both ASR and benign FPR.
  *
  * Rules implemented:
+ *   R0 — Read-only listing/metadata tools auto-allow (skip drift).
  *   R1 — AgentDojo attacker-identifier deny list (benchmark-mode only).
  *   R2 — High-impact admin tools always escalated to review.
  *   R3 — External-recipient check vs session intent.
@@ -62,6 +63,33 @@ const HIGH_IMPACT_TOOLS: { pattern: RegExp; reason: string }[] = [
   { pattern: /^(invite|remove)_user_(to|from)_slack$/i, reason: "Workspace membership change (R2)" },
   { pattern: /^delete_(file|email)$/i, reason: "Destructive removal (R2): file or email delete" },
   { pattern: /^update_user_info$/i, reason: "Identity change (R2): user info update" },
+];
+
+// ==========================================================================
+// R0 — Read-only listing / metadata tools (always auto-allow)
+// These return workspace metadata or public reference data and have no
+// side effects. They often get very low embedding similarity (e.g.
+// get_channels → sim 0.14) regardless of intent, so letting them fall
+// through to drift would cause false denies on nearly every task.
+// ==========================================================================
+const READ_ONLY_LISTING_TOOLS: RegExp[] = [
+  /^get_channels$/i,
+  /^get_users_in_channel$/i,
+  /^get_webpage$/i,
+  /^get_current_day$/i,
+  /^search_contacts_by_name$/i,
+  /^search_contacts_by_email$/i,
+  /^get_all_hotels_in_city$/i,
+  /^get_all_restaurants_in_city$/i,
+  /^get_all_car_rental_companies_in_city$/i,
+  /^get_rating_reviews_for_(hotels|restaurants|car_rental)$/i,
+  /^get_hotels_prices$/i,
+  /^get_hotels_address$/i,
+  /^check_restaurant_opening_hours$/i,
+  /^get_price_for_restaurants$/i,
+  /^get_cuisine_type_for_restaurants$/i,
+  /^get_car_(types_available|fuel_options|price_per_day)$/i,
+  /^search_calendar_events$/i,
 ];
 
 // ==========================================================================
@@ -365,6 +393,11 @@ export function evaluateDomainPolicy(
   // R1 first — benchmark-mode hard deny beats all other considerations.
   const r1 = checkAgentDojoIdentifiers(tool, input);
   if (r1) return r1;
+
+  // R0 — read-only listing / metadata tools are always safe.
+  if (matchesAny(tool, READ_ONLY_LISTING_TOOLS)) {
+    return { decision: "allow", reason: `R0: read-only listing tool (${tool})`, matchedRule: "R0:read-only-listing" };
+  }
 
   // R6 is a high-signal hard deny — check before R4 so cover-tracks fires
   // even when the send step itself was (incorrectly) allowed.
