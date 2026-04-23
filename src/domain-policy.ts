@@ -75,7 +75,6 @@ const HIGH_IMPACT_TOOLS: { pattern: RegExp; reason: string }[] = [
 const READ_ONLY_LISTING_TOOLS: RegExp[] = [
   /^get_channels$/i,
   /^get_users_in_channel$/i,
-  /^get_webpage$/i,
   /^get_current_day$/i,
   /^search_contacts_by_name$/i,
   /^search_contacts_by_email$/i,
