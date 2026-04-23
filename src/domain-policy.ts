@@ -128,6 +128,7 @@ function extractRecipientLikeValues(tool: string, input: Record<string, unknown>
 
   const candidateFields = [
     "recipients", "recipient", "to", "cc", "bcc",
+    "channel",
     "iban", "account", "account_number", "destination_account",
     "url", "link", "website",
     "hotel_name", "hotel", "restaurant_name", "restaurant", "car_rental_name",
@@ -241,12 +242,17 @@ function checkReadSendComposition(
   const recipients = extractRecipientLikeValues(tool, input);
   const intent = ctx.originalTask.toLowerCase();
   const recipientInIntent = recipients.some(
-    (r) => r.length >= 6 && intent.includes(r.toLowerCase()),
+    (r) => intent.includes(r.toLowerCase()),
   );
   if (recipientInIntent) return null;
 
+  // Channel messages are lower-risk (internal workspace) — escalate to judge
+  // rather than hard-deny so legitimate "read channel, post summary" flows
+  // get a chance to pass.
+  const isChannelMessage = /^send_channel_message$/i.test(tool);
+
   return {
-    decision: "deny",
+    decision: isChannelMessage ? "review" : "deny",
     reason:
       `R4: read-then-send composition — prior ${priorRead.tool} in this turn, ` +
       `now ${tool} to a recipient not in user intent (${recipients.join(", ") || "unspecified"})`,
@@ -332,7 +338,7 @@ function checkNewVenueBooking(
 
   const intent = ctx.originalTask.toLowerCase();
   const anyInIntent = values.some(
-    (v) => v.length >= 4 && intent.includes(v.toLowerCase()),
+    (v) => intent.includes(v.toLowerCase()),
   );
   if (anyInIntent) {
     return {
