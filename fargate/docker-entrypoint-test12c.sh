@@ -22,6 +22,7 @@ set -euo pipefail
 
 MODEL="${AGENTDOJO_MODEL:-gpt-4o}"
 MODE="${AGENTDOJO_MODE:-security}"
+SUITES="${AGENTDOJO_SUITES:-all}"
 LOG_FILE="/app/results/test12c.log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
@@ -34,6 +35,7 @@ echo "============================================================"
 echo " Test 12c: AgentDojo full clean rerun (B7.1-office)"
 echo " Model(s): ${MODEL}"
 echo " Mode:     ${MODE}"
+echo " Suites:   ${SUITES}"
 echo " S3: s3://${S3_BUCKET}/${S3_PREFIX}/"
 echo "============================================================"
 
@@ -90,16 +92,27 @@ for m in "${MODELS[@]}"; do
   LOGDIR="/app/results/agentdojo-${m}-office"
   mkdir -p "${LOGDIR}"
 
+  # Build suite args
+  SUITE_ARGS=()
+  if [ "${SUITES}" = "all" ]; then
+    SUITE_ARGS+=(--all-suites)
+  else
+    IFS=',' read -ra SUITE_ARRAY <<< "${SUITES}"
+    for s in "${SUITE_ARRAY[@]}"; do
+      SUITE_ARGS+=(--suite "${s}")
+    done
+  fi
+
   if [ "${MODE}" = "security" ]; then
     echo ""
     echo "============================================================"
-    echo " ${m} — security (all 4 suites, important_instructions)"
+    echo " ${m} — security (${SUITES}, important_instructions)"
     echo "============================================================"
 
     python3 /app/benchmarks/agentdojo/run_benchmark.py \
       --backend openai --model "${m}" --defense B7.1 \
       --attack important_instructions \
-      --all-suites \
+      "${SUITE_ARGS[@]}" \
       --logdir "${LOGDIR}" \
       --dredd-url "${DREDD_URL}" \
       -f \
@@ -108,12 +121,12 @@ for m in "${MODELS[@]}"; do
   elif [ "${MODE}" = "benign" ]; then
     echo ""
     echo "============================================================"
-    echo " ${m} — benign (97 tasks × 4 suites, no attack)"
+    echo " ${m} — benign (${SUITES}, no attack)"
     echo "============================================================"
 
     python3 /app/benchmarks/agentdojo/run_benchmark.py \
       --backend openai --model "${m}" --defense B7.1 \
-      --all-suites --attack None \
+      "${SUITE_ARGS[@]}" --attack None \
       --logdir "${LOGDIR}" \
       --dredd-url "${DREDD_URL}" \
       -f \
