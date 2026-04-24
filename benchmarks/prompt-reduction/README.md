@@ -26,14 +26,31 @@ Interactive-mode Judge Dredd auto-approves `consistent` verdicts silently and es
    ```
 3. AWS credentials with Bedrock access (only if the server is configured for Bedrock).
 
-### Run the benchmark
+### Run a single trace
 
 ```bash
 cd benchmarks/prompt-reduction
 npx tsx measure-prompts.ts
 ```
 
-By default this replays the shipped `traces/moderate-profile-median.json` (77 tool calls drawn from a real coding session) and reports prompt-reduction figures.
+By default this replays the shipped `traces/moderate-profile-median.json` (30 tool calls, DB-refactor session) and reports prompt-reduction figures.
+
+### Run the corpus
+
+For a defensible corpus-wide reduction estimate, run every trace in `traces/` at N=10 reps and aggregate:
+
+```bash
+cd benchmarks/prompt-reduction
+./run-corpus.sh                 # N=10 per trace (default)
+./run-corpus.sh 20              # N=20 per trace
+```
+
+Outputs to `results/corpus-<iso8601>/` with:
+- one `<trace-name>.json` per trace (full verdict log + per-trace summary)
+- a `summary.json` produced by `aggregate-corpus.ts` with per-trace rows and corpus-weighted totals
+- a `summary.txt` human-readable table
+
+See `docs/test-plan-prompt-reduction-corpus-2026-04-24.md` in the repo root for the corpus methodology + decision rules for updating paper claims based on the measured range.
 
 ### Flags
 
