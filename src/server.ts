@@ -524,11 +524,36 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
 }
 
 // =========================================================================
+// POST /register — Benchmark-compatible session registration
+// Accepts: { task: string }
+// Returns: { session: string }
+// =========================================================================
+async function handleRegister(req: IncomingMessage, res: ServerResponse) {
+  const body = JSON.parse(await readBody(req));
+  const { task } = body;
+  if (!task) {
+    return json(res, 400, { error: "Missing task" });
+  }
+  const sessionId = `bench-${crypto.randomUUID()}`;
+  await tracker.registerIntent(sessionId, task, CONFIG.mode === "interactive");
+  await interceptor.registerGoal(task);
+  registeredSessions.add(sessionId);
+  console.log(`  [${sessionId.substring(0, 8)}] [REGISTER] benchmark session: "${task.substring(0, 60)}..."`);
+  json(res, 200, { session: sessionId });
+}
+
+// =========================================================================
 // POST /evaluate — PreToolUse
 // =========================================================================
 async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
-  const { session_id, tool_name, tool_input, agent_reasoning, transcript_path } = body;
+
+  // Support benchmark format: { session, proposed_action: { tool, parameters } }
+  const isBenchmarkFormat = body.proposed_action && body.session;
+  const session_id: string = isBenchmarkFormat ? body.session : body.session_id;
+  const tool_name: string = isBenchmarkFormat ? body.proposed_action.tool : body.tool_name;
+  const tool_input: Record<string, unknown> = isBenchmarkFormat ? (body.proposed_action.parameters ?? {}) : body.tool_input;
+  const { agent_reasoning, transcript_path } = body;
   const transcriptContent: string | undefined = body.transcript_content;
   const mode: TrustMode = body.mode ?? CONFIG.mode;
   const isLearn = mode === "learn";
@@ -662,6 +687,15 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       permissionDecision: "allow",
       permissionDecisionReason: `Judge Dredd: ${result.reason}`,
     };
+  }
+
+  // Benchmark format: return {verdict, confidence, rationale} directly
+  if (isBenchmarkFormat) {
+    const verdict = result.judgeVerdict?.verdict
+      ?? (result.allowed ? "consistent" : "hijacked");
+    const confidence = result.judgeVerdict?.confidence ?? (result.allowed ? 0.95 : 0.90);
+    const rationale = result.judgeVerdict?.reasoning ?? result.reason;
+    return json(res, 200, { verdict, confidence, rationale });
   }
 
   json(res, 200, {
@@ -884,6 +918,12 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/intent") {
       return await handleIntent(req, res);
+    }
+
+    // POST /register — benchmark-compatible session registration.
+    // Accepts {task} and returns {session}. Thin wrapper around /intent.
+    if (req.method === "POST" && url.pathname === "/register") {
+      return await handleRegister(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/evaluate") {
