@@ -142,6 +142,7 @@ docker build -f fargate/Dockerfile \
 | `fargate/docker-entrypoint-test13.sh` | Test 13: Prompt-Reduction Benchmark (single trace) |
 | `fargate/docker-entrypoint-test14.sh` | Test 14: Prompt-Reduction Corpus Benchmark |
 | `fargate/docker-entrypoint-test15.sh` | Test 15: FPR under Prompt v2 (B7.1) |
+| `fargate/docker-entrypoint-test16.sh` | Test 16: Cross-Model Recommended Pipeline (Cohere v4 + B7.1) |
 | `fargate/api-server.cjs` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
 | `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-west-2.amazonaws.com`) |
 | `fargate/infra/` | Terraform for the Fargate task definition and supporting resources |

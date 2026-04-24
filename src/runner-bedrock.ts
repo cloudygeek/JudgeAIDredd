@@ -46,6 +46,7 @@ const { values } = parseArgs({
     "task-set": { type: "string", default: "hijack" },
     "effort": { type: "string", default: "" },
     "judge-effort": { type: "string", default: "" },
+    "hardened": { type: "string", default: "" },
   },
 });
 
@@ -72,6 +73,7 @@ const taskSet = values["task-set"] as "hijack" | "legitimate" | "latency";
 type EffortLevel = "low" | "medium" | "high" | "max";
 const effort = (values["effort"] || undefined) as EffortLevel | undefined;
 const judgeEffort = (values["judge-effort"] || undefined) as EffortLevel | undefined;
+const hardened = values["hardened"] as "" | "B7" | "B7.1" | "B7.1-office";
 
 const outputPath =
   values.output ||
@@ -101,6 +103,7 @@ function createLogger(): TurnLogger {
         enableGoalAnchoring: false,
         enableBlocking: true,
         judgeEffort,
+        ...(hardened ? { hardened } : {}),
       });
 
     case "intent-tracker":
@@ -115,6 +118,7 @@ function createLogger(): TurnLogger {
         enableGoalAnchoring: !noAnchor,
         enableBlocking: true,
         judgeEffort,
+        ...(hardened ? { hardened } : {}),
       });
 
     case "anchor-only":
@@ -129,6 +133,7 @@ function createLogger(): TurnLogger {
         enableGoalAnchoring: !noAnchor,
         enableBlocking: false,
         judgeEffort,
+        ...(hardened ? { hardened } : {}),
       });
 
     case "judge-only":
@@ -143,6 +148,7 @@ function createLogger(): TurnLogger {
         enableGoalAnchoring: !noAnchor,
         enableBlocking: true,
         judgeEffort,
+        ...(hardened ? { hardened } : {}),
       });
 
     default:
@@ -167,6 +173,7 @@ async function main() {
     console.log(`Repetitions:  ${repetitions}`);
     console.log(`Model:        ${model}`);
     if (effort || judgeEffort) console.log(`Effort:       ${effort ?? "default"}${judgeEffort ? ` (judge: ${judgeEffort})` : ""}`);
+    if (hardened) console.log(`Hardened:     ${hardened}`);
     console.log(`Total runs:   ${scenarios.length * repetitions}`);
     if (defence !== "none" || judgeOnly) {
       console.log(`Embed model:  ${embeddingModel}`);
