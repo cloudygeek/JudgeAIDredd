@@ -42,8 +42,8 @@ export interface IntentTrackerConfig {
   enableBlocking?: boolean;
   /** Reasoning effort for the LLM judge (low/medium/high/max) */
   judgeEffort?: "low" | "medium" | "high" | "max";
-  /** Use B7 hardened prompt (default: false) */
-  hardened?: boolean;
+  /** Judge prompt variant: true/false for B7/standard, or "B7.1", "B7.1-office" */
+  hardened?: boolean | import("./intent-judge.js").PromptVariant;
 }
 
 const DEFAULTS: Required<IntentTrackerConfig> = {

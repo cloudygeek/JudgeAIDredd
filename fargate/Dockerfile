@@ -91,7 +91,9 @@ COPY docker-entrypoint-test12c.sh /docker-entrypoint-test12c.sh
 COPY docker-entrypoint-test13.sh /docker-entrypoint-test13.sh
 # Test 14: Prompt-Reduction Corpus Benchmark
 COPY docker-entrypoint-test14.sh /docker-entrypoint-test14.sh
-RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test8b6.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh /docker-entrypoint-test10.sh /docker-entrypoint-test12.sh /docker-entrypoint-test12a.sh /docker-entrypoint-test12b.sh /docker-entrypoint-test12c.sh /docker-entrypoint-test13.sh /docker-entrypoint-test14.sh
+# Test 15: FPR under Prompt v2
+COPY docker-entrypoint-test15.sh /docker-entrypoint-test15.sh
+RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test8b6.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh /docker-entrypoint-test10.sh /docker-entrypoint-test12.sh /docker-entrypoint-test12a.sh /docker-entrypoint-test12b.sh /docker-entrypoint-test12c.sh /docker-entrypoint-test13.sh /docker-entrypoint-test14.sh /docker-entrypoint-test15.sh
 
 COPY server.js /app/server.js
 

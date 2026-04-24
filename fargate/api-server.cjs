@@ -38,6 +38,7 @@ const ENTRYPOINTS = {
   "12c": "/docker-entrypoint-test12c.sh",
   "13": "/docker-entrypoint-test13.sh",
   "14": "/docker-entrypoint-test14.sh",
+  "15": "/docker-entrypoint-test15.sh",
 };
 const DEFAULT_TEST = process.env.TEST_NUM || "7";
 const BUILD_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
@@ -155,6 +156,12 @@ function startRun(params) {
   if (params.effort)        env.TEST10_EFFORT       = String(params.effort);
   if (params.judgeEffort)   env.TEST10_JUDGE_EFFORT = String(params.judgeEffort);
   if (params.reps)          env.TEST10_REPS         = String(params.reps);
+
+  // Test 15 env vars (FPR under prompt v2)
+  if (params.prompt)    env.TEST15_PROMPT   = String(params.prompt);
+  if (params.task)      env.TEST15_TASK     = String(params.task);
+  if (params.reps)      env.TEST15_REPS     = String(params.reps);
+  if (params.model)     env.TEST15_MODEL    = String(params.model);
 
   // Generic env passthrough (test 12 / AgentDojo uses this)
   if (params.env && typeof params.env === "object") {
