@@ -111,6 +111,7 @@ function startRun(params) {
   if (params.scenarios) env.TEST7_SCENARIOS = String(params.scenarios);
   if (params.defences)  env.TEST7_DEFENCES  = String(params.defences);
   if (params.reps)      env.TEST7_REPS      = String(params.reps);
+  if (params.effort)    env.TEST7_EFFORT    = String(params.effort);
   if (params.runId)     env.TEST7_RUN_ID    = String(params.runId);
 
   // Test 3 env vars

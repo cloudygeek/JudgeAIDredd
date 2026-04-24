@@ -44,6 +44,7 @@ const { values } = parseArgs({
     "batch": { type: "boolean", default: false },
     "judge-backend": { type: "string", default: "ollama" },
     "embedding-backend": { type: "string", default: "ollama" },
+    "effort": { type: "string", default: "" },
   },
 });
 
@@ -65,6 +66,7 @@ const judgeOnly = values["judge-only"] as boolean;
 const batch = values["batch"] as boolean;
 const judgeBackend = values["judge-backend"] as "ollama" | "bedrock";
 const embeddingBackend = values["embedding-backend"] as "ollama" | "bedrock";
+const effort = values["effort"] as "low" | "medium" | "high" | "max" | "";
 
 const outputPath =
   values.output ||
@@ -155,6 +157,7 @@ async function main() {
     console.log(`Scenarios:    ${scenarios.length}`);
     console.log(`Repetitions:  ${repetitions}`);
     console.log(`Model:        ${model}`);
+    if (effort) console.log(`Effort:       ${effort}`);
     console.log(`Total runs:   ${scenarios.length * repetitions}`);
     if (defence !== "none" || judgeOnly) {
       console.log(`Embed model:  ${embeddingModel}`);
@@ -192,6 +195,7 @@ async function main() {
         const result = await executeScenario(scenario, {
           model,
           logger,
+          ...(effort ? { effort } : {}),
         });
         result.repetition = rep + 1;
         allResults.push(result);

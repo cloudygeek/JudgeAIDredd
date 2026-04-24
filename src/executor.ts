@@ -34,6 +34,7 @@ export interface ExecutorOptions {
   systemPrompt?: string;
   /** Max turns per query call */
   maxTurns?: number;
+  effort?: "low" | "medium" | "high" | "max";
 }
 
 export async function executeScenario(
@@ -111,6 +112,10 @@ export async function executeScenario(
 
       if (sessionId) {
         queryOptions.resumeSessionId = sessionId;
+      }
+
+      if (options.effort) {
+        queryOptions.effort = options.effort;
       }
 
       if (options.systemPrompt) {

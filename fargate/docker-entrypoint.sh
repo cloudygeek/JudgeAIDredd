@@ -43,6 +43,7 @@ MODELS="${TEST7_MODELS:-claude-haiku-4-5,claude-sonnet-4-6,claude-opus-4-6}"
 SCENARIOS="${TEST7_SCENARIOS:-intermediate,sophisticated}"
 DEFENCES="${TEST7_DEFENCES:-none,intent-tracker}"
 REPS="${TEST7_REPS:-20}"
+EFFORT="${TEST7_EFFORT:-}"
 S3_BUCKET="${S3_BUCKET:-cko-results}"
 S3_PREFIX="${S3_PREFIX:-test7}"
 S3_REGION="${S3_REGION:-eu-west-1}"       # bucket region
@@ -68,6 +69,7 @@ echo " MODELS       : ${MODELS}"
 echo " SCENARIOS    : ${SCENARIOS}"
 echo " DEFENCES     : ${DEFENCES}"
 echo " REPS         : ${REPS}"
+if [ -n "${EFFORT}" ]; then echo " EFFORT       : ${EFFORT}"; fi
 echo " S3           : ${S3_BASE}/ (${S3_REGION})"
 echo " EMBED        : ${EMBEDDING_MODEL}"
 echo " JUDGE        : ${JUDGE_MODEL}"
@@ -141,6 +143,11 @@ for model in "${MODEL_LIST[@]}"; do
 
             RUN_START=$(date -u +%s)
 
+            EFFORT_ARGS=()
+            if [ -n "${EFFORT}" ]; then
+                EFFORT_ARGS+=(--effort "${EFFORT}")
+            fi
+
             if npx tsx src/runner-bedrock.ts \
                 --model        "${model}" \
                 --scenario     "${scenario}" \
@@ -150,6 +157,7 @@ for model in "${MODEL_LIST[@]}"; do
                 --judge-backend     bedrock \
                 --embedding-model   "${EMBEDDING_MODEL}" \
                 --judge-model       "${JUDGE_MODEL}" \
+                "${EFFORT_ARGS[@]}" \
                 --batch \
                 --fail-fast \
                 --output "${OUTPUT_FILE}"; then
