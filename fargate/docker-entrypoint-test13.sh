@@ -18,6 +18,7 @@ set -euo pipefail
 
 DREDD_PORT="${DREDD_PORT:-3456}"
 JUDGE_REGION="${JUDGE_REGION:-eu-central-1}"
+JUDGE_PROMPT="${JUDGE_PROMPT:-standard}"
 REPS="${REPS:-10}"
 TRACE="${TRACE:-benchmarks/prompt-reduction/traces/moderate-profile-median.json}"
 LOG_FILE="/app/results/test13.log"
@@ -29,6 +30,7 @@ REGION="${AWS_REGION:-eu-west-2}"
 
 echo "============================================================"
 echo " Test 13: Prompt-Reduction Benchmark"
+echo " Prompt:  ${JUDGE_PROMPT}"
 echo " Reps:    ${REPS}"
 echo " Trace:   ${TRACE}"
 echo " S3: s3://${S3_BUCKET}/${S3_PREFIX}/"
@@ -53,11 +55,16 @@ aws s3 ls "s3://${S3_BUCKET}/" --region "${REGION}" --page-size 1 >/dev/null 2>&
 # ── Start Dredd server (interactive mode) ─────────────────────────────────
 DREDD_URL="http://localhost:${DREDD_PORT}"
 echo "Starting Dredd server (interactive mode, Bedrock)..."
+PROMPT_ARGS=()
+if [ "${JUDGE_PROMPT}" != "standard" ]; then
+  PROMPT_ARGS+=(--prompt "${JUDGE_PROMPT}")
+fi
+
 AWS_REGION="${JUDGE_REGION}" npx tsx src/server.ts \
   --backend bedrock \
   --judge-model eu.anthropic.claude-sonnet-4-6 \
   --embedding-model eu.cohere.embed-v4:0 \
-  --prompt B7.1-office \
+  "${PROMPT_ARGS[@]}" \
   --mode interactive \
   --port "${DREDD_PORT}" &
 DREDD_PID=$!
