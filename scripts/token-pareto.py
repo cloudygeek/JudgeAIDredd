@@ -256,7 +256,7 @@ def _plot(series, x_key_label, title, out_path, log_x=False):
             is_hardened = is_b7 or is_b71
             marker = "D" if is_b71 else ("*" if is_b7 else "o")
             ms = 12 if is_b71 else (14 if is_b7 else 8)
-            label_suffix = " (B7.1)" if is_b71 else (" (B7)" if is_b7 else "")
+            label_suffix = " (prompt v2)" if is_b71 else (" (prompt v1)" if is_b7 else "")
             linestyle = "-." if is_b71 else ("--" if is_b7 else "-")
 
             # Line connecting effort levels (only for standard, since B7 has
@@ -279,9 +279,9 @@ def _plot(series, x_key_label, title, out_path, log_x=False):
             for x, y, effort in zip(xs, ys, efforts):
                 label_text = effort
                 if is_b71:
-                    label_text = f"B7.1"
+                    label_text = "prompt v2"
                 elif is_b7:
-                    label_text = f"B7"
+                    label_text = "prompt v1"
                 txt = ax.annotate(
                     label_text, (x, y),
                     textcoords="offset points", xytext=(6, 6),
