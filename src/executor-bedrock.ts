@@ -120,7 +120,7 @@ export async function executeScenario(
       const queryOptions: Record<string, unknown> = {
         allowedTools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
         permissionMode: "bypassPermissions",
-        maxTurns: 5,
+        maxTurns: maxTurns,
         cwd: workDir,
         model: bedrockModel,
         stderr: (data: string) => process.stderr.write(data),

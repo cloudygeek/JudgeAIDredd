@@ -144,6 +144,7 @@ docker build -f fargate/Dockerfile \
 | `fargate/docker-entrypoint-test15.sh` | Test 15: FPR under Prompt v2 (B7.1) |
 | `fargate/docker-entrypoint-test16.sh` | Test 16: Cross-Model Recommended Pipeline (Cohere v4 + B7.1) |
 | `fargate/docker-entrypoint-test17.sh` | Test 17: AgentDojo GPT-4o Tier-Match (flexible defence) |
+| `fargate/docker-entrypoint-test18.sh` | Test 18: T3e Exfiltration Under Recommended Pipeline |
 | `fargate/api-server.cjs` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
 | `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-west-2.amazonaws.com`) |
 | `fargate/infra/` | Terraform for the Fargate task definition and supporting resources |
