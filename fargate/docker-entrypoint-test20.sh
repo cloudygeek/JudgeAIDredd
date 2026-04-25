@@ -12,7 +12,7 @@ set -euo pipefail
 #   AGENTDOJO_MODEL     Agent model: qwen3-32b | qwen3-235b (default: qwen3-32b)
 #   AGENTDOJO_MODE      security | benign (default: security)
 #   AGENTDOJO_SUITES    CSV of suites or "all" (default: all)
-#   AGENTDOJO_DEFENSE   Defence variant: B7.1 | none (default: none)
+#   AGENTDOJO_DEFENSE   Defence variant: B7.1-office | none (default: none)
 #   AGENTDOJO_ATTACK    Attack type (default: important_instructions)
 #   AGENT_REGION        Bedrock region for the Qwen agent (default: eu-west-2)
 #   JUDGE_REGION        Bedrock region for Dredd judge (default: eu-central-1)
@@ -21,13 +21,13 @@ set -euo pipefail
 #
 # Example deployments to split across 4 containers:
 #   Container 1: AGENTDOJO_MODEL=qwen3-32b  AGENTDOJO_DEFENSE=none
-#   Container 2: AGENTDOJO_MODEL=qwen3-32b  AGENTDOJO_DEFENSE=B7.1
+#   Container 2: AGENTDOJO_MODEL=qwen3-32b  AGENTDOJO_DEFENSE=B7.1-office
 #   Container 3: AGENTDOJO_MODEL=qwen3-235b AGENTDOJO_DEFENSE=none
-#   Container 4: AGENTDOJO_MODEL=qwen3-235b AGENTDOJO_DEFENSE=B7.1
+#   Container 4: AGENTDOJO_MODEL=qwen3-235b AGENTDOJO_DEFENSE=B7.1-office
 #
 # Or split further by suite (8 containers per model):
 #   AGENTDOJO_MODEL=qwen3-32b AGENTDOJO_SUITES=workspace AGENTDOJO_DEFENSE=none
-#   AGENTDOJO_MODEL=qwen3-32b AGENTDOJO_SUITES=workspace AGENTDOJO_DEFENSE=B7.1
+#   AGENTDOJO_MODEL=qwen3-32b AGENTDOJO_SUITES=workspace AGENTDOJO_DEFENSE=B7.1-office
 #   ...etc for banking, slack, travel
 # ============================================================================
 
@@ -98,12 +98,16 @@ if [ "${DEFENSE}" != "none" ]; then
     && echo "  Bedrock judge OK" \
     || { echo "FATAL: Bedrock judge preflight failed"; exit 1; }
 
-  echo "Starting Dredd server (${DEFENSE}, autonomous)..."
+  DREDD_PROMPT="${DEFENSE}"
+  BENCH_DEFENSE="${DEFENSE}"
+  [ "${DEFENSE}" = "B7.1-office" ] && BENCH_DEFENSE="B7.1"
+
+  echo "Starting Dredd server (${DREDD_PROMPT}, autonomous)..."
   AWS_REGION="${JUDGE_REGION}" npx tsx src/server.ts \
     --backend bedrock \
     --judge-model eu.anthropic.claude-sonnet-4-6 \
     --embedding-model eu.cohere.embed-v4:0 \
-    --prompt "${DEFENSE}" \
+    --prompt "${DREDD_PROMPT}" \
     --port 3001 &
   DREDD_PID=$!
   echo "  Dredd PID: ${DREDD_PID}"
@@ -141,7 +145,7 @@ fi
 DEFENSE_ARGS=()
 DREDD_ARGS=()
 if [ "${DEFENSE}" != "none" ]; then
-  DEFENSE_ARGS+=(--defense "${DEFENSE}")
+  DEFENSE_ARGS+=(--defense "${BENCH_DEFENSE}")
   DREDD_ARGS+=(--dredd-url "${DREDD_URL}")
 fi
 
