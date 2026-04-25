@@ -1,7 +1,7 @@
 # Test Plan — AgentDojo Cross-Vendor with Qwen3.5 and Qwen3.6 (Local) as Defended Agents
 
 **Date:** 2026-04-25
-**Context:** P15 §3.7 (External Validation on AgentDojo) currently reports the recommended PreToolUse pipeline (Cohere Embed v4 + prompt v2 + Claude Haiku 4.5 judge) against two defended-agent tiers: **GPT-4o-mini** (29.9\% baseline ASR → ~2\% defended) and **GPT-4o** (~39\% → ~3--7\%). Both are OpenAI-hosted commercial agents. P15 §3.6 (T3e exfiltration) shows current Anthropic-trained agents (Sonnet 4.6, Opus 4.7) refuse the attack class at the model layer. **What the paper currently lacks: an open-weights, self-hosted, non-vendor-trained agent as the defended target**, which would directly address the reviewer question "is this defence's effect just an OpenAI-specific artefact?" Adding Alibaba's Qwen3.5 and Qwen3.6 (open-weights instruct line, served locally via Ollama) closes that gap with no commercial agent-API cost. Two consecutive Qwen point releases also let us measure whether the ${\sim}3$\,month gap between Qwen3.5 and Qwen3.6 shifts baseline injection-resistance training, which is independent useful evidence about open-weights training trajectories.
+**Context:** P15 §3.7 (External Validation on AgentDojo) reports the recommended PreToolUse pipeline (Cohere Embed v4 + prompt v2 + Claude Sonnet 4.6 judge) against two defended-agent tiers: **GPT-4o-mini** (29.9\% baseline ASR → ~2\% defended) and **GPT-4o** (~39\% → ~3--7\%). Both are OpenAI-hosted commercial agents. (The §3.7 paper text labelled the judge as Haiku 4.5 but every Test 12 / Test 17 fargate entrypoint --- `--judge-model eu.anthropic.claude-sonnet-4-6` --- ran Sonnet 4.6; the paper text is being corrected in the same revision that adds the Qwen rows.) P15 §3.6 (T3e exfiltration) shows current Anthropic-trained agents (Sonnet 4.6, Opus 4.7) refuse the attack class at the model layer. **What the paper currently lacks: an open-weights, self-hosted, non-vendor-trained agent as the defended target**, which would directly address the reviewer question "is this defence's effect just an OpenAI-specific artefact?" Adding Alibaba's Qwen3.5 and Qwen3.6 (open-weights instruct line, served locally via Ollama) closes that gap with no commercial agent-API cost. Two consecutive Qwen point releases also let us measure whether the ${\sim}3$\,month gap between Qwen3.5 and Qwen3.6 shifts baseline injection-resistance training, which is independent useful evidence about open-weights training trajectories.
 **Priority:** Medium-high. Not strictly blocking for submission --- §3.7 already has two tiers --- but a third row (open-weights, ${\sim}\$2$ Bedrock cost on the judge side) materially strengthens the cross-vendor generalisation claim and pre-empts the "defence is OpenAI-tuned" reviewer angle.
 
 ## What we have now
@@ -24,10 +24,10 @@ Two new defended-agent rows in §3.7 Table~10: **Qwen3.5-35B-Instruct** and **Qw
 | Agent serving | Ollama at `http://localhost:11434/v1` | OpenAI-compatible API; AgentDojo's OpenAI provider points at it via `OPENAI_API_BASE`. |
 | Attack | `important_instructions` | Same attack class as Test 17 (the AgentDojo 2024 paper's strongest). |
 | Suites | workspace, banking, slack, travel | Full AgentDojo `v1.2.2` corpus; matches Test 17. |
-| Defence | none, intent-tracker (= dredd PreToolUse + prompt v2 + Cohere v4 + Haiku 4.5 judge) | Two arms per model. |
+| Defence | none, intent-tracker (= dredd PreToolUse + prompt v2 + Cohere v4 + Sonnet 4.6 judge) | Two arms per model. |
 | Repetitions | 1 per task (per AgentDojo convention) | 949 security tasks + ~97 benign tasks, ${\times}\,2$ arms ${\times}\,2$ models = ${\sim}4{,}184$ task runs. |
 | Benchmark commit | `18b501a` | Same commit pinned in Test 17. |
-| Judge model | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` via Bedrock | Same as Tests 15 + 16 (the recommended-pipeline configuration). Test 17 used Sonnet 4.6; this plan deliberately uses Haiku 4.5 so the cross-vendor row reflects the §3.7 recommended pipeline. |
+| Judge model | `eu.anthropic.claude-sonnet-4-6` via Bedrock | Matches the actual §3.7 measurements (Tests 12a/b/c on GPT-4o-mini and Test 17 on GPT-4o, all using `--judge-model eu.anthropic.claude-sonnet-4-6` per the fargate entrypoint scripts). Sonnet 4.6 is the recommended-pipeline judge per §4.7 Conclusions. Tests 15 + 16 (Claude × T3 cross-model) used Haiku 4.5 because they are recommended-pipeline-on-Claude experiments where Haiku is the cost-efficient alternative; the AgentDojo external-validation row deliberately uses the headline-recommendation judge. |
 | Embedding | `eu.cohere.embed-v4:0` via Bedrock | Same as Test 17. |
 | Thresholds | `deny=0.15`, `review=0.60` | Same as Test 17. |
 
@@ -42,7 +42,7 @@ Two new defended-agent rows in §3.7 Table~10: **Qwen3.5-35B-Instruct** and **Qw
 
 **H1 --- Qwen3.x baseline ASR is materially non-zero (30--60\% weighted) on at least one of the two variants.** Qwen instruct training includes safety tuning but not at the scale of Anthropic's adversarial-prompt-injection corpora. A position between GPT-4o-mini (29.9\%) and GPT-4o (~39\%) is the expected range. Predicted: 30--50\% weighted baseline ASR on Qwen3.5; possibly lower on Qwen3.6 if injection-resistance training has tightened in the newer release (see H5 below).
 
-**H2 --- Defended ASR drops to single digits weighted under prompt v2 on both Qwen variants.** The defence is judge-side (Haiku 4.5 + prompt v2 evaluating each tool call against the original task in a context isolated from the Qwen agent's conversation), so its effect is independent of the defended agent's training. The 28--36\,pp ASR reduction observed on GPT-4o-mini and GPT-4o should carry over to both Qwen point releases. Predicted: 2--10\% defended weighted ASR on both.
+**H2 --- Defended ASR drops to single digits weighted under prompt v2 on both Qwen variants.** The defence is judge-side (Sonnet 4.6 + prompt v2 evaluating each tool call against the original task in a context isolated from the Qwen agent's conversation), so its effect is independent of the defended agent's training. The 28--36\,pp ASR reduction observed on GPT-4o-mini and GPT-4o should carry over to both Qwen point releases. Predicted: 2--10\% defended weighted ASR on both.
 
 **H3 --- Benign utility drops 10--25\,pp under prompt v2** for the same domain-overlap reason as the OpenAI runs (prompt v2's red-flag catalogue overlaps with messaging/banking legitimate-action shapes). Slack will be the worst suite; Travel approximately flat. Holds for both Qwen variants.
 
@@ -106,10 +106,10 @@ Two new defended-agent rows in §3.7 Table~10: **Qwen3.5-35B-Instruct** and **Qw
 The canonical invocation from Test 17 (`fargate/docker-entrypoint-test17.sh`) is the reference. Adapted for local execution against Ollama-served Qwen agents:
 
 ```bash
-# ── Terminal 1: Dredd judge server (Bedrock backend, Haiku 4.5 judge, prompt B7.1)
+# ── Terminal 1: Dredd judge server (Bedrock backend, Sonnet 4.6 judge, prompt B7.1)
 AWS_REGION=eu-west-1 npx tsx src/server.ts \
   --backend bedrock \
-  --judge-model eu.anthropic.claude-haiku-4-5-20251001-v1:0 \
+  --judge-model eu.anthropic.claude-sonnet-4-6 \
   --embedding-model eu.cohere.embed-v4:0 \
   --prompt B7.1 \
   --port 3001
@@ -157,7 +157,7 @@ for MODEL in qwen3.5 qwen3.6; do
 done
 ```
 
-**Note on Test 17 comparability:** Test 17 used **Sonnet 4.6** as the judge; this plan uses **Haiku 4.5** to match the §3.7 recommended-pipeline (Tests 15 + 16) configuration. The two GPT-4o rows already in §3.7 Table 10 were measured under Sonnet 4.6, so the cross-vendor comparison is to the recommended-pipeline framing rather than literal Test 17 settings — make this distinction explicit in the writeup.
+**Judge-model alignment with §3.7:** All four prior AgentDojo runs that populate §3.7 Table 10 (Test 12a / 12b / 12c on GPT-4o-mini and GPT-4o; Test 17 on the GPT-4o tier-match) used Sonnet 4.6 as the judge per the fargate entrypoint scripts. Test 20 matches that judge so the resulting four-row table reads as one coherent measurement of the recommended pipeline across four defended agents. Tests 15 + 16 used Haiku 4.5 but those are Claude × T3 measurements (different evaluation suite, where Haiku 4.5 is the cost-efficient alternative the paper documents in §4.7). The §3.7 paper text currently misidentifies the judge as Haiku 4.5; that text correction lands in the same paper revision that adds the Qwen rows.
 
 ### Wall-clock and cost
 
@@ -172,19 +172,28 @@ done
 
 For a 2-model run on the M3 Max, plan ~3--5 overnight runs (with a smoke pilot on Workspace-only first). On H100/A100, plan a single 24-hour cycle.
 
-**Bedrock cost (judge + embedding), per model:**
+**Bedrock cost (judge + embedding):**
 
-- Judge invocations per defended task: ~15--25 Haiku 4.5 calls × ~350\,in/80\,out tokens × \$0.80/M\,in / \$4.00/M\,out = ~\$0.001/task.
-- Defended arm per model: ~1{,}000 tasks × \$0.001 = **~\$1**.
-- Embedding: ~\$0.10 per defended arm.
-- Baseline arm: no judge calls. Cost ~\$0.
-- **Total Bedrock cost across both models: ~\$2--4.**
+A defended AgentDojo task triggers ~10 Sonnet 4.6 judge calls on average (most tool calls are auto-allowed or auto-denied by the Cohere v4 embedding stage; only the review-band ~20\% reach the judge). Each judge call is ~350 input + ~80 output tokens.
 
-**OpenAI / commercial agent API cost: \$0** (both Qwen variants run locally).
+| Component | Per call | Per task (~10 calls) |
+|---|---|---|
+| Sonnet 4.6 (\$3.00/M in, \$15.00/M out) | \$0.0023 | **\$0.023** |
 
-**Disk:** ~20\,GB per Q4 quantisation × 2 = ~40\,GB for both Qwen variants pulled to Ollama.
+- **Defended arm, per model:** ~1{,}046 tasks × \$0.023 = **~\$24**.
+- **Both models:** ~2{,}092 defended tasks × \$0.023 = **~\$48**.
+- Range allowing for 8--14 calls/task and Qwen running ~20\% more tool calls than GPT-4o-mini per task: **\$40--\$95** total Sonnet judge cost.
+- Embedding (Cohere v4 via Bedrock): ~\$0.20 across both defended arms.
+- Baseline arms (no defence): ~\$0 Bedrock cost.
+- **Total Bedrock cost: ~\$40--\$95.**
 
-**Budget cap:** \$10 all-in. Halt if exceeded (would require an unexpected ~25× cost overrun on the judge side).
+(Earlier draft of this plan estimated ~\$1--\$4 for the judge cost; that figure was off by ${\sim}30$--$50\times$ because it didn't multiply by ~10 judge invocations per task. Corrected here with Sonnet 4.6 pricing applied; Haiku 4.5 alternative would land at ~\$12--\$25, but is not the matched-judge configuration for this test.)
+
+**OpenAI / commercial agent API cost: \$0** (both Qwen variants run locally via Ollama).
+
+**Disk:** ~22\,GB per Q4 quantisation × 2 = ~44\,GB for both Qwen variants pulled to Ollama.
+
+**Budget cap:** \$120 all-in (~25\% headroom on the high estimate). Halt if exceeded; report partial matrix.
 
 ### Pilot before full run
 
