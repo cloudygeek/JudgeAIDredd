@@ -107,6 +107,7 @@ from agentdojo.task_suite.load_suites import get_suite
 sys.path.insert(0, str(Path(__file__).parent))
 from dredd_defense import JudgeDreddDefense
 from bedrock_llm import BedrockAnthropicLLM, BEDROCK_MODELS
+from bedrock_converse_llm import BedrockConverseLLM, BEDROCK_CONVERSE_MODELS
 
 # Monkey-patch: exclude blocked tool calls from stack traces so AgentDojo's
 # security_from_traces doesn't count Dredd-blocked actions as compromises.
@@ -175,10 +176,13 @@ def build_pipeline(
     dredd_url: str = "http://localhost:3001",
     backend: str = "bedrock",
     aws_region: str = "eu-west-2",
+    agent_region: str | None = None,
 ) -> AgentPipeline:
     """Build an AgentPipeline with optional Judge Dredd defense."""
     if backend == "bedrock":
         llm = BedrockAnthropicLLM(model_id, aws_region=aws_region, temperature=0.0)
+    elif backend == "bedrock-converse":
+        llm = BedrockConverseLLM(model_id, aws_region=agent_region or aws_region, temperature=0.0)
     elif backend == "openai":
         import openai
         from agentdojo.agent_pipeline.llms.openai_llm import OpenAILLM
@@ -274,10 +278,17 @@ def show_results(suite_name: str, results: SuiteResults, has_attack: bool) -> di
 
 def main():
     parser = argparse.ArgumentParser(description="Run AgentDojo benchmark with Judge Dredd defense")
-    parser.add_argument("--model", choices=["haiku", "sonnet", "gpt-4o", "gpt-4o-mini", "qwen3.5", "qwen3.6"], default="sonnet")
-    parser.add_argument("--backend", choices=["bedrock", "anthropic", "openai"], default="bedrock",
+    parser.add_argument("--model", choices=[
+        "haiku", "sonnet", "gpt-4o", "gpt-4o-mini",
+        "qwen3.5", "qwen3.6",
+        "qwen3-32b", "qwen3-235b",
+    ], default="sonnet")
+    parser.add_argument("--backend", choices=["bedrock", "anthropic", "openai", "bedrock-converse"], default="bedrock",
                         help="LLM backend (default: bedrock)")
-    parser.add_argument("--aws-region", default="eu-west-2")
+    parser.add_argument("--aws-region", default="eu-west-2",
+                        help="AWS region for bedrock (Claude) backend")
+    parser.add_argument("--agent-region", default=None,
+                        help="AWS region for bedrock-converse agent (default: same as --aws-region)")
     parser.add_argument("--defense", choices=["standard", "B7", "B7.1"], default=None,
                         help="Judge Dredd prompt variant (None = no defense)")
     parser.add_argument("--attack", default="important_instructions",
@@ -301,6 +312,8 @@ def main():
 
     if args.backend == "bedrock":
         model_id = BEDROCK_MODELS[args.model]
+    elif args.backend == "bedrock-converse":
+        model_id = BEDROCK_CONVERSE_MODELS[args.model]
     elif args.backend == "openai":
         model_id = OPENAI_MODELS[args.model]
     else:
@@ -324,6 +337,7 @@ def main():
     pipeline = build_pipeline(
         model_id, defense=defense, dredd_url=args.dredd_url,
         backend=args.backend, aws_region=args.aws_region,
+        agent_region=args.agent_region,
     )
 
     all_summaries = []
