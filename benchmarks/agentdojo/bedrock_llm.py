@@ -14,6 +14,7 @@ BEDROCK_MODELS = {
     "haiku": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
     "sonnet": "eu.anthropic.claude-sonnet-4-6",
     "opus": "eu.anthropic.claude-opus-4-20250514-v1:0",
+    "opus-4-7": "eu.anthropic.claude-opus-4-7",
 }
 
 

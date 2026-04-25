@@ -279,7 +279,8 @@ def show_results(suite_name: str, results: SuiteResults, has_attack: bool) -> di
 def main():
     parser = argparse.ArgumentParser(description="Run AgentDojo benchmark with Judge Dredd defense")
     parser.add_argument("--model", choices=[
-        "haiku", "sonnet", "gpt-4o", "gpt-4o-mini",
+        "haiku", "sonnet", "opus", "opus-4-7",
+        "gpt-4o", "gpt-4o-mini",
         "qwen3.5", "qwen3.6",
         "qwen3-32b", "qwen3-235b",
     ], default="sonnet")

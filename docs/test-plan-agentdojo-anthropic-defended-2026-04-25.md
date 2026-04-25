@@ -10,7 +10,7 @@
 |---|---|---|---|
 | GPT-4o-mini | OpenAI commercial | **Yes** (Test 12a/c, Sonnet 4.6 judge) | §3.7 Table 10 |
 | GPT-4o | OpenAI commercial | **Yes** (Test 17, Sonnet 4.6 judge) | §3.7.7 |
-| Qwen3.5 / Qwen3.6 | Alibaba open-weights | Pending (Test 20) | --- |
+| Qwen3-32B / Qwen3-235B | Alibaba open-weights (Bedrock) | Pending (Test 20) | --- |
 | **Sonnet 4.6** | **Anthropic commercial** | **No** | --- |
 | **Opus 4.7** | **Anthropic commercial** | **No** | --- |
 | Sonnet 4.6 / Opus 4.7 (T3e) | Anthropic, researcher corpus | Yes (Test 18) | §3.6 |
@@ -20,7 +20,7 @@ A reviewer can reasonably ask: ``you tested the defence on GPT-4o-mini, GPT-4o, 
 
 ## What this plan adds
 
-Two new defended-agent rows in §3.7 Table~10: **Claude Sonnet 4.6** and **Claude Opus 4.7**, both via Bedrock, evaluated against AgentDojo's `important_instructions` attack across all four suites (Workspace, Banking, Slack, Travel) under both no-defence and prompt-v2 arms. Reuses the Test 12/17 fargate entrypoint pattern unchanged --- only the agent-side `--model` flag changes. After this test, §3.7 Table 10 spans six defended-agent rows: GPT-4o-mini, GPT-4o, Qwen3.5, Qwen3.6, **Sonnet 4.6**, **Opus 4.7**.
+Two new defended-agent rows in §3.7 Table~10: **Claude Sonnet 4.6** and **Claude Opus 4.7**, both via Bedrock, evaluated against AgentDojo's `important_instructions` attack across all four suites (Workspace, Banking, Slack, Travel) under both no-defence and prompt-v2 arms. Reuses the Test 12/17 fargate entrypoint pattern unchanged --- only the agent-side `--model` flag changes. After this test, §3.7 Table 10 spans six defended-agent rows: GPT-4o-mini, GPT-4o, Qwen3-32B, Qwen3-235B, **Sonnet 4.6**, **Opus 4.7**.
 
 | Axis | Values | Notes |
 |---|---|---|
@@ -63,7 +63,7 @@ If hardware time and budget are tight, ship Sonnet 4.6 only and add an explicit 
 2. **Baseline ASR Wilson 95\% CI half-width ≤ 5\,pp per suite** at AgentDojo's per-suite $N_\text{sec}$ (Workspace 560, Banking 144, Slack 105, Travel 140). At full corpus this gives weighted-aggregate CIs ≤ 2\,pp.
 3. **Defended ASR achieves Wilson 95\% upper bound ≤ 12\%** weighted across suites, conditional on H3.
 4. **No mid-run Bedrock rate-limit or service-tier crashes.** If Sonnet 4.6 or Opus 4.7 hit rate limits at AgentDojo's request rate, drop to single-suite-at-a-time serial throughput and increase per-call retry budget.
-5. **Defence bridge (`benchmarks/agentdojo/dredd_defense.py`) unchanged from Tests 12/17/20.** The only source change is in the test harness `benchmarks/agentdojo/run_benchmark.py`, where two `--model` mappings are added (`sonnet-4-6` → `eu.anthropic.claude-sonnet-4-6`, `opus-4-7` → `eu.anthropic.claude-opus-4-7`). The interception logic, judge prompt, embedding, and threshold configuration are byte-identical to Tests 12/17/20.
+5. **Defence bridge (`benchmarks/agentdojo/dredd_defense.py`) unchanged from Tests 12/17/20.** The `run_benchmark.py` already supports `--backend bedrock --model sonnet`; the only new mapping is `opus-4-7` → `eu.anthropic.claude-opus-4-7` added to `BEDROCK_MODELS` in `bedrock_llm.py`. New entrypoint: `fargate/docker-entrypoint-test21.sh`. The interception logic, judge prompt, embedding, and threshold configuration are byte-identical to Tests 12/17/20.
 
 ## Decision rules
 
@@ -87,7 +87,7 @@ If hardware time and budget are tight, ship Sonnet 4.6 only and add an explicit 
 
 ### Infrastructure
 
-- **Bedrock side:** unchanged from Tests 12/17/18. `eu-west-1` for the agents and judge; Cohere v4 embedding in `eu-central-1` (or wherever the Cohere v4 inference profile lives). Both Sonnet 4.6 and Opus 4.7 access already provisioned per Test 18.
+- **Bedrock side:** `eu-central-1` for both agents and judge. Both Sonnet 4.6 and Opus 4.7 confirmed available as inference profiles. Cohere v4 embedding also in `eu-central-1`.
 - **AgentDojo:** version `v1.2.2` (commit `18b501a`), same as Tests 12/17/20. Pre-installed in the Fargate image used for Tests 12/17.
 - **Defence bridge + judge server:** unchanged from Test 17. Reuses `fargate/docker-entrypoint-test12{a,b,c}.sh` pattern with the agent flag adapted to Anthropic IDs and the agent backend switched from `--backend openai` to `--backend bedrock`.
 
@@ -95,7 +95,7 @@ If hardware time and budget are tight, ship Sonnet 4.6 only and add an explicit 
 
 ```bash
 # ── Terminal 1: Dredd judge server (Bedrock backend, Sonnet 4.6 judge, prompt B7.1)
-AWS_REGION=eu-west-1 npx tsx src/server.ts \
+AWS_REGION=eu-central-1 npx tsx src/server.ts \
   --backend bedrock \
   --judge-model eu.anthropic.claude-sonnet-4-6 \
   --embedding-model eu.cohere.embed-v4:0 \
@@ -103,38 +103,34 @@ AWS_REGION=eu-west-1 npx tsx src/server.ts \
   --port 3001
 
 # ── Terminal 2: AgentDojo runs against both Anthropic agents
-# The benchmarks/agentdojo/run_benchmark.py runner already supports
-# --backend bedrock with Claude model IDs; the entrypoint pattern below
-# mirrors test17 (which used --backend openai for GPT-4o).
+# The benchmarks/agentdojo/run_benchmark.py runner supports --backend bedrock
+# with friendly model names (sonnet, opus-4-7). The entrypoint pattern
+# mirrors test20 (which used --backend bedrock-converse for Qwen).
 
-for AGENT in eu.anthropic.claude-sonnet-4-6 eu.anthropic.claude-opus-4-7; do
-  AGENT_TAG="${AGENT##*claude-}"   # sonnet-4-6 / opus-4-7
-
+for MODEL in sonnet opus-4-7; do
   # --- Baseline (no defence) ---
-  AWS_REGION=eu-west-1 \
   python3 benchmarks/agentdojo/run_benchmark.py \
-    --backend bedrock --model "$AGENT" \
-    --aws-region eu-west-1 \
+    --backend bedrock --model "${MODEL}" \
+    --aws-region eu-central-1 \
     --attack important_instructions \
     --all-suites \
-    --logdir "results/test21/${AGENT_TAG}-baseline/" \
+    --logdir "results/test21/${MODEL}-baseline/" \
     -f
 
   # --- Defended (prompt v2 = B7.1) ---
-  AWS_REGION=eu-west-1 \
   python3 benchmarks/agentdojo/run_benchmark.py \
-    --backend bedrock --model "$AGENT" \
-    --aws-region eu-west-1 \
+    --backend bedrock --model "${MODEL}" \
+    --aws-region eu-central-1 \
     --attack important_instructions \
     --all-suites \
     --defense B7.1 \
     --dredd-url http://localhost:3001 \
-    --logdir "results/test21/${AGENT_TAG}-defended-b71/" \
+    --logdir "results/test21/${MODEL}-defended-b71/" \
     -f
 done
 ```
 
-A new `fargate/docker-entrypoint-test21.sh` mirroring `test12c.sh` but with `--backend bedrock` and Anthropic model IDs is the cleanest deployment path; ~50 lines of shell, mostly copy-paste from test12c.
+Container entrypoint: `fargate/docker-entrypoint-test21.sh` — env-var driven (`AGENTDOJO_MODEL`, `AGENTDOJO_DEFENSE`, etc.), uses `--backend bedrock`, supports multi-container split identical to Test 20's pattern.
 
 ### Wall-clock and cost
 
@@ -185,7 +181,7 @@ If the Sonnet 4.6 Workspace pilot shows H1 (baseline 5--25\%) and H3 (defended <
 **§3.7 Table~10 update:** add **two new rows** for Claude Sonnet 4.6 and Claude Opus 4.7. After Test 20 + Test 21 the table spans **six defended-agent rows** across three vendors:
 
 - OpenAI commercial (mini, large)
-- Open-weights mid-size (Qwen3.5, Qwen3.6)
+- Open-weights (Qwen3-32B dense, Qwen3-235B MoE)
 - Anthropic commercial (Sonnet 4.6, Opus 4.7)
 
 **§3.7.7 Tier-Match update:** the section currently compares GPT-4o-mini (paper) to GPT-4o (CaMeL). Add a third paragraph noting the Anthropic rows: this paper is now the only published cross-vendor evaluation that measures the same defence on the recommended deployment target, against an external benchmark.
@@ -202,11 +198,11 @@ If the Sonnet 4.6 Workspace pilot shows H1 (baseline 5--25\%) and H3 (defended <
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Bedrock rate limits at full AgentDojo throughput on Sonnet/Opus | Medium | Medium | Same as Test 17; in-runner backoff. Spread across `eu-west-1` and `eu-central-1` profiles if available |
+| Bedrock rate limits at full AgentDojo throughput on Sonnet/Opus | Medium | Medium | Same as Test 17; in-runner backoff. Both agent and judge in `eu-central-1`. |
 | Opus 4.7 cost overrun (longer-than-expected traces) | Medium | Medium | Budget cap \$500; halt at \$600. Can ship Sonnet-only and report Opus 4.7 as Future Work |
 | Anthropic API-tier safeguards interfere with attack delivery (H6 holds strongly) | Low--Medium | Low | Frame the result as "the defence's marginal effect over Anthropic's API-tier defences" rather than as a true "stripped agent + dredd" measurement. Honest, paper-relevant. |
 | Sonnet/Opus baseline ASR is at floor (<3\%) | Medium | Low | Decision-rule branch above; baseline-resistance finding is its own publishable result |
-| AgentDojo's `--backend bedrock` path has a bug we hit | Low | Medium | Pilot smoke-test catches this. The runner already supports `bedrock` per `run_benchmark.py`; verify the smoke test produces non-degenerate logs |
+| AgentDojo's `--backend bedrock` path has a bug we hit | Low | Medium | Pilot smoke-test catches this. The runner already supports `--backend bedrock` with `--model sonnet` and `--model opus-4-7`; verify the smoke test produces non-degenerate logs |
 | Adaptive-thinking quirk on Opus 4.7 (per §4.5 Limitations: Opus 4.7 silently skips reasoning at default effort) | Medium | Low | Already documented in the paper as Opus 4.7's adaptive-thinking caveat. AgentDojo at default effort matches Test 18's measurement convention; no special handling needed beyond noting the result is at default-effort behaviour |
 
 ## Non-goals
@@ -222,7 +218,7 @@ If the Sonnet 4.6 Workspace pilot shows H1 (baseline 5--25\%) and H3 (defended <
 
 - **Reuses Tests 12/17/20 infrastructure** (AgentDojo + dredd defence-bridge + Bedrock judge/embedding) unchanged. The cross-vendor surface is purely the defended-agent backend (`--backend bedrock`).
 - **Independent of Test 18** (T3e on Sonnet/Opus). Test 18 measures T3e's user-turn-reframing class against Anthropic; Test 21 measures AgentDojo's tool-output-injection class against Anthropic. Two attack-class data points on the same agent tier.
-- **Independent of Test 19 + Test 20.** These three Phase-2 tests can run concurrently (different agent backends, separate Bedrock and Ollama quotas).
+- **Independent of Test 19 + Test 20.** These three Phase-2 tests can run concurrently (different agent models on Bedrock; Test 20 uses Qwen via Converse API, Test 21 uses Claude via Anthropic SDK).
 - **Complements §4.4 defence-comparison table.** After Test 21 the Sonnet 4.6 row in Table 24 is closer to a tier-match against CaMeL's GPT-4o numbers than the current GPT-4o-mini row.
 
 ## Stretch follow-ups
