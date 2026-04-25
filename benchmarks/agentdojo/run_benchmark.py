@@ -142,9 +142,13 @@ ANTHROPIC_MODELS = {
 
 # OpenAI model IDs (used when --backend=openai). Pinned to dated variants
 # to match AgentDojo's published baselines and avoid rolling-alias drift.
+# Qwen entries are served via Ollama's OpenAI-compatible endpoint when
+# OPENAI_BASE_URL points at a local Ollama instance.
 OPENAI_MODELS = {
     "gpt-4o": "gpt-4o-2024-05-13",
     "gpt-4o-mini": "gpt-4o-mini-2024-07-18",
+    "qwen3.5": "qwen3.5:35b",
+    "qwen3.6": "qwen3.6:35b",
 }
 
 DEFAULT_SYSTEM_MESSAGE = (
@@ -222,6 +226,11 @@ def build_pipeline(
         friendly = "claude-3-5-sonnet-20241022"
     elif "opus" in model_id:
         friendly = "claude-3-opus-20240229"
+    elif model_id.startswith("qwen"):
+        # Qwen has no AgentDojo-native attack template. Use gpt-4o's, since
+        # both consume the same OpenAI tool-call schema and follow similar
+        # instruction-following conventions.
+        friendly = "gpt-4o-2024-05-13"
     pipeline.name = f"{friendly}{defense_suffix}"
 
     return pipeline
@@ -265,7 +274,7 @@ def show_results(suite_name: str, results: SuiteResults, has_attack: bool) -> di
 
 def main():
     parser = argparse.ArgumentParser(description="Run AgentDojo benchmark with Judge Dredd defense")
-    parser.add_argument("--model", choices=["haiku", "sonnet", "gpt-4o", "gpt-4o-mini"], default="sonnet")
+    parser.add_argument("--model", choices=["haiku", "sonnet", "gpt-4o", "gpt-4o-mini", "qwen3.5", "qwen3.6"], default="sonnet")
     parser.add_argument("--backend", choices=["bedrock", "anthropic", "openai"], default="bedrock",
                         help="LLM backend (default: bedrock)")
     parser.add_argument("--aws-region", default="eu-west-2")
