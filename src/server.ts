@@ -629,11 +629,13 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     tracker.getProjectRoot(session_id)
   );
 
-  // In learn mode, the pipeline still runs (for logging/observation) but
-  // we never block — the would-be verdict is recorded as-is.
-  const effectiveAllowed = isLearn ? true : result.allowed;
+  // In learn mode, the full pipeline runs (for logging / FPR calibration)
+  // but we emit no `permissionDecision` in the hook response — Claude Code
+  // falls through to the user's normal `.claude/settings.json` permission
+  // rules exactly as if Dredd weren't installed. Verdict is still recorded
+  // in the session log + dashboard feed for offline review.
 
-  // Record the decision (true verdict, not the learn-mode override)
+  // Record the decision (true verdict, regardless of learn-mode pass-through)
   tracker.recordToolCall(
     session_id,
     tool_name,
@@ -646,22 +648,26 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     timestamp: new Date().toISOString(),
     type: "tool",
     tool: tool_name,
-    stage: isLearn && !result.allowed ? `${result.stage} (learn-allow)` : result.stage,
-    allowed: effectiveAllowed,
+    stage: isLearn ? `${result.stage} (learn-shadow)` : result.stage,
+    allowed: result.allowed,
     reason: result.reason.substring(0, 100),
     sessionId: session_id,
   });
 
   if (isLearn && !result.allowed) {
     console.log(
-      `  [${session_id.substring(0, 8)}] [LEARN] Would have blocked ${tool_name}: ${result.reason} — allowing anyway`
+      `  [${session_id.substring(0, 8)}] [LEARN] Would have blocked ${tool_name}: ${result.reason} — passing through to user permissions`
     );
   }
 
   // Build hook response
   const hookResponse: Record<string, unknown> = {};
 
-  if (!effectiveAllowed) {
+  if (isLearn) {
+    // Shadow mode — no decision. Claude Code uses user permissions config.
+    // (No hookSpecificOutput at all; the empty hookResponse below carries
+    //  only the _meta block for the dashboard.)
+  } else if (!result.allowed) {
     // Use the interceptor's *current* working goal (which interactive mode
     // updates each turn) rather than the session's stale very-first prompt.
     const currentGoal = interceptor.getCurrentGoal()
