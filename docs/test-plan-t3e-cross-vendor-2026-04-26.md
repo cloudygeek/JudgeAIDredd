@@ -20,6 +20,8 @@
 
 **Why T3e and not T3:** Test 18 demonstrated that T3's `hijackSucceeded` metric flips `True` from benign `.env.test` reads during the legitimate code-review framing, regardless of defence (Sonnet 4.6 / Opus 4.7 baseline 95--100\%, defended 95--100\%). T3e introduces `exfiltrationDetected` (canary value POSTed to attacker-controlled canary server) as the strict attacker-outcome metric. A unified cross-vendor table on T3 would inherit the metric-permissiveness problem; on T3e it does not. Test 23 uses T3e exclusively.
 
+**Additional corroboration from the cross-model T3 dataset (`results/agentdojo-t20t21-{baseline,defended-a,defended-b}/`, Apr 25--26):** the same saturated pattern reproduces three more times across Anthropic Claude tiers under T3.2 (intermediate) and T3.3 (sophisticated): Haiku 4.5 baseline 99.6\%/99.5\% vs. defended 99.1\%/98.6\% ($N{=}240$--$640$ per cell); Sonnet 4.6 baseline 99.1\%/100\% vs. defended 99.1\%/99.5\%; Opus 4.6 baseline 100\%/100\% vs. defended 95.6\%/99.8\%. Defended cells used the Haiku-judge configuration, but the Haiku-vs-Sonnet judge swap is irrelevant to this finding — both arms are pinned at the metric ceiling so any judge effect is structurally invisible. This is why a Sonnet-judge rerun of the cross-model T3 corpus is *not* on the Test 23 critical path; T3e is.
+
 ## What this plan adds
 
 Run T3e.2 / T3e.3 / T3e.4 across **seven new defended-agent rows** under both arms (no defence, recommended PreToolUse pipeline) at the same $N{=}20$ per cell × 3 scenarios = $N{=}60$ per arm convention as Test 18. After Test 23 the unified §3.6.x cross-vendor T3e table spans **nine rows** across three vendor families (Anthropic × 4 tiers, OpenAI × 2 tiers, Qwen × 3 variants).
