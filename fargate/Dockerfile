@@ -103,7 +103,9 @@ COPY docker-entrypoint-test18.sh /docker-entrypoint-test18.sh
 COPY docker-entrypoint-test20.sh /docker-entrypoint-test20.sh
 # Test 21: AgentDojo with Anthropic Claude as Defended Agent
 COPY docker-entrypoint-test21.sh /docker-entrypoint-test21.sh
-RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test8b6.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh /docker-entrypoint-test10.sh /docker-entrypoint-test12.sh /docker-entrypoint-test12a.sh /docker-entrypoint-test12b.sh /docker-entrypoint-test12c.sh /docker-entrypoint-test13.sh /docker-entrypoint-test14.sh /docker-entrypoint-test15.sh /docker-entrypoint-test16.sh /docker-entrypoint-test17.sh /docker-entrypoint-test18.sh /docker-entrypoint-test20.sh /docker-entrypoint-test21.sh
+# Test 23: T3e Cross-Vendor with Qwen3 (Bedrock Converse)
+COPY docker-entrypoint-test23.sh /docker-entrypoint-test23.sh
+RUN chmod +x /docker-entrypoint.sh /docker-entrypoint-test1.sh /docker-entrypoint-test3.sh /docker-entrypoint-test3a.sh /docker-entrypoint-test4.sh /docker-entrypoint-test8.sh /docker-entrypoint-test8b6.sh /docker-entrypoint-test9.sh /docker-entrypoint-test9a.sh /docker-entrypoint-test10.sh /docker-entrypoint-test12.sh /docker-entrypoint-test12a.sh /docker-entrypoint-test12b.sh /docker-entrypoint-test12c.sh /docker-entrypoint-test13.sh /docker-entrypoint-test14.sh /docker-entrypoint-test15.sh /docker-entrypoint-test16.sh /docker-entrypoint-test17.sh /docker-entrypoint-test18.sh /docker-entrypoint-test20.sh /docker-entrypoint-test21.sh /docker-entrypoint-test23.sh
 
 COPY server.js /app/server.js
 
