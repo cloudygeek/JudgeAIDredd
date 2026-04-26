@@ -67,7 +67,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
 # MT-AgentRisk dataset (from HuggingFace)
-ARG MT_AGENTRISK_REVISION=main
+ARG MT_AGENTRISK_REVISION=e1ba224fea480df3d296a1bf4e28613d4c97c704
 RUN pip3 install --break-system-packages huggingface_hub \
     && python3 -c "from huggingface_hub import snapshot_download; snapshot_download('CHATS-Lab/MT-AgentRisk', local_dir='/app/datasets/mt-agentrisk', revision='${MT_AGENTRISK_REVISION}')" \
     && echo "MT-AgentRisk dataset downloaded"

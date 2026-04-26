@@ -1,15 +1,18 @@
-"""HTTP+SSE client for ToolShield's MCP servers.
+"""SSE client for ToolShield's MCP servers (via supergateway).
 
-Routes tool calls by name to the correct MCP server. Each server exposes
-tools via the Model Context Protocol over HTTP+SSE transport (supergateway).
+Supergateway wraps stdio MCP servers and exposes them over HTTP+SSE:
+  - GET  /sse      → subscribe to server-sent events (includes endpoint URI)
+  - POST /message  → send JSON-RPC requests
 
-Falls back to raw HTTP if the mcp Python SDK is not available.
+This client connects to each server's /sse endpoint to get the message
+URI, then sends JSON-RPC tool/list and tool/call requests via POST.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 
 import requests
@@ -31,6 +34,7 @@ DEFAULT_MCP_SERVERS = {
 class MCPServer:
     name: str
     url: str
+    message_url: str | None = None
     tools: list[ToolDef] = field(default_factory=list)
     _tool_names: set[str] = field(default_factory=set, repr=False)
 
@@ -49,6 +53,7 @@ class MCPToolRouter:
     def connect_all(self) -> None:
         for server in self._servers.values():
             try:
+                self._connect_sse(server)
                 self._discover_tools(server)
                 logger.info("Connected to %s (%s): %d tools",
                             server.name, server.url, len(server.tools))
@@ -56,20 +61,81 @@ class MCPToolRouter:
                 logger.warning("Failed to connect to %s (%s): %s",
                                server.name, server.url, e)
 
-    def _discover_tools(self, server: MCPServer) -> None:
-        """Discover tools from an MCP server via its HTTP endpoint.
+    def _connect_sse(self, server: MCPServer) -> None:
+        """Connect to the SSE endpoint to discover the message URI.
 
-        ToolShield's MCP servers (via supergateway) expose a JSON-RPC
-        endpoint. We send a tools/list request to enumerate available tools.
+        Supergateway sends an initial SSE event with the endpoint URI:
+          event: endpoint
+          data: /message?sessionId=...
         """
-        resp = requests.post(
-            f"{server.url}/mcp",
-            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        resp = requests.get(
+            f"{server.url}/sse",
+            stream=True,
             timeout=10,
+            headers={"Accept": "text/event-stream"},
+        )
+        resp.raise_for_status()
+
+        message_url = None
+        for line in resp.iter_lines(decode_unicode=True):
+            if line and line.startswith("data:"):
+                data = line[len("data:"):].strip()
+                if "/message" in data:
+                    if data.startswith("http"):
+                        message_url = data
+                    else:
+                        message_url = f"{server.url}{data}"
+                    break
+            if line and line.startswith("event:") and "endpoint" in line:
+                continue
+
+        resp.close()
+
+        if message_url:
+            server.message_url = message_url
+            logger.debug("SSE endpoint for %s: %s", server.name, message_url)
+        else:
+            server.message_url = f"{server.url}/message"
+            logger.debug("No SSE endpoint discovered for %s, defaulting to /message", server.name)
+
+    def _send_jsonrpc(self, server: MCPServer, method: str, params: dict | None = None) -> dict:
+        url = server.message_url or f"{server.url}/message"
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+        }
+        if params:
+            payload["params"] = params
+
+        resp = requests.post(
+            url,
+            json=payload,
+            timeout=60,
             headers={"Content-Type": "application/json"},
         )
         resp.raise_for_status()
-        data = resp.json()
+
+        content_type = resp.headers.get("Content-Type", "")
+        if "text/event-stream" in content_type:
+            return self._parse_sse_response(resp.text)
+
+        return resp.json()
+
+    def _parse_sse_response(self, text: str) -> dict:
+        """Parse a JSON-RPC response from SSE-formatted text."""
+        for line in text.splitlines():
+            if line.startswith("data:"):
+                data = line[len("data:"):].strip()
+                if data:
+                    try:
+                        return json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+        return {}
+
+    def _discover_tools(self, server: MCPServer) -> None:
+        data = self._send_jsonrpc(server, "tools/list")
 
         tools_list = data.get("result", {}).get("tools", [])
         server.tools = []
@@ -104,19 +170,10 @@ class MCPToolRouter:
             return f"Error: unknown tool '{tool_name}'"
 
         try:
-            resp = requests.post(
-                f"{server.url}/mcp",
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": tool_name, "arguments": arguments},
-                },
-                timeout=60,
-                headers={"Content-Type": "application/json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._send_jsonrpc(server, "tools/call", {
+                "name": tool_name,
+                "arguments": arguments,
+            })
 
             if "error" in data:
                 error = data["error"]
@@ -129,7 +186,7 @@ class MCPToolRouter:
 
         except requests.Timeout:
             logger.warning("Tool call timed out: %s", tool_name)
-            return f"Error: tool call timed out after 60s"
+            return "Error: tool call timed out after 60s"
         except Exception as e:
             logger.warning("Tool call failed: %s(%s): %s", tool_name, arguments, e)
             return f"Error: {e}"
@@ -139,6 +196,7 @@ class MCPToolRouter:
         for server in self._servers.values():
             server.tools.clear()
             server._tool_names.clear()
+            server.message_url = None
 
     def server_status(self) -> dict[str, int]:
         return {s.name: len(s.tools) for s in self._servers.values()}

@@ -55,7 +55,7 @@ from benchmarks.mt_agentrisk.judge import JudgeVerdict, classify_trajectory
 logger = logging.getLogger(__name__)
 
 # Pin to a specific dataset revision to prevent mid-experiment drift
-MT_AGENTRISK_DATASET_REVISION = "main"  # TODO: pin to commit hash after first clone
+MT_AGENTRISK_DATASET_REVISION = "e1ba224fea480df3d296a1bf4e28613d4c97c704"
 
 TOOL_SURFACES = ["filesystem", "browser", "postgres", "notion", "terminal"]
 
