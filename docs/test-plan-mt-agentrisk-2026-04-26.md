@@ -236,7 +236,8 @@ Wilson 95% CI half-width: ~6pp per surface, ~3pp aggregate.
 - **Reuses dredd PreToolUse pipeline** (judge prompt v2, Cohere v4, threshold calibration, judge model = Sonnet 4.6) unchanged from §3.7 / Test 18.
 - **Adds new engineering** (MT-AgentRisk runner, tool sandbox containers) reusable for Test 25 (AgentLAB shares the FastAPI multi-turn loop pattern). Two-test value.
 - **Independent of Tests 19--23.** Different attack-class corpus. Can run in parallel with their cluster capacity if available.
-- **Cites source paper:** arXiv:2602.13379. Citation needs verification via `parallel_web.py extract` on arxiv.org before adding to `p15.bib` (per CLAUDE.md no-fake-citations policy).
+- **Cites source paper:** arXiv:2602.13379 (Li, Yu, Pan, Sun, Li, Song, Lin, Shi — *Unsafer in Many Turns*, 2026-02-13, cs.CR). **Verified 2026-04-26** via WebFetch; record at `Cloud-Security/Adrian/p15/sources/extract_20260426_arxiv_2602_13379.md`. BibTeX key `li2026mtagentrisk` ready to add to `p15.bib` once §3.8 cites it.
+- **Note (verification finding):** the source paper *also* proposes a defence — **ToolShield** (training-free, tool-agnostic, self-exploration; cuts ASR by 30% on average). This puts the paper in two categories: (a) external benchmark for Test 24 evaluation use, (b) competitor defence for §2 Related Work. Test 24 uses only the benchmark; the ToolShield comparison is a §2-text item.
 
 ## Stretch follow-ups
 

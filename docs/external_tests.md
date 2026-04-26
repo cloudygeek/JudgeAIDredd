@@ -66,9 +66,63 @@ Reviewer-flag risks:
 - **DREAM** [arXiv:2512.19016, 2025]: knowledge-graph + dynamic environment red-teaming; >70% success on 8/12 models.
 - **P15 fit:** §4.6 Future Work — addresses "limited hand-crafted corpus" reviewer critique. Could also seed a Test 25 future-work pilot to measure dredd's robustness against fuzzed payloads.
 
-## Citation verification policy
+## Citation verification status
 
-Per CLAUDE.md: every citation must be a real, verifiable paper. Several of these arXiv IDs are claimed-2026 — verify each via `parallel_web.py extract` against `arxiv.org` before adding to `p15.bib`. Preserve the explore-approaches output in `sources/research_<date>_external_tests.md` (TODO).
+Per CLAUDE.md: every citation must be a real, verifiable paper. Verification done via WebFetch on arxiv.org abstract pages (2026-04-26) — `PARALLEL_API_KEY` not set in env; WebFetch used as last-resort fallback.
+
+| arXiv ID | Title (short) | Verified? | Source extract record |
+|---|---|:---:|---|
+| 2602.13379 | MT-AgentRisk / ToolShield (Li et al.) | ✓ 2026-04-26 | `p15/sources/extract_20260426_arxiv_2602_13379.md` |
+| 2604.11790 | ClawGuard (Zhao et al.) | ✓ 2026-04-26 | `p15/sources/extract_20260426_arxiv_2604_11790.md` |
+| 2602.16901 | AgentLAB (Jiang et al.) | ✓ 2026-04-26 | `p15/sources/extract_20260426_arxiv_2602_16901.md` |
+| 2603.07191 | Layered Governance Architecture | unverified | — |
+| 2603.11853 | OpenClaw PRISM | unverified | — |
+| 2506.12104 | DRIFT | unverified | — |
+| 2602.22724 | AgentSentry | unverified | — |
+| 2603.10749 | AttriGuard | unverified | — |
+| 2508.16481 | Bad-ACTS | unverified | — |
+| 2601.10156 | ToolSafe TS-Guard | unverified | — |
+| 2503.22738 | ShieldAgent | unverified | — |
+| 2505.05849 | AgentVigil | unverified | — |
+| 2512.19016 | DREAM | unverified | — |
+| 2603.24414 | ClawKeeper | unverified | — |
+| 2510.05244 | Indirect Prompt Injections (firewall benchmark survey) | unverified | — |
+
+**Verify any item before adding to `p15.bib`.** Verified BibTeX entries are inlined in each source extract record above.
+
+## New findings from verification (not in original explore_approaches output)
+
+### Finding A: arXiv:2602.13379 also proposes a *defence* — ToolShield
+
+The Paper Lantern deep dive treated 2602.13379 as a benchmark only (MT-AgentRisk). The arxiv abstract surfaces that the **same paper also proposes ToolShield**, characterised as *training-free, tool-agnostic, self-exploration*, reducing ASR by 30% on average. This puts the paper in two categories:
+
+1. **External benchmark** (Test 24 evaluation use)
+2. **Competitor defence** (§2 Related Work — alongside ClawGuard, AgentSentry, ToolSafe, ShieldAgent)
+
+ToolShield's "training-free + self-exploration" mechanism is mechanistically distinct from dredd's PreToolUse intent-tracking judge — worth a one-paragraph contrast in §2 once the §2 Related Work pass happens.
+
+### Finding B: ClawGuard names three attack channels — broader than AgentDojo's framing
+
+ClawGuard (2604.11790) explicitly targets three indirect-prompt-injection channels:
+1. **Web and local content injection** — overlaps with AgentDojo's `important_instructions`.
+2. **MCP server injection** — Model Context Protocol server-mediated injection. Not covered by P15.
+3. **Skill file injection** — agent-skill / system-prompt-side injection. Not covered by P15.
+
+This matters for §2 + §4.6: P15's defence operates at the PreToolUse-tool-call gate (channel 1); MCP-server and skill-file channels are out of scope and become Future Work items rather than competing-coverage gaps.
+
+### Finding C: AgentLAB has five attack types (not three environment categories)
+
+The Paper Lantern deep dive listed "web navigation, code execution, personal assistance" — these are **environment categories**, not attack types. The verified abstract names **five distinct attack types**:
+
+| Attack type | Mapping to P14 / P15 |
+|---|---|
+| Intent hijacking | Direct overlap with P14 T3 multi-turn goal hijacking |
+| Tool chaining | Partial overlap with T3.4 (tool-call composition) |
+| Task injection | Overlaps with AgentDojo's `important_instructions` |
+| Objective drifting | New axis; closest analogue P14 T5 |
+| Memory poisoning | **New axis; not covered by P14 / P15 corpus or AgentDojo. dredd's PreToolUse gate does not directly defend (judge sees tool-call-vs-task surface, not agent-internal memory).** |
+
+Test 25's per-attack-type breakdown gives P15 a per-class characterisation of dredd's coverage — particularly the memory-poisoning row, which is a clean honest "this attack class is out of scope of the proposed defence" finding rather than a defence failure.
 
 ## Decision
 
