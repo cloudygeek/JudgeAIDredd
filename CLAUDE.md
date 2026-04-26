@@ -96,6 +96,7 @@ cp <project>/fargate/docker-entrypoint-test12.sh ./docker-entrypoint-test12.sh
 cp <project>/fargate/docker-entrypoint-test20.sh ./docker-entrypoint-test20.sh
 cp <project>/fargate/docker-entrypoint-test21.sh ./docker-entrypoint-test21.sh
 cp <project>/fargate/docker-entrypoint-test23.sh ./docker-entrypoint-test23.sh
+cp <project>/fargate/docker-entrypoint-test24.sh ./docker-entrypoint-test24.sh
 
 # AgentDojo benchmark (Python) — vendored into the image
 cp -r <project>/benchmarks ./benchmarks
@@ -151,6 +152,7 @@ docker build -f fargate/Dockerfile \
 | `fargate/docker-entrypoint-test20.sh` | Test 20: AgentDojo Cross-Vendor with Qwen3 (Bedrock) |
 | `fargate/docker-entrypoint-test21.sh` | Test 21: AgentDojo with Anthropic Claude as Defended Agent |
 | `fargate/docker-entrypoint-test23.sh` | Test 23: T3e Cross-Vendor with Qwen3 (Bedrock Converse) |
+| `fargate/docker-entrypoint-test24.sh` | Test 24: MT-AgentRisk Multi-Turn Tool-Grounded Safety Benchmark |
 | `fargate/api-server.cjs` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
 | `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-west-2.amazonaws.com`) |
 | `fargate/infra/` | Terraform for the Fargate task definition and supporting resources |
