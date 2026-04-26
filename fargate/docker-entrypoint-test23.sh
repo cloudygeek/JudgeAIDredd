@@ -40,7 +40,7 @@ S3_PREFIX="${S3_PREFIX:-test23}"
 S3_REGION="${S3_REGION:-eu-west-1}"
 AWS_REGION="${AWS_REGION:-eu-central-1}"
 
-JUDGE_MODEL="eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+JUDGE_MODEL="eu.anthropic.claude-sonnet-4-6"
 EMBED_MODEL="eu.cohere.embed-v4:0"
 JUDGE_PROMPT="B7.1"
 
