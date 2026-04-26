@@ -75,18 +75,69 @@ Per CLAUDE.md: every citation must be a real, verifiable paper. Verification don
 | 2602.13379 | MT-AgentRisk / ToolShield (Li et al.) | ✓ 2026-04-26 | `p15/sources/extract_20260426_arxiv_2602_13379.md` |
 | 2604.11790 | ClawGuard (Zhao et al.) | ✓ 2026-04-26 | `p15/sources/extract_20260426_arxiv_2604_11790.md` |
 | 2602.16901 | AgentLAB (Jiang et al.) | ✓ 2026-04-26 | `p15/sources/extract_20260426_arxiv_2602_16901.md` |
+| 2603.11853 | OpenClaw PRISM (F. Li) | ✓ 2026-04-26 | `JudgeAIDredd/docs/competitors.md` (BibTeX inline below) |
+| 2506.12104 | DRIFT (Li, Liu, Chiu, Li, Zhang, Xiao) | ✓ 2026-04-26 | `JudgeAIDredd/docs/competitors.md` |
+| 2602.22724 | AgentSentry (Zhang, Xu, Wang et al.) | ✓ 2026-04-26 | `JudgeAIDredd/docs/competitors.md` |
+| 2603.10749 | AttriGuard (He, Zhu, Li et al.) | ✓ 2026-04-26 | `JudgeAIDredd/docs/competitors.md` |
+| 2601.10156 | ToolSafe TS-Guard (Mou, Xue, Li et al.) | ✓ 2026-04-26 | `JudgeAIDredd/docs/competitors.md` |
 | 2603.07191 | Layered Governance Architecture | unverified | — |
-| 2603.11853 | OpenClaw PRISM | unverified | — |
-| 2506.12104 | DRIFT | unverified | — |
-| 2602.22724 | AgentSentry | unverified | — |
-| 2603.10749 | AttriGuard | unverified | — |
 | 2508.16481 | Bad-ACTS | unverified | — |
-| 2601.10156 | ToolSafe TS-Guard | unverified | — |
 | 2503.22738 | ShieldAgent | unverified | — |
 | 2505.05849 | AgentVigil | unverified | — |
 | 2512.19016 | DREAM | unverified | — |
 | 2603.24414 | ClawKeeper | unverified | — |
 | 2510.05244 | Indirect Prompt Injections (firewall benchmark survey) | unverified | — |
+
+### Verified BibTeX entries for the §2-Related-Work runtime-defence family
+
+```bibtex
+@misc{li2026openclaw_prism,
+  title  = {{OpenClaw} {PRISM}: A Zero-Fork, Defense-in-Depth Runtime Security Layer for Tool-Augmented {LLM} Agents},
+  author = {Li, Frank},
+  year   = {2026}, month = mar,
+  eprint = {2603.11853}, archivePrefix = {arXiv}, primaryClass = {cs.CR},
+  doi    = {10.48550/arXiv.2603.11853},
+  url    = {https://arxiv.org/abs/2603.11853}
+}
+
+@misc{li2025drift,
+  title  = {{DRIFT}: Dynamic Rule-Based Defense with Injection Isolation for Securing {LLM} Agents},
+  author = {Li, Hao and Liu, Xiaogeng and Chiu, Hung-Chun and Li, Dianqi and Zhang, Ning and Xiao, Chaowei},
+  year   = {2025}, month = jun,
+  eprint = {2506.12104}, archivePrefix = {arXiv}, primaryClass = {cs.CR},
+  doi    = {10.48550/arXiv.2506.12104},
+  url    = {https://arxiv.org/abs/2506.12104}
+}
+
+@misc{zhang2026agentsentry,
+  title  = {{AgentSentry}: Mitigating Indirect Prompt Injection in {LLM} Agents via Temporal Causal Diagnostics and Context Purification},
+  author = {Zhang, Tian and Xu, Yiwei and Wang, Juan and Guo, Keyan and Xu, Xiaoyang and Xiao, Bowen and Guan, Quanlong and Fan, Jinlin and Liu, Jiawei and Liu, Zhiquan and Hu, Hongxin},
+  year   = {2026}, month = feb,
+  eprint = {2602.22724}, archivePrefix = {arXiv}, primaryClass = {cs.CR},
+  doi    = {10.48550/arXiv.2602.22724},
+  url    = {https://arxiv.org/abs/2602.22724}
+}
+
+@misc{he2026attriguard,
+  title  = {{AttriGuard}: Defeating Indirect Prompt Injection in {LLM} Agents via Causal Attribution of Tool Invocations},
+  author = {He, Yu and Zhu, Haozhe and Li, Yiming and Shao, Shuo and Yao, Hongwei and Liu, Zhihao and Qin, Zhan},
+  year   = {2026}, month = mar,
+  eprint = {2603.10749}, archivePrefix = {arXiv}, primaryClass = {cs.CR},
+  doi    = {10.48550/arXiv.2603.10749},
+  url    = {https://arxiv.org/abs/2603.10749}
+}
+
+@misc{mou2026toolsafe,
+  title  = {{ToolSafe}: Enhancing Tool Invocation Safety of {LLM}-based Agents via Proactive Step-level Guardrail and Feedback},
+  author = {Mou, Yutao and Xue, Zhangchi and Li, Lijun and Liu, Peiyang and Zhang, Shikun and Ye, Wei and Shao, Jing},
+  year   = {2026}, month = jan,
+  eprint = {2601.10156}, archivePrefix = {arXiv}, primaryClass = {cs.CL},
+  doi    = {10.48550/arXiv.2601.10156},
+  url    = {https://arxiv.org/abs/2601.10156}
+}
+```
+
+**Verification note:** WebFetch's "fabricated" verdict on 2603.11853 was a false positive — its training cutoff is pre-2026 so it flagged the future-relative-to-training-data submission date. Direct arxiv.org metadata via curl confirmed the paper. Same approach (curl on arxiv.org) used for 2506.12104 / 2602.22724 / 2603.10749 / 2601.10156.
 
 **Verify any item before adding to `p15.bib`.** Verified BibTeX entries are inlined in each source extract record above.
 
