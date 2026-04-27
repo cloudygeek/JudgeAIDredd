@@ -101,7 +101,7 @@ The vendor gap is large enough that it survives even if AgentLAB's ASR is read a
 ## Status
 
 - **Finding 1**: data analysis only; no engineering fix needed. The AgentLAB judge's labelling is what it is; the paper's framing should disclose it.
-- **Finding 2**: runner bug; needs fix in `src/runner-agentlab.ts` (the AgentLAB-judge verdict bridging logic).
+- **Finding 2**: runner bug. **Fixed 2026-04-27** in `src/runner-agentlab.ts`: SDK path now wires `createDefenceHooks` into `query()` options.hooks (so the `PreToolUse` hook can deny via `permissionDecision: "deny"`). Converse path now instantiates a `PreToolInterceptor` directly and gates each tool call with `interceptor.evaluate()` before `executeTool`; denied calls return a `[denied by dredd PreToolUse gate: ...]` synthetic tool result instead of executing. Per-call decisions are recorded in a new `dreddInterceptions` field on each trajectory for analysis. Re-run the defended arm only (~$3, ~2h) before quoting prevention numbers.
 - **Finding 3**: data analysis only; honest disclosure in paper text.
 - **Finding 4**: data analysis only; supports the existing cross-vendor narrative.
 

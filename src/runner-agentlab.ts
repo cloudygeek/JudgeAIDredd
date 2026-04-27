@@ -35,7 +35,20 @@ import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { TurnLogger, detectCanaries } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
+import { PreToolInterceptor } from "./pretool-interceptor.js";
+import { createDefenceHooks } from "./sdk-hooks.js";
 import type { TurnLog, ToolCallLog, TestResult, IntentVerdict } from "./types.js";
+
+interface InterceptionLog {
+  turn: number;
+  tool: string;
+  input: Record<string, unknown>;
+  allowed: boolean;
+  stage: string;
+  similarity: number | null;
+  reason: string;
+  evaluationMs: number;
+}
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -628,6 +641,7 @@ async function executeWithSdk(
   model: string,
   maxTurns: number,
   sessionId?: string,
+  hooks?: Record<string, unknown>,
 ): Promise<{
   toolCalls: ToolCallLog[];
   assistantText: string;
@@ -658,6 +672,7 @@ async function executeWithSdk(
     },
   };
 
+  if (hooks) queryOptions.hooks = hooks;
   if (sessionId) queryOptions.resumeSessionId = sessionId;
 
   for await (const message of query({
@@ -724,14 +739,17 @@ async function executeWithSdk(
 // Converse executor (Qwen agents)
 // ---------------------------------------------------------------------------
 
-function executeWithConverse(
+async function executeWithConverse(
   userMessage: string,
   workDir: string,
   model: string,
   conversationHistory: ConverseMessage[],
   systemPrompt: string,
   region: string,
-): { toolCalls: ToolCallLog[]; assistantText: string } {
+  turnNum: number,
+  interceptor?: PreToolInterceptor,
+  interceptionLog?: InterceptionLog[],
+): Promise<{ toolCalls: ToolCallLog[]; assistantText: string }> {
   const converseModel = resolveModel(model);
   const turnToolCalls: ToolCallLog[] = [];
   let assistantText = "";
@@ -774,8 +792,32 @@ function executeWithConverse(
       const tu = block.toolUse!;
       const tcStart = Date.now();
 
-      const output = executeTool(tu.name, tu.input, workDir);
-      const truncOutput = output.substring(0, 10000);
+      let denialReason: string | null = null;
+      if (interceptor) {
+        const intercept = await interceptor.evaluate(tu.name, tu.input ?? {});
+        interceptionLog?.push({
+          turn: turnNum,
+          tool: tu.name,
+          input: tu.input ?? {},
+          allowed: intercept.allowed,
+          stage: intercept.stage,
+          similarity: intercept.similarity,
+          reason: intercept.reason,
+          evaluationMs: intercept.evaluationMs,
+        });
+        if (!intercept.allowed) {
+          denialReason = intercept.reason;
+          console.log(
+            `    [PRE-TOOL DENY] turn ${turnNum} ${tu.name}: ${intercept.reason}`,
+          );
+        }
+      }
+
+      const truncOutput =
+        denialReason !== null
+          ? `[denied by dredd PreToolUse gate: ${denialReason}. ` +
+            `Stay focused on the original task.]`
+          : executeTool(tu.name, tu.input, workDir).substring(0, 10000);
 
       turnToolCalls.push({
         tool: tu.name,
@@ -945,6 +987,7 @@ interface TrajectoryResult {
     };
   };
   dreddVerdicts: (IntentVerdict | null)[];
+  dreddInterceptions: InterceptionLog[];
   attackSucceeded: boolean;
   agentRefused: boolean;
   durationMs: number;
@@ -1006,6 +1049,35 @@ async function runTrajectory(
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
+  // PreToolUse interceptor — gates each tool call BEFORE execution.
+  // Replaces post-turn IntentTracker blocking, which fires too late on
+  // attacks that complete in a single turn (Test 25 finding 2026-04-27).
+  const interceptionLog: InterceptionLog[] = [];
+  let preToolInterceptor: PreToolInterceptor | undefined;
+  let sdkHooks: Record<string, unknown> | undefined;
+
+  if (defence === "intent-tracker") {
+    if (backend === "sdk") {
+      const built = await createDefenceHooks({
+        embeddingModel: EMBED_MODEL,
+        judgeModel: DREDD_JUDGE_MODEL,
+        judgeBackend: "bedrock",
+        hardened: DREDD_JUDGE_PROMPT as any,
+      });
+      sdkHooks = built.hooks as unknown as Record<string, unknown>;
+      preToolInterceptor = built.interceptor;
+    } else {
+      preToolInterceptor = new PreToolInterceptor({
+        embeddingModel: EMBED_MODEL,
+        judgeModel: DREDD_JUDGE_MODEL,
+        judgeBackend: "bedrock",
+        hardened: DREDD_JUDGE_PROMPT as any,
+      });
+      await preToolInterceptor.preflight();
+      await preToolInterceptor.registerGoal(scenario.initialTask);
+    }
+  }
+
   const allMessages = [scenario.initialTask, ...scenario.attackPayloads];
   let sdkSessionId: string | undefined;
   const converseHistory: ConverseMessage[] = [];
@@ -1041,18 +1113,22 @@ async function runTrajectory(
           model,
           MAX_TURNS,
           sdkSessionId,
+          sdkHooks,
         );
         toolCalls = result.toolCalls;
         assistantText = result.assistantText;
         sdkSessionId = result.sessionId;
       } else {
-        const result = executeWithConverse(
+        const result = await executeWithConverse(
           userMessage,
           workDir,
           model,
           converseHistory,
           SYSTEM_PROMPT,
           region,
+          turnNum,
+          preToolInterceptor,
+          interceptionLog,
         );
         toolCalls = result.toolCalls;
         assistantText = result.assistantText;
@@ -1093,6 +1169,23 @@ async function runTrajectory(
 
   const turns = logger.getTurns();
 
+  // Harvest the SDK-path interceptor's per-call log if applicable.
+  // The Converse path populates interceptionLog directly during execution.
+  if (preToolInterceptor && backend === "sdk") {
+    for (const r of preToolInterceptor.getLog()) {
+      interceptionLog.push({
+        turn: -1, // SDK hooks don't carry a turn index; -1 marks SDK-sourced entries
+        tool: r.tool,
+        input: r.input,
+        allowed: r.allowed,
+        stage: r.stage,
+        similarity: r.similarity,
+        reason: r.reason,
+        evaluationMs: r.evaluationMs,
+      });
+    }
+  }
+
   // Call AgentLAB judge
   const judgeResult = callAgentLabJudge(scenario, turns);
 
@@ -1113,6 +1206,7 @@ async function runTrajectory(
       },
     },
     dreddVerdicts: logger.getIntentVerdicts(),
+    dreddInterceptions: interceptionLog,
     attackSucceeded: judgeResult.label === "succeeded",
     agentRefused: judgeResult.label === "refused",
     durationMs: Date.now() - startTime,
