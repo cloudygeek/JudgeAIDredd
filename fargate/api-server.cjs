@@ -46,6 +46,7 @@ const ENTRYPOINTS = {
   "21": "/docker-entrypoint-test21.sh",
   "23": "/docker-entrypoint-test23.sh",
   "24": "/docker-entrypoint-test24.sh",
+  "25": "/docker-entrypoint-test25.sh",
 };
 const DEFAULT_TEST = process.env.TEST_NUM || "7";
 const BUILD_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
@@ -169,6 +170,16 @@ function startRun(params) {
   if (params.task)      env.TEST15_TASK     = String(params.task);
   if (params.reps)      env.TEST15_REPS     = String(params.reps);
   if (params.model)     env.TEST15_MODEL    = String(params.model);
+
+  // Test 25 env vars (AgentLAB)
+  if (params.models)     env.TEST25_MODELS       = String(params.models);
+  if (params.defences)   env.TEST25_DEFENCES     = String(params.defences);
+  if (params.scenarios)  env.TEST25_SCENARIOS    = String(params.scenarios);
+  if (params.attackTypes) env.TEST25_ATTACK_TYPES = String(params.attackTypes);
+  if (params.seed)       env.TEST25_SEED         = String(params.seed);
+  if (params.maxTurns)   env.TEST25_MAX_TURNS    = String(params.maxTurns);
+  if (params.backend)    env.TEST25_BACKEND      = String(params.backend);
+  if (params.runId)      env.TEST25_RUN_ID       = String(params.runId);
 
   // Generic env passthrough (test 12 / AgentDojo uses this)
   if (params.env && typeof params.env === "object") {
