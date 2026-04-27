@@ -151,7 +151,7 @@ echo "Waiting for MCP servers..."
 for port in 9090 9091 9092 9097; do
   READY=false
   for i in $(seq 1 30); do
-    if curl -s "http://localhost:${port}/sse" -o /dev/null -w "%{http_code}" 2>/dev/null | grep -q "200"; then
+    if curl -s --max-time 2 "http://localhost:${port}" >/dev/null 2>&1; then
       READY=true
       break
     fi
