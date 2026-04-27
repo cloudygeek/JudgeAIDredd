@@ -66,6 +66,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /app/toolshield/.git \
     && rm -rf /var/lib/apt/lists/*
 
+# MT-AgentRisk dataset (vendored — HF repo is gated)
+COPY datasets/mt-agentrisk/ /app/datasets/mt-agentrisk/
 
 # ── Build provenance ────────────────────────────────────────────────────────
 ARG GIT_COMMIT=unknown
