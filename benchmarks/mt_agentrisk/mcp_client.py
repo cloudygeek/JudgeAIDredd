@@ -50,16 +50,23 @@ class MCPToolRouter:
         }
         self._tool_to_server: dict[str, MCPServer] = {}
 
-    def connect_all(self) -> None:
+    def connect_all(self, retries: int = 5, delay: float = 3.0) -> None:
         for server in self._servers.values():
-            try:
-                self._connect_sse(server)
-                self._discover_tools(server)
-                logger.info("Connected to %s (%s): %d tools",
-                            server.name, server.url, len(server.tools))
-            except Exception as e:
-                logger.warning("Failed to connect to %s (%s): %s",
-                               server.name, server.url, e)
+            for attempt in range(1, retries + 1):
+                try:
+                    self._connect_sse(server)
+                    self._discover_tools(server)
+                    logger.info("Connected to %s (%s): %d tools",
+                                server.name, server.url, len(server.tools))
+                    break
+                except Exception as e:
+                    if attempt < retries:
+                        logger.info("Retry %d/%d for %s: %s",
+                                    attempt, retries, server.name, e)
+                        time.sleep(delay)
+                    else:
+                        logger.warning("Failed to connect to %s (%s): %s",
+                                       server.name, server.url, e)
 
     def _connect_sse(self, server: MCPServer) -> None:
         """Connect to the SSE endpoint to discover the message URI.
