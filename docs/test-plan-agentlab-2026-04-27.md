@@ -270,3 +270,23 @@ These are stretch goals, not part of Test 25 proper.
 | Adaptive-attack evidence | No | Partial (AgentLAB's attack plans are adaptive) |
 
 **Sequencing:** if HF access for MT-AgentRisk lands before Test 25 engineering, run Test 24 first. Otherwise Test 25 is the higher-value next step at lower cost and the same engineering reuse for any future AgentLAB-or-MT-AgentRisk full-scale runs.
+
+## Review questions (2026-04-27)
+
+1. **Memory-poisoning state model: intra-session or cross-session?** The plan frames memory poisoning as manipulating "persisted environment state" and isolates trajectories with fresh containers. If the attack requires cross-session persistence (poison in trajectory $i$, exploit in trajectory $i{+}1$), the isolation design kills it by construction and any 0% ASR is an artefact. If it works within a single 8-turn trajectory (poison then read in the same session), the "persisted state" framing throughout H3, H6, and the §4.5 text needs tightening to "intra-session mutable state." Clarify the attack's state model before engineering.
+
+2. **~14pp "per row aggregate" CI half-width doesn't match N=10.** Wilson 95% CI at $p=0.5$ with $N=10$ gives half-width ~26pp, not ~14pp. The plan correctly states ~30pp per cell elsewhere (same $N$). Does "row aggregate" mean pooling across all 7 agents for a single arm ($N=70$)? If so, that's an unusual aggregation that blurs cross-vendor differences. Clarify the intended aggregation and fix the CI figure.
+
+3. **Qwen model mismatch in comparison table.** Line 268 lists Test 24 as using "Qwen Coder 480B" but Test 25 uses "Qwen3 Coder 30B" (`qwen.qwen3-coder-30b-v1:0`). Is this intentional (different tests, different models) or a typo?
+
+4. **Judge replacement validation timing.** The AgentLAB judge label is the headline ASR metric, but replacing GPT-4.1 with Sonnet 4.6 is only cross-validated in a stretch follow-up. Consider dual-grading ~10 pilot trajectories during the pilot stage to catch gross judge divergence before spending \$25 on the full matrix.
+
+5. **H4 is unfalsifiable at smoke scale.** Per-attack-type $N=2$ per cell ($N=14$ across agents) with CIs of ~26pp cannot distinguish the predicted ordering unless differences exceed ~50pp. Acknowledge that H4 is directional for future $N=60$+ work, not testable here.
+
+6. **No fargate entrypoint for Test 25.** Every other test has a `docker-entrypoint-testN.sh`. Will Test 25 run on the sandbox? If so, add the entrypoint to the engineering items. If local-only, note that.
+
+7. **Stratified sampler environment diversity.** With 2 scenarios per attack type drawn from 644 across 28 environments, the seeded RNG could place both samples in the same environment. Consider adding an environment-diversity constraint (different environments for the two samples per attack type).
+
+8. **"Defence bridge byte-identical to Test 23" (success criterion 4).** The new FastAPI bridge introduces a different I/O path that doesn't exist in Test 23. Rephrase to: "defence pipeline configuration identical to Test 23; new code is limited to the AgentLAB scenario driver and FastAPI bridge."
+
+9. **Pilot command `--agentlab-commit` path assumption.** The command uses `git -C /tmp/agentlab rev-parse HEAD`, which assumes a specific clone location. The Dockerfile / sandbox engineering should standardise the clone path and pin it.
