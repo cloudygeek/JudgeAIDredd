@@ -71,8 +71,8 @@ if [ ! -d "${DATASET_ROOT}" ]; then
   echo "FATAL: Dataset not found at ${DATASET_ROOT}"
   exit 1
 fi
-SCENARIO_COUNT=$(find "${DATASET_ROOT}" -name "task.md" | wc -l)
-echo "  Dataset OK (${SCENARIO_COUNT} scenarios found)"
+SCENARIO_COUNT=$(find "${DATASET_ROOT}/workspaces" -name "task.md" -o -name "turns.yml" | wc -l)
+echo "  Dataset OK (${SCENARIO_COUNT} task/turns files found)"
 
 echo "Preflight: checking Bedrock judge access (${JUDGE_REGION})..."
 aws bedrock-runtime converse \

@@ -75,59 +75,123 @@ class Scenario:
     method_dimension: str = ""
 
 
+def _find_workspaces_root(dataset_root: Path) -> Path:
+    """Locate the workspaces/ directory inside the dataset clone.
+
+    The HF dataset has structure:
+      <dataset_root>/workspaces/<surface>/{multi-turn-tasks,single-turn-tasks,...}/<scenario>/
+    Accept either <dataset_root> pointing directly at workspaces/ or containing it.
+    """
+    if (dataset_root / "workspaces").is_dir():
+        return dataset_root / "workspaces"
+    # Already pointing at workspaces/
+    if any((dataset_root / d / "multi-turn-tasks").is_dir()
+           or (dataset_root / d / "single-turn-tasks").is_dir()
+           or (dataset_root / d / "multi_turn_tasks").is_dir()
+           or (dataset_root / d / "single_turn_tasks").is_dir()
+           for d in dataset_root.iterdir() if d.is_dir()):
+        return dataset_root
+    return dataset_root
+
+
+def _load_scenario_dir(
+    scenario_dir: Path, surface_name: str,
+) -> Scenario | None:
+    """Load a single scenario from its directory."""
+    # Task instruction: task.md (single-turn) or task-turn-1.md (multi-turn)
+    task_md = scenario_dir / "task.md"
+    if not task_md.exists():
+        task_md = scenario_dir / "instruction" / "task.md"
+    if not task_md.exists():
+        task_md = scenario_dir / "task-turn-1.md"
+    task_instruction = task_md.read_text().strip() if task_md.exists() else ""
+
+    turns_yml = scenario_dir / "turns.yml"
+    if not turns_yml.exists():
+        turns_yml_candidate = scenario_dir / "utils" / "turns.yml"
+        turns_yml = turns_yml_candidate if turns_yml_candidate.exists() else None
+
+    # Skip directories with no task content at all
+    if not task_instruction and turns_yml is None:
+        return None
+
+    metadata_file = scenario_dir / "metadata.json"
+    format_dim = ""
+    method_dim = ""
+    if metadata_file.exists():
+        try:
+            meta = json.loads(metadata_file.read_text())
+            format_dim = meta.get("format_dimension", "")
+            method_dim = meta.get("method_dimension", "")
+        except json.JSONDecodeError:
+            pass
+
+    return Scenario(
+        id=f"{surface_name}/{scenario_dir.name}",
+        tool_surface=surface_name,
+        task_instruction=task_instruction,
+        turns_yml_path=str(turns_yml) if turns_yml else None,
+        scenario_path=str(scenario_dir),
+        format_dimension=format_dim,
+        method_dimension=method_dim,
+    )
+
+
 def load_scenarios(dataset_root: str, subset: str = "all", seed: int = 42) -> list[Scenario]:
     """Load MT-AgentRisk scenarios from the HuggingFace dataset clone.
 
-    The dataset has per-surface directories, each containing scenario
-    subdirectories with turns.yml, task.md, and optional mcp_fs/.
+    Dataset layout (CHATS-Lab/MT-AgentRisk):
+      workspaces/<surface>/{multi-turn-tasks,single-turn-tasks}/<scenario>/
+    Each scenario dir contains either task.md (single-turn) or
+    turns.yml + task-turn-N.md (multi-turn).
+
+    Subset_100/ has a different nesting: sub_<surface>/{multi,single}_turn_tasks/<scenario>/
     """
     root = Path(dataset_root)
+    ws_root = _find_workspaces_root(root)
     scenarios: list[Scenario] = []
 
-    for surface_dir in sorted(root.iterdir()):
-        if not surface_dir.is_dir():
+    for surface_dir in sorted(ws_root.iterdir()):
+        if not surface_dir.is_dir() or surface_dir.name.startswith("."):
             continue
+
         surface_name = surface_dir.name
-        if surface_name.startswith("."):
+
+        # Handle Subset_100 which nests sub_<surface>/{multi,single}_turn_tasks/
+        if surface_name == "Subset_100":
+            for sub_surface in sorted(surface_dir.iterdir()):
+                if not sub_surface.is_dir():
+                    continue
+                real_surface = sub_surface.name.removeprefix("sub_")
+                for task_type_dir in sorted(sub_surface.iterdir()):
+                    if not task_type_dir.is_dir():
+                        continue
+                    for scenario_dir in sorted(task_type_dir.iterdir()):
+                        if not scenario_dir.is_dir():
+                            continue
+                        s = _load_scenario_dir(scenario_dir, real_surface)
+                        if s:
+                            s.id = f"Subset_100/{real_surface}/{scenario_dir.name}"
+                            scenarios.append(s)
             continue
 
-        for scenario_dir in sorted(surface_dir.iterdir()):
-            if not scenario_dir.is_dir():
+        # Standard surfaces: <surface>/{multi-turn-tasks,single-turn-tasks}/<scenario>/
+        for task_type_dir in sorted(surface_dir.iterdir()):
+            if not task_type_dir.is_dir():
                 continue
-
-            task_md = scenario_dir / "task.md"
-            if not task_md.exists():
-                task_md = scenario_dir / "instruction" / "task.md"
-            task_instruction = task_md.read_text().strip() if task_md.exists() else ""
-
-            turns_yml = scenario_dir / "turns.yml"
-            if not turns_yml.exists():
-                turns_yml_candidate = scenario_dir / "utils" / "turns.yml"
-                turns_yml = turns_yml_candidate if turns_yml_candidate.exists() else None
-
-            metadata_file = scenario_dir / "metadata.json"
-            format_dim = ""
-            method_dim = ""
-            if metadata_file.exists():
-                try:
-                    meta = json.loads(metadata_file.read_text())
-                    format_dim = meta.get("format_dimension", "")
-                    method_dim = meta.get("method_dimension", "")
-                except json.JSONDecodeError:
-                    pass
-
-            scenarios.append(Scenario(
-                id=f"{surface_name}/{scenario_dir.name}",
-                tool_surface=surface_name,
-                task_instruction=task_instruction,
-                turns_yml_path=str(turns_yml) if turns_yml else None,
-                scenario_path=str(scenario_dir),
-                format_dimension=format_dim,
-                method_dimension=method_dim,
-            ))
+            # Skip non-task directories (e.g. README files)
+            dir_name = task_type_dir.name.lower()
+            if "turn" not in dir_name and "task" not in dir_name:
+                continue
+            for scenario_dir in sorted(task_type_dir.iterdir()):
+                if not scenario_dir.is_dir():
+                    continue
+                s = _load_scenario_dir(scenario_dir, surface_name)
+                if s:
+                    scenarios.append(s)
 
     if not scenarios:
-        logger.error("No scenarios found in %s", dataset_root)
+        logger.error("No scenarios found in %s (ws_root=%s)", dataset_root, ws_root)
         sys.exit(1)
 
     if subset == "all":
