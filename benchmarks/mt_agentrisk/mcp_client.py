@@ -1,17 +1,20 @@
 """SSE client for ToolShield's MCP servers (via supergateway).
 
 Supergateway wraps stdio MCP servers and exposes them over HTTP+SSE:
-  - GET  /sse      → subscribe to server-sent events (includes endpoint URI)
-  - POST /message  → send JSON-RPC requests
+  - GET  /sse      → long-lived SSE stream (includes endpoint URI + responses)
+  - POST /message  → send JSON-RPC requests (fire-and-forget; response comes via SSE)
 
-This client connects to each server's /sse endpoint to get the message
-URI, then sends JSON-RPC tool/list and tool/call requests via POST.
+The SSE connection must stay open for the entire session — closing it tears
+down the child MCP server's transport.  JSON-RPC responses arrive as SSE
+"message" events on the same stream, not in the POST response body.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import queue
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -37,6 +40,9 @@ class MCPServer:
     message_url: str | None = None
     tools: list[ToolDef] = field(default_factory=list)
     _tool_names: set[str] = field(default_factory=set, repr=False)
+    _sse_response: requests.Response | None = field(default=None, repr=False)
+    _sse_thread: threading.Thread | None = field(default=None, repr=False)
+    _response_queue: queue.Queue = field(default_factory=queue.Queue, repr=False)
 
 
 class MCPToolRouter:
@@ -60,6 +66,7 @@ class MCPToolRouter:
                                 server.name, server.url, len(server.tools))
                     break
                 except Exception as e:
+                    self._close_sse(server)
                     if attempt < retries:
                         logger.info("Retry %d/%d for %s: %s",
                                     attempt, retries, server.name, e)
@@ -69,12 +76,17 @@ class MCPToolRouter:
                                        server.name, server.url, e)
 
     def _connect_sse(self, server: MCPServer) -> None:
-        """Connect to the SSE endpoint to discover the message URI.
+        """Open a long-lived SSE connection and discover the message URI.
 
         Supergateway sends an initial SSE event with the endpoint URI:
           event: endpoint
           data: /message?sessionId=...
+
+        The connection is kept open — a background thread reads responses
+        from the stream and pushes them into server._response_queue.
         """
+        self._close_sse(server)
+
         resp = requests.get(
             f"{server.url}/sse",
             stream=True,
@@ -82,6 +94,7 @@ class MCPToolRouter:
             headers={"Accept": "text/event-stream"},
         )
         resp.raise_for_status()
+        server._sse_response = resp
 
         message_url = None
         for line in resp.iter_lines(decode_unicode=True):
@@ -93,17 +106,54 @@ class MCPToolRouter:
                     else:
                         message_url = f"{server.url}{data}"
                     break
-            if line and line.startswith("event:") and "endpoint" in line:
-                continue
 
-        resp.close()
+        if not message_url:
+            raise ConnectionError(f"No message URL discovered from {server.url}/sse")
 
-        if message_url:
-            server.message_url = message_url
-            logger.debug("SSE endpoint for %s: %s", server.name, message_url)
-        else:
-            server.message_url = f"{server.url}/message"
-            logger.debug("No SSE endpoint discovered for %s, defaulting to /message", server.name)
+        server.message_url = message_url
+        logger.debug("SSE endpoint for %s: %s", server.name, message_url)
+
+        t = threading.Thread(
+            target=self._sse_reader,
+            args=(server,),
+            daemon=True,
+            name=f"sse-reader-{server.name}",
+        )
+        t.start()
+        server._sse_thread = t
+
+    def _sse_reader(self, server: MCPServer) -> None:
+        """Background thread that reads SSE events and enqueues JSON-RPC responses."""
+        try:
+            resp = server._sse_response
+            if resp is None:
+                return
+            for line in resp.iter_lines(decode_unicode=True):
+                if line and line.startswith("data:"):
+                    data = line[len("data:"):].strip()
+                    if not data or "/message" in data:
+                        continue
+                    try:
+                        parsed = json.loads(data)
+                        server._response_queue.put(parsed)
+                    except json.JSONDecodeError:
+                        continue
+        except Exception:
+            pass
+
+    def _close_sse(self, server: MCPServer) -> None:
+        if server._sse_response is not None:
+            try:
+                server._sse_response.close()
+            except Exception:
+                pass
+            server._sse_response = None
+        server._sse_thread = None
+        while not server._response_queue.empty():
+            try:
+                server._response_queue.get_nowait()
+            except queue.Empty:
+                break
 
     def _send_jsonrpc(self, server: MCPServer, method: str, params: dict | None = None) -> dict:
         url = server.message_url or f"{server.url}/message"
@@ -121,12 +171,17 @@ class MCPToolRouter:
             timeout=60,
             headers={"Content-Type": "application/json"},
         )
-        resp.raise_for_status()
+        if resp.status_code == 202 or resp.status_code == 200:
+            if server._sse_response is not None:
+                try:
+                    return server._response_queue.get(timeout=60)
+                except queue.Empty:
+                    raise TimeoutError(f"No SSE response for {method} within 60s")
 
+        resp.raise_for_status()
         content_type = resp.headers.get("Content-Type", "")
         if "text/event-stream" in content_type:
             return self._parse_sse_response(resp.text)
-
         return resp.json()
 
     def _parse_sse_response(self, text: str) -> dict:
@@ -201,6 +256,7 @@ class MCPToolRouter:
     def disconnect_all(self) -> None:
         self._tool_to_server.clear()
         for server in self._servers.values():
+            self._close_sse(server)
             server.tools.clear()
             server._tool_names.clear()
             server.message_url = None
