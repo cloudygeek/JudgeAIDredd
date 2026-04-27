@@ -105,67 +105,20 @@ else
   echo "  PostgreSQL not available — skipping DB-dependent scenarios"
 fi
 
-# MCP servers — launched directly using the container's own binaries
-# (ToolShield start scripts hardcode /root/.nvm paths that don't exist here)
+# MCP servers are spawned as stdio subprocesses by the Python benchmark
+# runner (mcp_client.py) — no supergateway needed. Just ensure the npm
+# packages are installed and the workspace directory exists.
 MCP_PIDS=()
-NODE_BIN=$(which node)
-FS_SERVER="./node_modules/@modelcontextprotocol/server-filesystem/dist/index.js"
-PW_SERVER="./node_modules/@playwright/mcp/cli.js"
-
-# Filesystem MCP (port 9090)
-if [ -f "${FS_SERVER}" ]; then
-  mkdir -p /tmp/mcp-workspace
-  npx supergateway --port 9090 \
-    --stdio "${NODE_BIN} ${FS_SERVER} /tmp/mcp-workspace /tmp /app" &
-  MCP_PIDS+=($!)
-  echo "  Started filesystem MCP (PID ${MCP_PIDS[-1]})"
-fi
-
-# PostgreSQL MCP (port 9091)
-if command -v postgres-mcp &>/dev/null; then
-  PG_URL="postgresql://postgres:password@localhost:5432/postgres"
-  npx supergateway --port 9091 \
-    --stdio "postgres-mcp ${PG_URL}" &
-  MCP_PIDS+=($!)
-  echo "  Started postgres MCP (PID ${MCP_PIDS[-1]})"
-fi
-
-# Playwright/Browser MCP (port 9092)
-# Uses apt-installed chromium via PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH env var
-if [ -f "${PW_SERVER}" ]; then
-  PW_TEMP=$(mktemp -d -t playwright_session_XXXXXX)
-  npx supergateway --port 9092 \
-    --stdio "env HOME=${PW_TEMP} ${NODE_BIN} ${PW_SERVER} --isolated --no-sandbox" &
-  MCP_PIDS+=($!)
-  echo "  Started browser MCP (PID ${MCP_PIDS[-1]})"
-fi
-
-# Notion MCP (port 9097)
-npx supergateway --port 9097 \
-  --stdio "npx -y @notionhq/notion-mcp-server" &
-MCP_PIDS+=($!)
-echo "  Started notion MCP (PID ${MCP_PIDS[-1]})"
-
-# Wait for MCP server readiness (TCP-only check — DO NOT curl /sse, it
-# consumes supergateway's single session slot and crashes the child)
-echo "Waiting for MCP servers..."
-for port in 9090 9091 9092 9097; do
-  READY=false
-  for i in $(seq 1 30); do
-    if (echo >/dev/tcp/localhost/${port}) 2>/dev/null; then
-      READY=true
-      break
-    fi
-    sleep 1
-  done
-  if [ "${READY}" = "true" ]; then
-    echo "  Port ${port} ready"
-  else
-    echo "  WARNING: Port ${port} not responding after 30s"
-  fi
-done
-echo "  Waiting 5s for MCP child processes to initialize..."
-sleep 5
+mkdir -p /tmp/mcp-workspace
+echo "  MCP servers will be spawned by the benchmark runner via stdio"
+echo "  Checking MCP server binaries..."
+[ -f "./node_modules/@modelcontextprotocol/server-filesystem/dist/index.js" ] \
+  && echo "    filesystem: OK" || echo "    filesystem: MISSING"
+[ -f "./node_modules/@playwright/mcp/cli.js" ] \
+  && echo "    browser: OK" || echo "    browser: MISSING"
+command -v postgres-mcp &>/dev/null \
+  && echo "    postgres: OK" || echo "    postgres: not installed"
+echo "    notion: via npx (on-demand)"
 
 # ── Start Dredd server if defence is enabled ──────────────────────────────
 

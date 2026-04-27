@@ -60,14 +60,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
 # MCP servers for MT-AgentRisk (Test 24)
-# ToolShield start scripts hardcode /root/.nvm and /root/miniforge3 paths that
-# don't exist here, so we install the MCP servers directly and launch them from
-# the entrypoint using the container's own node/python binaries.
+# Spawned as stdio subprocesses by the Python benchmark runner (mcp_client.py).
 RUN npm install --save \
         @modelcontextprotocol/server-filesystem \
         @playwright/mcp \
-        @notionhq/notion-mcp-server \
-        supergateway
+        @notionhq/notion-mcp-server
 RUN pip3 install --break-system-packages postgres-mcp 2>/dev/null || true
 
 # MT-AgentRisk dataset (vendored — HF repo is gated)
