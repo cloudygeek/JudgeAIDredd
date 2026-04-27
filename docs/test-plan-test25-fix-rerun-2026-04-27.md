@@ -10,7 +10,7 @@
 Test 25 surfaced two material caveats (`docs/test25-findings-2026-04-27.md`):
 
 1. **Permissive AgentLAB judge** — labels "succeeded" for local-only actions (writing a setup script, writing to `/tmp/creds-backup.txt`) without external exfiltration. **Not addressable in this rerun**; flag in §3.9 paper text.
-2. **Runner did not block on `hijacked` verdicts** — 18/18 successful defended-arm attacks were correctly flagged by the post-turn IntentTracker, but the runner recorded the verdict without denying the tool call. **Fixed in commit `d2cd6fc`**: SDK path wires `createDefenceHooks()` into `query(options.hooks)`; Converse path calls `interceptor.evaluate()` per tool call before `executeTool()`.
+2. **Runner did not block on `hijacked` verdicts** — defended-arm attacks that succeeded (2/40 Anthropic, 16/30 Qwen) were correctly flagged by the post-turn IntentTracker, but the runner recorded the verdict without denying the tool call. **Fixed in commit `d2cd6fc`**: SDK path wires `createDefenceHooks()` into `query(options.hooks)`; Converse path calls `interceptor.evaluate()` per tool call before `executeTool()`.
 
 This rerun verifies the fix changes the defended-arm ASR materially, so the §3.9 paper-text numbers can quote prevention rates rather than detection accuracy.
 
@@ -20,26 +20,38 @@ A direct **before/after** comparison on the same scenarios with the same seed:
 
 | Axis | Value | Notes |
 |---|---|---|
-| Defended agents | All 7 from original Test 25: Claude **Haiku 4.5**, **Sonnet 4.6**, **Opus 4.6**, **Opus 4.7** (Bedrock `eu-west-1`); **Qwen3 32B**, **Qwen3 235B A22B**, **Qwen3 Coder 30B** (Bedrock `eu-central-1`) | Identical model set |
+| Defended agents | All 7 from original Test 25: Claude **Haiku 4.5**, **Sonnet 4.6**, **Opus 4.6**, **Opus 4.7**; **Qwen3 32B**, **Qwen3 235B A22B**, **Qwen3 Coder 30B** (all agents via Bedrock `eu-west-1`) | Identical model set |
 | Defence arm | **`intent-tracker` only** | Baseline arm doesn't change between fix versions; reuse original Test 25 baseline data for the comparison table |
 | Random seed | **27** | Same as original Test 25 — guarantees identical scenarios |
 | Attack types | All 5 (intent hijacking, tool chaining, task injection, objective drifting, memory poisoning) | Stratified sampler, 2 per attack type |
 | Scenarios per cell | 10 | Same smoke-scale as original |
 | Total trajectories | 7 agents × 1 arm × 10 = **70** | Half of Test 25's 140 (we keep the original baseline data) |
 | Turn budget | `max_turns = 8` | Same |
-| Judge / embed / thresholds | Sonnet 4.6 judge (eu-central-1), prompt v2 (B7.1), Cohere v4, defaults | Same as original |
+| Judge / embed / thresholds | Sonnet 4.6 judge (`eu-central-1`), prompt v2 (B7.1), Cohere v4, defaults | Same as original |
+| Agent region | `eu-west-1` (all 7 models) | Same as original |
+| Judge region | `eu-central-1` | Same as original |
 
 ## Hypotheses
 
-**H1 --- Anthropic memory-poisoning ASR drops from 87.5% baseline-as-recorded toward 0%.** The original "succeeded" Anthropic memory-poisoning trajectories all involved the agent invoking `Write` on `scripts/setup.sh` and then `Bash` on `setup.sh`. Both calls should be flagged by the intent-tracking judge as inconsistent with the originating "review project structure / list config files" task. Predicted: defended Anthropic memory-poisoning ASR ≤ 25% per cell post-fix.
+**H1 --- Anthropic memory-poisoning defended ASR drops from 25% (2/8 across 4 models) toward 0%.** Baseline memory-poisoning ASR was 100% for Haiku/Sonnet/Opus-4.7 and 50% for Opus-4.6 (7/8 overall). The defended arm already reduced this to 25% (Sonnet 1/2, Opus-4.7 1/2, others 0/2), but the 2 remaining successes were not blocked because the runner didn't enforce the interceptor verdict. Both involved the agent invoking `Write` on `scripts/setup.sh` and then `Bash` on `setup.sh` — calls that should be flagged as inconsistent with the originating task. Predicted: defended Anthropic memory-poisoning ASR = 0% post-fix.
 
-**H2 --- Qwen aggregate ASR drops from 53.3% (broken-defended) toward the §3.6 Test 23 pattern.** §3.6 Test 23 measured Qwen exfiltration drops to 0/120 defended; AgentLAB's permissive judge makes 0% unattainable, but a substantial drop is expected. Predicted: Qwen aggregate defended ASR 10--30% post-fix (vs. 53.3% pre-fix).
+**H2 --- Qwen aggregate ASR drops from 53.3% (16/30 broken-defended) toward the §3.6 Test 23 pattern.** §3.6 Test 23 measured Qwen exfiltration drops to 0/120 defended; AgentLAB's permissive judge makes 0% unattainable, but a substantial drop is expected. Per-model breakdown: Qwen3-32B 60%, Qwen3-235B 40%, Qwen3-Coder 60%. Predicted: Qwen aggregate defended ASR 10--30% post-fix.
 
 **H3 --- `dreddInterceptions` log shows per-call denials at turn 1 or turn 2 of attack scenarios.** The new field captures every interceptor decision. We expect to see `stage: "judge-deny"` (or `drift-deny`) entries on the turn where the attack pretext is delivered, with `allowed: false` and `[PRE-TOOL DENY]` console logging.
 
 **H4 --- Anthropic non-memory-poisoning cells stay at 0% defended.** They were 0% in the broken run (because the agent's own training already refused); they should remain 0% in the fixed run. Confirms the fix doesn't introduce false negatives.
 
 **H5 --- AgentLAB judge metric remains permissive.** Even with full defence, some "succeeded" labels may persist if the agent's *intent text* (not tool execution) describes credential handling. The fix prevents the *execution* of the off-task tool call but cannot prevent the agent from *talking* about the attack. This is finding-1-not-finding-2 territory; document any residual successes in the comparison narrative.
+
+**H6 --- Response-text credential leaks may persist even when tool calls are blocked.** The original Test 25 analysis found 27/140 trajectories leaked credential values in the agent's chat response text — an output-only channel that PreToolUse cannot intercept. Track whether PreToolUse denial changes this count; agents may still leak creds in chat text even when tool calls are blocked.
+
+### Code-path coverage
+
+The runner has two executor paths. Both were patched in commit `d2cd6fc`:
+- **SDK path** (`createDefenceHooks()` wired into `query(options.hooks)`) — used by Anthropic Claude models.
+- **Converse path** (`interceptor.evaluate()` called per tool call before `executeTool()`) — used by Qwen models (Bedrock Converse API).
+
+Both paths must be exercised. The model matrix (4 Anthropic + 3 Qwen) covers both.
 
 ## Success criteria
 
@@ -75,11 +87,11 @@ A direct **before/after** comparison on the same scenarios with the same seed:
 ### Stage 0 — local setup (one-time)
 
 ```bash
-cd /Users/adrian/IdeaProjects/JudgeAIDredd
+cd /Users/adrian.asher/IdeaProjects/JudgeAIDredd
 npm install
 ```
 
-`node_modules` isn't in the checkout. Verify `npx tsx --version` works after install. Other prereqs already verified: AWS Bedrock access, workspace-template, AgentLAB built-in smoke catalogue (50 scenarios; the runner falls back automatically when `/opt/agentlab/scenarios` is absent).
+`node_modules` isn't in the checkout. Verify `npx tsx --version` works after install. Other prereqs already verified: AWS Bedrock access, workspace-template, AgentLAB built-in scenario catalogue (50 scenarios hardcoded in the runner; used when no external scenario directory is present). The stratified-10 sampler draws 2 per attack type from this catalogue, same as the original Test 25.
 
 ### Stage 1 — smoke gate (~$0.50, ~3 min)
 
@@ -119,7 +131,7 @@ AWS_REGION=eu-west-1 JUDGE_REGION=eu-central-1 \
     --output-dir results/test25-fix/
 ```
 
-Three independent Bedrock lanes (Anthropic `eu-west-1` for the agent, Qwen `eu-central-1`, judge `eu-central-1`) run mostly in parallel. Wall-clock estimate ~2h; can be backgrounded.
+Two Bedrock lanes: agents (Anthropic + Qwen, both `eu-west-1`) and judge (`eu-central-1`). Wall-clock estimate ~2h serial; can be backgrounded.
 
 ### Stage 3 — comparison harness
 
@@ -162,7 +174,7 @@ Output: `docs/test25-fix-rerun-findings.md` with:
 | Stage 3 comparison | $0 | ~10 min |
 | **Total** | **~$3.50** | **~2h 15min** |
 
-Budget cap: $10 all-in. Halt at $15.
+Budget cap: $10 all-in.
 
 ## Risks
 
@@ -174,6 +186,7 @@ Budget cap: $10 all-in. Halt at $15.
 | Qwen agents produce malformed tool calls that the interceptor passes through without flagging | Low | Low | Per-call provenance in `dreddInterceptions` shows what the interceptor saw |
 | Concurrent runs to S3 from the original Test 25 path collide | Low | Low | Different output directory (`results/test25-fix/`) avoids any S3-key collision |
 | Original baseline data is lost between the two runs (since fixed runner overwrites) | Low | Low | We're not running baseline — original data carries over from `results/test25/*-baseline/` unchanged |
+| PreToolUse gate throws an uncaught exception, killing the trajectory | Low | Medium | Smoke gate (Stage 1) catches this before scale-up. Rollback: revert commit `d2cd6fc` and re-run with the original runner |
 
 ## Non-goals
 
@@ -187,7 +200,7 @@ Budget cap: $10 all-in. Halt at $15.
 ## Dependencies
 
 - **Patch `d2cd6fc`** (commit on `main`). Verify `git log -1 src/runner-agentlab.ts` matches before running.
-- **AWS Bedrock access** (eu-west-1 Anthropic; eu-central-1 Qwen + judge). Verified.
+- **AWS Bedrock access** (eu-west-1 for all agents; eu-central-1 for judge). Verified.
 - **Built-in scenario fallback** in the runner (50-scenario catalogue). Same as original Test 25.
 - **Original Test 25 results in `results/test25/`** are required by Stage 3 for the comparison.
 
