@@ -129,11 +129,50 @@ docker build -f fargate/Dockerfile \
   -t judge-ai-dredd-test7 .
 ```
 
+## Standalone judge container (for vibe coders)
+
+Lightweight image (`fargate/Dockerfile.judge`) — just the HTTP server + dashboard, no Python/Playwright/test harness. Designed to run on EFS-backed Fargate with `/data` as a persistent volume.
+
+### Building and running
+
+```bash
+# Build
+docker build -f fargate/Dockerfile.judge \
+  --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
+  -t judge-ai-dredd-judge .
+
+# Run (all config via env vars)
+docker run -p 3000:3000 \
+  -v judge-data:/data \
+  -e MODE=interactive \
+  -e BACKEND=bedrock \
+  -e AWS_REGION=eu-west-2 \
+  judge-ai-dredd-judge
+```
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `MODE` | `interactive` | `interactive` / `autonomous` / `learn` |
+| `BACKEND` | `bedrock` | `bedrock` / `ollama` |
+| `JUDGE_MODEL` | `eu.anthropic.claude-sonnet-4-6` | LLM judge model ID |
+| `EMBEDDING_MODEL` | `eu.cohere.embed-v4:0` | Embedding model ID |
+| `HARDENED` | `B7.1` | Prompt variant: `B7` / `B7.1` / `B7.1-office` / `standard` |
+| `JUDGE_EFFORT` | (unset) | Optional effort level |
+| `PORT` | `3000` | Server port |
+| `DATA_DIR` | `/data` | Base directory for sessions and logs |
+| `AWS_REGION` | `eu-west-2` | AWS region for Bedrock |
+
+Session logs go to `$DATA_DIR/sessions/`, console logs to `$DATA_DIR/logs/`. Both are viewable via the dashboard (Logs tab).
+
 ### Key fargate files
 
 | File | Role |
 |---|---|
-| `fargate/Dockerfile` | Image definition — node:22-slim + AWS CLI v2, bundles app source |
+| `fargate/Dockerfile` | Test runner image — node:22-slim + AWS CLI v2 + Python + Playwright |
+| `fargate/Dockerfile.judge` | Standalone judge image — lightweight, just server + dashboard |
+| `fargate/docker-entrypoint-judge.sh` | Judge entrypoint — reads env vars, starts server with /data paths |
 | `fargate/docker-entrypoint.sh` | Test 7: Cross-Model Agent Testing |
 | `fargate/docker-entrypoint-test1.sh` | Test 1: Combined Pipeline E2E (effort sweep) |
 | `fargate/docker-entrypoint-test3.sh` | Test 3: Statistical Robustness |
@@ -179,7 +218,7 @@ Configurable in tracker: `<0.2` on-task, `0.2–0.3` scope-creep (inject reminde
 | `src/drift-detector.ts` | Embedding similarity via Ollama |
 | `src/ollama-client.ts` / `src/bedrock-client.ts` | Backend clients |
 | `src/policy-review.ts` | Auto-curation: groups session logs by normalised pattern, LLM recommends allow/deny |
-| `src/web/dashboard.html` | Dark dashboard with live feed, sessions table, policies tab |
+| `src/web/dashboard.html` | Dark dashboard with live feed, sessions table, policies tab, logs tab |
 | `hooks/dredd-hook.sh` | Single drop-in CLI hook for all events |
 | `scenarios/t3-goal-hijacking.ts` | T3.x escalation scenarios from P14 |
 | `src/test-p14-replay.ts` | Replay P14 failing scenarios + legitimate scenarios for FP testing |

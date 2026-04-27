@@ -45,11 +45,12 @@ const { values } = parseArgs({
     "review-threshold": { type: "string", default: "0.6" },
     "deny-threshold": { type: "string", default: "0.15" },
     "log-dir": { type: "string", default: "./results" },
+    "console-log-dir": { type: "string", default: "./logs" },
   },
 });
 
-// File logger — mirrors all console output to logs/dredd-YYYY-MM-DD.log
-const LOG_DIR = "./logs";
+// File logger — mirrors all console output to dredd-YYYY-MM-DD.log
+const LOG_DIR = values["console-log-dir"]!;
 try { mkdirSync(LOG_DIR, { recursive: true }); } catch {}
 
 function getLogFilePath(): string {
@@ -96,6 +97,7 @@ const CONFIG = {
   reviewThreshold: parseFloat(values["review-threshold"]!),
   denyThreshold: parseFloat(values["deny-threshold"]!),
   logDir: values["log-dir"]!,
+  consoleLogDir: LOG_DIR,
 };
 
 // Shared state
@@ -1020,6 +1022,38 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ...exportPolicies(), domain: exportDomainPolicies() });
     }
 
+    // API: list daily console log files
+    if (req.method === "GET" && url.pathname === "/api/logs") {
+      const dir = CONFIG.consoleLogDir;
+      if (!existsSync(dir)) return json(res, 200, []);
+      const files = readdirSync(dir)
+        .filter((f) => f.startsWith("dredd-") && f.endsWith(".log"))
+        .sort()
+        .reverse();
+      return json(res, 200, files);
+    }
+
+    // API: get daily console log content
+    if (req.method === "GET" && url.pathname.startsWith("/api/logs/")) {
+      const filename = url.pathname.split("/api/logs/")[1];
+      if (!filename || filename.includes("..") || filename.includes("/")) {
+        return json(res, 400, { error: "Invalid filename" });
+      }
+      const filepath = join(CONFIG.consoleLogDir, filename);
+      if (!existsSync(filepath)) return json(res, 404, { error: "Log not found" });
+      const tail = parseInt(url.searchParams.get("tail") ?? "0", 10);
+      const content = readFileSync(filepath, "utf8");
+      if (tail > 0) {
+        const lines = content.split("\n");
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end(lines.slice(-tail).join("\n"));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end(content);
+      return;
+    }
+
     json(res, 404, { error: "Not found" });
   } catch (err) {
     console.error(`[ERROR] ${req.method} ${url.pathname}:`, err);
@@ -1052,7 +1086,8 @@ async function main() {
   console.log(`  Judge prompt:    ${CONFIG.hardened === "B7.1" ? "B7.1 HARDENED" : CONFIG.hardened ? "B7 HARDENED" : "standard"}`);
   if (CONFIG.judgeEffort) console.log(`  Judge effort:    ${CONFIG.judgeEffort}`);
   console.log(`  Thresholds:      review=${CONFIG.reviewThreshold}, deny=${CONFIG.denyThreshold}`);
-  console.log(`  Log directory:   ${CONFIG.logDir}`);
+  console.log(`  Session logs:    ${CONFIG.logDir}`);
+  console.log(`  Console logs:    ${CONFIG.consoleLogDir}`);
 
   if (CONFIG.mode === "learn") {
     console.log(`\n  📖 Learn mode: pipeline runs but NOTHING is blocked`);
@@ -1077,6 +1112,7 @@ async function main() {
     console.log(`    POST /compact   — context compaction notification`);
     console.log(`    GET  /health    — health check + version`);
     console.log(`    GET  /api/sessions  — session log listing`);
+    console.log(`    GET  /api/logs      — daily console log listing`);
     console.log(`    GET  /api/feed      — live event feed`);
     console.log("█".repeat(50));
   });

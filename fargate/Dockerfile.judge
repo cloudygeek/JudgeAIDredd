@@ -1,0 +1,61 @@
+# Judge AI Dredd — Standalone Judge Server
+# Lightweight image for vibe coders: just the HTTP server + dashboard.
+# No Python, Playwright, PostgreSQL, or test harness.
+#
+# Build from project root:
+#   docker build -f fargate/Dockerfile.judge -t judge-ai-dredd-judge .
+#
+# Run:
+#   docker run -p 3000:3000 \
+#     -v judge-data:/data \
+#     -e MODE=interactive \
+#     -e BACKEND=bedrock \
+#     -e AWS_REGION=eu-west-2 \
+#     judge-ai-dredd-judge
+
+FROM 891377407345.dkr.ecr.eu-west-1.amazonaws.com/cko-pull-through/docker-hub/library/node:22-bookworm-slim
+
+WORKDIR /app
+
+# ── AWS CLI v2 (for Bedrock backend) ────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl unzip ca-certificates \
+    && ARCH=$(uname -m) \
+    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" \
+         -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/aws /tmp/awscliv2.zip \
+    && apt-get remove -y unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Node dependencies ───────────────────────────────────────────────────────
+COPY package.json ./
+RUN npm install --registry https://registry.npmjs.org
+
+# ── Application source (server + dashboard only) ───────────────────────────
+COPY tsconfig.json ./
+COPY src/ ./src/
+
+# ── Build provenance ────────────────────────────────────────────────────────
+ARG GIT_COMMIT=unknown
+ARG GIT_DIRTY=false
+ENV GIT_COMMIT=${GIT_COMMIT}
+ENV GIT_DIRTY=${GIT_DIRTY}
+
+# ── Data volume mount point ─────────────────────────────────────────────────
+# EFS mounts at /data. Sessions go to /data/sessions, console logs to /data/logs.
+RUN mkdir -p /data/sessions /data/logs
+
+# ── Entrypoint ──────────────────────────────────────────────────────────────
+COPY fargate/docker-entrypoint-judge.sh /docker-entrypoint-judge.sh
+RUN chmod +x /docker-entrypoint-judge.sh
+
+# ── Non-root user ───────────────────────────────────────────────────────────
+RUN useradd -m -s /bin/bash dredd \
+    && chown -R dredd:dredd /app /data
+USER dredd
+
+EXPOSE 3000
+
+ENTRYPOINT ["/docker-entrypoint-judge.sh"]
