@@ -66,12 +66,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /app/toolshield/.git \
     && rm -rf /var/lib/apt/lists/*
 
-# MT-AgentRisk dataset (from HuggingFace) — gated repo, download is best-effort
-ARG MT_AGENTRISK_REVISION=e1ba224fea480df3d296a1bf4e28613d4c97c704
-RUN pip3 install --break-system-packages huggingface_hub \
-    && (python3 -c "from huggingface_hub import snapshot_download; snapshot_download('CHATS-Lab/MT-AgentRisk', local_dir='/app/datasets/mt-agentrisk', revision='${MT_AGENTRISK_REVISION}')" \
-        && echo "MT-AgentRisk dataset downloaded" \
-        || echo "WARNING: MT-AgentRisk download failed (gated repo?) — Test 24 will not work but other tests are unaffected")
 
 # ── Build provenance ────────────────────────────────────────────────────────
 ARG GIT_COMMIT=unknown
