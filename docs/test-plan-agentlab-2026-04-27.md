@@ -208,7 +208,7 @@ Qwen3 235B defend  | X%     | X%    | X%     | X%    | X%         | X% [a, b]
 Qwen3 Coder base   | X%     | X%    | X%     | X%    | X%         | X% [a, b]
 Qwen3 Coder defend | X%     | X%    | X%     | X%    | X%         | X% [a, b]
 
-Wilson 95% CI half-width: ~30 pp per cell, ~14 pp per row aggregate
+Wilson 95% CI half-width: ~26 pp per cell, ~12 pp all-agent pooled aggregate (blurs cross-vendor)
 ```
 
 Headline framing: ``On AgentLAB's four PreToolUse-visible attack types the dredd defence drops ASR from $X$\% to $Y$\%; on the memory-poisoning class --- which manipulates persisted environment state and is not visible at the tool-call surface --- the defence has no measurable effect, as predicted by the gate's structural design. This is honest scope-boundary disclosure (§\ref{sec:future_work}) rather than a defence failure.''
@@ -225,7 +225,7 @@ Headline framing: ``On AgentLAB's four PreToolUse-visible attack types the dredd
 | FastAPI tool-sandbox bridge to dredd PreToolUse hook produces different agent behaviour from Test 23's executor-bedrock direct mode | Medium | High | Pilot stage 1 catches this; cross-check on a single Sonnet 4.6 trajectory that the run log matches the executor-bedrock direct-mode baseline |
 | Memory-poisoning persistent-state isolation leaks between trajectories | Medium | Medium | Containerised isolation; each trajectory gets a fresh AgentLAB FastAPI container; verify in stage-1 pilot |
 | AgentLAB judge (Sonnet 4.6) labels divergently from source paper's GPT-4.1 judge | Medium | Medium | Cross-judge sensitivity check on 30 trajectories (stretch follow-up); if material divergence, run dual judges as headline |
-| $N=10$ per cell is too small to distinguish defence effect from noise on attack types where baseline ASR is 30--50\% | High | Low (smoke scope) | Plan acknowledges smoke-only; per-attack-type CIs are wide; aggregate row CIs at ~14\,pp are usable; full $N=60$+ replication is the stretch target |
+| $N=10$ per cell is too small to distinguish defence effect from noise on attack types where baseline ASR is 30--50\% | High | Low (smoke scope) | Plan acknowledges smoke-only; per-attack-type CIs are wide (~26\,pp); all-agent pooled aggregate CIs at ~12\,pp are usable but blur cross-vendor; full $N=60$+ replication is the stretch target |
 | Cost overrun on Opus 4.6 / 4.7 / Qwen 235B on long-horizon trajectories | Low | Low | Budget cap \$80; per-cell halt-on-overrun; can drop the most expensive agents and report 4--5-agent table if cost runs hot |
 | H6 fails (memory-poisoning baseline ASR low across all vendors) | Medium | Medium | If diagnostic shows AgentLAB's memory-poisoning trajectories don't reach the second-session re-read step within `max_turns=8`, increase to `max_turns=12` and re-run pilot before scaling |
 | AgentLAB version drift (paper updates the benchmark mid-experiment) | Low | Low | Pin to specific commit hash; record in provenance |
