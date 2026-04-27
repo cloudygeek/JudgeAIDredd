@@ -358,12 +358,6 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      if (!params.entrypoint) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Missing required field: entrypoint" }));
-        return;
-      }
-
       startRun(params);
       res.writeHead(202, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ message: "Run started", runId: state.runId, status: "running" }));

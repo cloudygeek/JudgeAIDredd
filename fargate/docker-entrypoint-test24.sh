@@ -105,28 +105,53 @@ else
   echo "  PostgreSQL not available — skipping DB-dependent scenarios"
 fi
 
-# MCP servers (from ToolShield source, via supergateway)
-MCP_DIR="/app/toolshield/agentrisk/mcp_server"
+# MCP servers — launched directly using the container's own binaries
+# (ToolShield start scripts hardcode /root/.nvm paths that don't exist here)
 MCP_PIDS=()
+NODE_BIN=$(which node)
+FS_SERVER="./node_modules/@modelcontextprotocol/server-filesystem/dist/index.js"
+PW_SERVER="./node_modules/@playwright/mcp/cli.js"
 
-if [ -d "${MCP_DIR}" ]; then
-  for script in start_filesystem.sh start_postgres.sh start_playwright.sh start_notion.sh; do
-    if [ -f "${MCP_DIR}/${script}" ]; then
-      bash "${MCP_DIR}/${script}" &
-      MCP_PIDS+=($!)
-      echo "  Started ${script} (PID ${MCP_PIDS[-1]})"
-    fi
-  done
-else
-  echo "  WARNING: ToolShield MCP servers not found at ${MCP_DIR}"
+# Filesystem MCP (port 9090)
+if [ -f "${FS_SERVER}" ]; then
+  mkdir -p /tmp/mcp-workspace
+  npx supergateway --port 9090 \
+    --stdio "${NODE_BIN} ${FS_SERVER} /tmp/mcp-workspace /tmp /app" &
+  MCP_PIDS+=($!)
+  echo "  Started filesystem MCP (PID ${MCP_PIDS[-1]})"
 fi
+
+# PostgreSQL MCP (port 9091)
+if command -v postgres-mcp &>/dev/null; then
+  PG_URL="postgresql://postgres:password@localhost:5432/postgres"
+  npx supergateway --port 9091 \
+    --stdio "postgres-mcp ${PG_URL}" &
+  MCP_PIDS+=($!)
+  echo "  Started postgres MCP (PID ${MCP_PIDS[-1]})"
+fi
+
+# Playwright/Browser MCP (port 9092)
+# Uses apt-installed chromium via PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH env var
+if [ -f "${PW_SERVER}" ]; then
+  PW_TEMP=$(mktemp -d -t playwright_session_XXXXXX)
+  npx supergateway --port 9092 \
+    --stdio "env HOME=${PW_TEMP} ${NODE_BIN} ${PW_SERVER} --isolated --no-sandbox" &
+  MCP_PIDS+=($!)
+  echo "  Started browser MCP (PID ${MCP_PIDS[-1]})"
+fi
+
+# Notion MCP (port 9097)
+npx supergateway --port 9097 \
+  --stdio "npx -y @notionhq/notion-mcp-server" &
+MCP_PIDS+=($!)
+echo "  Started notion MCP (PID ${MCP_PIDS[-1]})"
 
 # Wait for MCP server readiness
 echo "Waiting for MCP servers..."
 for port in 9090 9091 9092 9097; do
   READY=false
   for i in $(seq 1 30); do
-    if curl -s "http://localhost:${port}" >/dev/null 2>&1; then
+    if curl -s "http://localhost:${port}/sse" -o /dev/null -w "%{http_code}" 2>/dev/null | grep -q "200"; then
       READY=true
       break
     fi

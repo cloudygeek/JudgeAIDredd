@@ -59,12 +59,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# ToolShield MCP servers (cloned from source — not published on npm)
-ARG TOOLSHIELD_COMMIT=main
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && git clone --depth 1 https://github.com/CHATS-lab/ToolShield.git /app/toolshield \
-    && rm -rf /app/toolshield/.git \
-    && rm -rf /var/lib/apt/lists/*
+# MCP servers for MT-AgentRisk (Test 24)
+# ToolShield start scripts hardcode /root/.nvm and /root/miniforge3 paths that
+# don't exist here, so we install the MCP servers directly and launch them from
+# the entrypoint using the container's own node/python binaries.
+RUN npm install --save \
+        @modelcontextprotocol/server-filesystem \
+        @playwright/mcp \
+        @notionhq/notion-mcp-server \
+        supergateway
+RUN pip3 install --break-system-packages postgres-mcp 2>/dev/null || true
 
 # MT-AgentRisk dataset (vendored — HF repo is gated)
 COPY datasets/mt-agentrisk/ /app/datasets/mt-agentrisk/
