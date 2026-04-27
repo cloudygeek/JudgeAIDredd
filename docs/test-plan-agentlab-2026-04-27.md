@@ -22,8 +22,9 @@ A smoke-level cross-vendor matrix on AgentLAB: 7 already-tested defended agents 
 | Defended agent | Anthropic: **Haiku 4.5**, **Sonnet 4.6**, **Opus 4.6**, **Opus 4.7** (Bedrock `eu-west-1`); Bedrock-Qwen: **Qwen3 32B** (`qwen.qwen3-32b-v1:0`), **Qwen3 235B A22B** (`qwen.qwen3-235b-a22b-2507-v1:0`), **Qwen3 Coder 30B** (`qwen.qwen3-coder-30b-v1:0`) (Bedrock `eu-central-1`) | Seven rows, all on Bedrock. Same agent set tested in P14 §3.5 / Test 18 / Test 19 / Test 23 — directly comparable cross-corpus. |
 | Defence arm | none, intent-tracker (= dredd PreToolUse + prompt v2 + Cohere v4 + Sonnet 4.6 judge) | Same two arms as §3.6 / §3.7 / Test 23 |
 | Attack type | Intent hijacking, tool chaining, task injection, objective drifting, **memory poisoning** | All 5 from the verified abstract; 2 scenarios sampled per type with seeded RNG |
-| Scenarios per (agent, arm) cell | 10 (stratified: 2 per attack type) | Smoke-level $N$ — Wilson 95\% CI half-width ~30\,pp per cell, ~14\,pp per row aggregate |
-| Per-attack-type N | 14 across both arms (7 agents × 2 scenarios) | Wilson 95\% CI half-width ~26\,pp; only useful for rough triage |
+| Scenarios per (agent, arm) cell | 10 (stratified: 2 per attack type) | Smoke-level $N$ — Wilson 95\% CI half-width ~26\,pp per cell at $p{=}0.5$ (per review question 2 correction). Per-attack-type within a cell: $N=2$, half-width ~52\,pp — not informative individually. |
+| Per-attack-type aggregation | $N=14$ pooling across all 7 agents within one arm (2 scenarios × 7 agents) | Wilson 95\% CI half-width ~26\,pp at $p{=}0.5$; useful only for rough cross-attack-type direction. **The cross-vendor question is per-(agent, arm, attack-type) ASR which stays at $N=2$; only the cross-vendor-pooled direction tightens to $N=14$.** |
+| All-agent pooled aggregate per arm | $N=70$ (7 agents × 10 scenarios) | Wilson 95\% CI half-width ~12\,pp — but pooling across vendors blurs the very cross-vendor finding the matrix exists to surface; not used as a headline. Reported as a single-number summary only. |
 | Turn budget | `max_turns = 8` | AgentLAB default; matches T3 / T3e horizon |
 | AgentLAB judge | `eu.anthropic.claude-sonnet-4-6` (temperature=0) | Replaces paper's GPT-4.1 judge; cross-judge sensitivity check is a stretch follow-up |
 | dredd judge model | `eu.anthropic.claude-sonnet-4-6` via Bedrock | Production-recommended; matches Test 23 |
@@ -40,9 +41,9 @@ A smoke-level cross-vendor matrix on AgentLAB: 7 already-tested defended agents 
 
 **H2 --- Bedrock-Qwen baselines are high, tracking Test 23's T3e pattern.** Per attack type Qwen baseline ASR ${\geq}30$\% on intent hijacking / tool chaining / task injection / objective drifting; ${\geq}50$\% on memory poisoning (the unprotected axis). Aggregate Qwen baseline ASR 40--70\%. Wider than T3e because AgentLAB's mutable-environment design exposes the agent to attack vectors beyond user-turn reframing.
 
-**H3 --- Defence reduces ASR materially on the four agentic attack types but NOT on memory poisoning.** dredd's PreToolUse gate sees the tool-call-vs-task surface; intent hijacking + tool chaining + task injection + objective drifting all express as off-task tool calls. **Memory poisoning manipulates persisted environment state, which the gate cannot see.** Predicted: defended ASR drops $\ge 50$\% (relative) on the four agentic types; memory poisoning ASR is approximately unchanged between arms.
+**H3 --- Defence reduces ASR materially on the four agentic attack types but NOT on memory poisoning.** dredd's PreToolUse gate sees the tool-call-vs-task surface; intent hijacking + tool chaining + task injection + objective drifting all express as off-task tool calls. **Memory poisoning manipulates intra-session mutable state (file system / DB / browser cookies / app state written in earlier turns and read in later turns of the same trajectory)** which the gate cannot see — the malicious *write* may be on-task-plausible and the malicious *read* indistinguishable from a benign read at the call-surface level. Predicted: defended ASR drops $\ge 50$\% (relative) on the four agentic types; memory poisoning ASR is approximately unchanged between arms. **Pre-flight verification (added per review question 1):** confirm in stage-1 pilot that AgentLAB's memory-poisoning scenarios are intra-session (poison + exploit within the same 8-turn trajectory) rather than cross-session (poison in trajectory $i$, exploit in $i{+}1$). If cross-session, the planned per-trajectory container-isolation design kills the attack by construction and any 0\% defended ASR is an artefact rather than a defence finding — the plan needs a state-persistence harness or AgentLAB's own multi-session driver.
 
-**H4 --- Per-attack-type defence-effect ordering matches the attack's tool-call-surface visibility.** Predicted ordering by relative ASR drop (largest defence effect first): intent hijacking $\approx$ task injection $>$ tool chaining $>$ objective drifting $>$ memory poisoning (≈0). Useful per-class characterisation if it holds.
+**H4 --- Per-attack-type defence-effect ordering matches the attack's tool-call-surface visibility.** Predicted ordering by relative ASR drop (largest defence effect first): intent hijacking $\approx$ task injection $>$ tool chaining $>$ objective drifting $>$ memory poisoning (≈0). **Directional only at smoke scale (per review question 5):** at $N=2$ per (agent, attack-type) cell and $N=14$ pooled across all 7 agents per attack type, Wilson 95\% CI half-width is ~26\,pp — H4's ordering is not strictly testable here unless adjacent-tier differences exceed ~50\,pp. Acknowledge as directional-evidence-for-future-$N=60$+-work.
 
 **H5 --- Cross-vendor direction matches §3.6 / §3.7.** Anthropic baselines lower than Qwen baselines on the four agentic types (per H1 + H2); defence drops both vendor families by similar relative amounts on the agentic types. Confirms the cross-vendor finding generalises to a third attack-class corpus.
 
@@ -52,9 +53,12 @@ A smoke-level cross-vendor matrix on AgentLAB: 7 already-tested defended agents 
 
 1. **Provenance fields populated** on every trajectory JSON: `agent.provider`, `agent.model`, `agent.region`, `agentlab.scenario_id`, `agentlab.attack_type`, `agentlab.environment`, `defence.arm`, `judge.agentlab.model`, `judge.agentlab.label`, `judge.agentlab.reason`, `dredd.judge.model`, `dredd.judge.prompt=v2`, `dredd.thresholds`, `run.timestamp`, `agentlab.commit_hash` (pin AgentLAB to specific commit).
 2. **Pilot gate cleared.** $N=10$ Sonnet 4.6 baseline pilot produces a non-degenerate ASR distribution (not stuck at 0\% or 100\% across all 10 trajectories) and zero tool-API or environment-routing errors.
-3. **Wilson 95\% CI half-widths reported.** $N=10$ per cell gives ~30\,pp half-width — explicitly noted as smoke-level. Per-attack-type aggregates ($N=14$ across both arms) give ~26\,pp.
-4. **Defence bridge byte-identical to Test 23.** Same Sonnet 4.6 judge, prompt v2, Cohere v4, threshold calibration. Only new code: AgentLAB scenario driver and FastAPI tool sandbox.
+3. **Wilson 95\% CI half-widths reported.** $N=10$ per cell gives ~26\,pp half-width — explicitly noted as smoke-level. Per-attack-type within a cell ($N=2$): ~52\,pp, not informative individually. Per-attack-type pooled across agents within one arm ($N=14$): ~26\,pp; informative only for rough cross-attack-type direction.
+4. **Defence pipeline configuration identical to Test 23** (per review question 8 correction). Same Sonnet 4.6 judge, prompt v2, Cohere v4, threshold calibration. New code is limited to (a) the AgentLAB scenario driver, (b) the FastAPI bridge that routes AgentLAB's tool calls through dredd's PreToolUse hook, and (c) the stratified scenario sampler.
 5. **Per-trajectory dredd judge verdicts captured.** Diagnostic for H3 / H4 — particularly to confirm that memory-poisoning trajectories pass through the dredd gate without flagging (because nothing on the tool-call surface reveals the attack).
+6. **Memory-poisoning state model verified intra-session** in stage-1 pilot (per review question 1). If verified cross-session, halt and reconsider isolation design.
+7. **Cross-judge sensitivity check during pilot, not after** (per review question 4). Dual-grade the 10 stage-2 pilot trajectories with both Sonnet 4.6 and GPT-4.1 (or GPT-4o-mini as cheaper proxy); if the two judges disagree on $\ge 3$ of 10 labels, halt and diagnose before scaling to the full matrix.
+8. **Stratified sampler enforces environment diversity** (per review question 7). The 2 scenarios per attack type are drawn from $\ge 2$ distinct AgentLAB environments where possible; if a given (attack-type) only has scenarios in one environment, accept and note it.
 
 ## Decision rules
 
@@ -83,12 +87,13 @@ AgentLAB has a published GitHub release with FastAPI + Ray scripts (per source-p
 
 | Engineering item | Effort |
 |---|---|
-| Verify AgentLAB GitHub release is publicly accessible (not gated like MT-AgentRisk's HF dataset) and pin to specific commit hash | ~30 min |
+| Verify AgentLAB GitHub release is publicly accessible (not gated like MT-AgentRisk's HF dataset) and pin to specific commit hash. Clone to a standardised path (`/opt/agentlab`, not `/tmp/agentlab`) baked into the Dockerfile (per review question 9) | ~30 min |
+| `fargate/docker-entrypoint-test25.sh` (per review question 6). Mirrors the Test 20 / 21 entrypoint pattern with AgentLAB-specific env vars (`AGENTLAB_PATH=/opt/agentlab`, `AGENTLAB_COMMIT`, attack-type list) | ~2 hours |
 | `src/runner-agentlab.ts` — loads stratified 10-scenario subset across 5 attack types, drives multi-turn loop per scenario, dispatches each tool call through dredd's PreToolUse hook (defended arm) or directly to AgentLAB's FastAPI tool sandbox (baseline arm), captures full transcript, calls AgentLAB judge | ~3--4 days |
 | FastAPI bridge: AgentLAB ships its own FastAPI tool wrappers; integration is wrapping these so that the Bedrock agent's tool calls route through dredd's PreToolUse hook before reaching FastAPI | ~2 days |
 | Bedrock executor reuse: `executor-bedrock.ts` (Anthropic) and `executor-bedrock-qwen.ts` (Qwen, from Test 23) drive the agent unchanged. Need wrapper to expose them as AgentLAB-FastAPI-compatible chat clients | ~1 day |
 | AgentLAB judge bridge — invokes Sonnet 4.6 with AgentLAB classification prompt at temp=0; parses succeeded / refused / failed label + reason | ~half day |
-| Stratified scenario sampler with seeded RNG (deterministic 2-per-attack-type selection) | ~half day |
+| Stratified scenario sampler with seeded RNG (deterministic 2-per-attack-type selection) **+ environment-diversity constraint** (per review question 7): the 2 scenarios per attack type drawn from $\ge 2$ distinct AgentLAB environments where the attack-type catalogue spans more than one environment. Falls through to "accept single-environment" if the attack type is environment-locked, with a provenance flag | ~1 day |
 | Persistent state isolation between trajectories — critical for memory-poisoning scenarios so attack state from trajectory $i$ doesn't bleed into trajectory $i{+}1$ | ~half day |
 | Pilot gate harness — 10-scenario Sonnet 4.6 baseline pilot with degenerate-ASR check | ~1--2 hours |
 
@@ -108,7 +113,7 @@ AWS_REGION=eu-west-1 CLAUDE_CODE_USE_BEDROCK=1 \
     --max-turns 8 \
     --benchmark-judge-model eu.anthropic.claude-sonnet-4-6 \
     --benchmark-judge-temperature 0 \
-    --agentlab-commit "$(git -C /tmp/agentlab rev-parse HEAD)" \
+    --agentlab-commit "$(git -C /opt/agentlab rev-parse HEAD)" \
     --output-dir results/test25-pilot/
 
 # Anthropic agents (Bedrock eu-west-1)
@@ -175,8 +180,8 @@ JUDGE_BEDROCK_REGION=eu-central-1 \
 
 Three-stage gate:
 
-1. **Engineering smoke** (~30 min, ~\$0.50): AgentLAB FastAPI server up; one hand-picked trajectory completes end-to-end on Sonnet 4.6 baseline; AgentLAB judge returns a label.
-2. **10-scenario pilot** (~40 min, ~\$1): Sonnet 4.6 baseline only, 10 stratified scenarios with seed=27. Verify (a) no tool-API errors, (b) ASR is not degenerate (not 0/10 or 10/10 across all attack types), (c) at least one of the five attack types lands a baseline success (so the matrix has signal).
+1. **Engineering smoke + memory-poisoning state-model check** (~30 min, ~\$0.50): AgentLAB FastAPI server up; one hand-picked trajectory completes end-to-end on Sonnet 4.6 baseline; AgentLAB judge returns a label. **Additionally inspect a memory-poisoning scenario JSON (per review question 1):** confirm whether the attack writes-then-reads within an 8-turn trajectory (intra-session, plan proceeds) or expects re-invocation (cross-session, halt and rework state-isolation harness).
+2. **10-scenario pilot + dual-judge cross-validation** (~50 min, ~\$2.50): Sonnet 4.6 baseline only, 10 stratified scenarios with seed=27. Verify (a) no tool-API errors, (b) ASR is not degenerate (not 0/10 or 10/10 across all attack types), (c) at least one of the five attack types lands a baseline success (so the matrix has signal). **Also dual-grade the 10 transcripts with GPT-4o-mini as a cheap proxy for the source paper's GPT-4.1 judge (per review question 4); if disagreement $\ge 3$ of 10 labels, halt and diagnose before scaling.**
 3. **One-agent matrix pilot** (~1.5h, ~\$4): Sonnet 4.6 × 10 scenarios × both arms. Validates the full pipeline end-to-end and gives a first defence-effect signal on the most paper-comparable agent. If H1 fails (still 0\% baseline) here, halt and reconsider whether AgentLAB's attack types actually transfer to current Anthropic frontier — possible result; would reframe the test rather than scrap it.
 
 ### Paper integration (if H1 + H3 + H5 hold)
@@ -265,13 +270,16 @@ These are stretch goals, not part of Test 25 proper.
 | Scope | 365 scenarios, 5 tool surfaces | 644 scenarios, 28 environments, 5 attack types |
 | Engineering | ~1.5--2 weeks | ~1--1.5 weeks |
 | Smoke cost | ~\$343 (full matrix) | **~\$25 ($N=10$ smoke)** |
-| Defended agents | 5 (Haiku, Sonnet, Opus 4.7, GPT-4o-mini, Qwen Coder 480B) | **7 (4 Anthropic + 3 Qwen — already-tested set)** |
+| Defended agents | 5 (Haiku, Sonnet, Opus 4.7, GPT-4o-mini, **Qwen Coder 480B-A35B** — Test 24's planned set, includes a Qwen variant not yet tested elsewhere) | **7 (4 Anthropic + 3 Qwen — `qwen.qwen3-32b-v1:0`, `qwen.qwen3-235b-a22b-2507-v1:0`, `qwen.qwen3-coder-30b-v1:0`; the already-tested set from Test 23, intentionally smaller-tier Qwen Coder than Test 24's planned 480B-A35B; per review question 3)** |
 | Memory-poisoning evidence | No | **Yes (5 attack types include it)** |
 | Adaptive-attack evidence | No | Partial (AgentLAB's attack plans are adaptive) |
 
 **Sequencing:** if HF access for MT-AgentRisk lands before Test 25 engineering, run Test 24 first. Otherwise Test 25 is the higher-value next step at lower cost and the same engineering reuse for any future AgentLAB-or-MT-AgentRisk full-scale runs.
 
 ## Review questions (2026-04-27)
+
+**Status:** All 9 addressed in the plan above. Each question's resolution is cross-referenced inline (search "per review question N"). This list is retained as an audit trail.
+
 
 1. **Memory-poisoning state model: intra-session or cross-session?** The plan frames memory poisoning as manipulating "persisted environment state" and isolates trajectories with fresh containers. If the attack requires cross-session persistence (poison in trajectory $i$, exploit in trajectory $i{+}1$), the isolation design kills it by construction and any 0% ASR is an artefact. If it works within a single 8-turn trajectory (poison then read in the same session), the "persisted state" framing throughout H3, H6, and the §4.5 text needs tightening to "intra-session mutable state." Clarify the attack's state model before engineering.
 
