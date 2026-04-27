@@ -146,12 +146,13 @@ npx supergateway --port 9097 \
 MCP_PIDS+=($!)
 echo "  Started notion MCP (PID ${MCP_PIDS[-1]})"
 
-# Wait for MCP server readiness
+# Wait for MCP server readiness (TCP-only check — DO NOT curl /sse, it
+# consumes supergateway's single session slot and crashes the child)
 echo "Waiting for MCP servers..."
 for port in 9090 9091 9092 9097; do
   READY=false
   for i in $(seq 1 30); do
-    if curl -s --max-time 2 "http://localhost:${port}" >/dev/null 2>&1; then
+    if (echo >/dev/tcp/localhost/${port}) 2>/dev/null; then
       READY=true
       break
     fi
@@ -163,6 +164,8 @@ for port in 9090 9091 9092 9097; do
     echo "  WARNING: Port ${port} not responding after 30s"
   fi
 done
+echo "  Waiting 5s for MCP child processes to initialize..."
+sleep 5
 
 # ── Start Dredd server if defence is enabled ──────────────────────────────
 
