@@ -119,35 +119,18 @@ class MCPToolRouter:
         ).start()
 
     def _stdout_reader(self, server: MCPServer) -> None:
-        """Read JSON-RPC messages from stdout (Content-Length framed)."""
+        """Read newline-delimited JSON-RPC messages from stdout."""
         try:
-            stdout = server._process.stdout
-            while True:
-                header = b""
-                while True:
-                    line = stdout.readline()
-                    if not line:
-                        return
-                    header += line
-                    if line.strip() == b"":
-                        break
-
-                content_length = 0
-                for h in header.decode("utf-8", errors="replace").splitlines():
-                    if h.lower().startswith("content-length:"):
-                        content_length = int(h.split(":", 1)[1].strip())
-
-                if content_length > 0:
-                    body = stdout.read(content_length)
-                    if body:
-                        try:
-                            msg = json.loads(body)
-                            if "id" in msg:
-                                server._response_queue.put(msg)
-                            elif msg.get("method") == "notifications/initialized":
-                                pass
-                        except json.JSONDecodeError:
-                            logger.debug("Bad JSON from %s: %s", server.name, body[:200])
+            for raw_line in server._process.stdout:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                    if "id" in msg:
+                        server._response_queue.put(msg)
+                except json.JSONDecodeError:
+                    logger.debug("Bad JSON from %s: %s", server.name, line[:200])
         except Exception as e:
             logger.debug("Reader for %s ended: %s", server.name, e)
 
@@ -189,10 +172,8 @@ class MCPToolRouter:
         if params is not None:
             payload["params"] = params
 
-        body = json.dumps(payload).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
-
-        server._process.stdin.write(header + body)
+        line = json.dumps(payload) + "\n"
+        server._process.stdin.write(line.encode("utf-8"))
         server._process.stdin.flush()
 
         try:
@@ -212,9 +193,8 @@ class MCPToolRouter:
 
         # Send initialized notification (no response expected)
         notif = {"jsonrpc": "2.0", "method": "notifications/initialized"}
-        body = json.dumps(notif).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
-        server._process.stdin.write(header + body)
+        line = json.dumps(notif) + "\n"
+        server._process.stdin.write(line.encode("utf-8"))
         server._process.stdin.flush()
 
     def _discover_tools(self, server: MCPServer) -> None:
