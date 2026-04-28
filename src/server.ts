@@ -1083,7 +1083,7 @@ async function main() {
   console.log(`  Embedding model: ${CONFIG.embeddingModel}`);
   console.log(`  Judge backend:   ${CONFIG.judgeBackend}`);
   console.log(`  Judge model:     ${CONFIG.judgeModel}`);
-  console.log(`  Judge prompt:    ${CONFIG.hardened === "B7.1" ? "B7.1 HARDENED" : CONFIG.hardened ? "B7 HARDENED" : "standard"}`);
+  console.log(`  Judge prompt:    ${CONFIG.hardened || "standard"}`);
   if (CONFIG.judgeEffort) console.log(`  Judge effort:    ${CONFIG.judgeEffort}`);
   console.log(`  Thresholds:      review=${CONFIG.reviewThreshold}, deny=${CONFIG.denyThreshold}`);
   console.log(`  Session logs:    ${CONFIG.logDir}`);

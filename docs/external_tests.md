@@ -80,13 +80,82 @@ Per CLAUDE.md: every citation must be a real, verifiable paper. Verification don
 | 2602.22724 | AgentSentry (Zhang, Xu, Wang et al.) | ✓ 2026-04-26 | `JudgeAIDredd/docs/competitors.md` |
 | 2603.10749 | AttriGuard (He, Zhu, Li et al.) | ✓ 2026-04-26 | `JudgeAIDredd/docs/competitors.md` |
 | 2601.10156 | ToolSafe TS-Guard (Mou, Xue, Li et al.) | ✓ 2026-04-26 | `JudgeAIDredd/docs/competitors.md` |
-| 2603.07191 | Layered Governance Architecture | unverified | — |
-| 2508.16481 | Bad-ACTS | unverified | — |
-| 2503.22738 | ShieldAgent | unverified | — |
-| 2505.05849 | AgentVigil | unverified | — |
-| 2512.19016 | DREAM | unverified | — |
-| 2603.24414 | ClawKeeper | unverified | — |
-| 2510.05244 | Indirect Prompt Injections (firewall benchmark survey) | unverified | — |
+| 2603.07191 | Layered Governance Architecture (Y. Ge) | ✓ 2026-04-26 | curl arxiv metadata |
+| 2508.16481 | BAD-ACTS (Nöther, Singla, Radanovic) | ✓ 2026-04-26 | curl arxiv metadata |
+| 2503.22738 | ShieldAgent (Chen, Kang, B. Li) | ✓ 2026-04-26 | curl arxiv metadata |
+| 2505.05849 | AgentVigil (Wang, Siu et al.) | ✓ 2026-04-26 | curl arxiv metadata |
+| 2512.19016 | DREAM (Lu, Gu et al.) | ✓ 2026-04-26 | curl arxiv metadata |
+| 2603.24414 | ClawKeeper (Liu, Li et al.) | ✓ 2026-04-26 | curl arxiv metadata |
+| 2510.05244 | **Indirect Prompt Injections "firewall"** (Bhagwatkar et al.) — CLAIMS PERFECT SECURITY ON AGENTDOJO + 3 BENCHMARKS | ✓ 2026-04-26 | curl arxiv metadata |
+
+### Additional verified BibTeX entries
+
+```bibtex
+@misc{bhagwatkar2025firewall,
+  title  = {Indirect Prompt Injections: Are Firewalls All You Need, or Stronger Benchmarks?},
+  author = {Bhagwatkar, Rishika and Kasa, Kevin and Puri, Abhay and Huang, Gabriel and Rish, Irina and Taylor, Graham W. and Dvijotham, Krishnamurthy and Lacoste, Alexandre},
+  year   = {2025}, month = oct,
+  eprint = {2510.05244}, archivePrefix = {arXiv}, primaryClass = {cs.CR},
+  doi    = {10.48550/arXiv.2510.05244},
+  url    = {https://arxiv.org/abs/2510.05244}
+}
+
+@misc{ge2026lga,
+  title  = {Governance Architecture for Autonomous Agent Systems: Threats, Framework, and Engineering Practice},
+  author = {Ge, Yuxu},
+  year   = {2026}, month = mar,
+  eprint = {2603.07191}, archivePrefix = {arXiv}, primaryClass = {cs.CR},
+  doi    = {10.48550/arXiv.2603.07191},
+  url    = {https://arxiv.org/abs/2603.07191}
+}
+
+@misc{nother2025badacts,
+  title  = {Benchmarking the Robustness of Agentic Systems to Adversarially-Induced Harms},
+  author = {N{\"o}ther, Jonathan and Singla, Adish and Radanovic, Goran},
+  year   = {2025}, month = aug,
+  eprint = {2508.16481}, archivePrefix = {arXiv}, primaryClass = {cs.CR},
+  doi    = {10.48550/arXiv.2508.16481},
+  url    = {https://arxiv.org/abs/2508.16481}
+}
+
+@misc{chen2025shieldagent,
+  title  = {{ShieldAgent}: Shielding Agents via Verifiable Safety Policy Reasoning},
+  author = {Chen, Zhaorun and Kang, Mintong and Li, Bo},
+  year   = {2025}, month = mar,
+  eprint = {2503.22738}, archivePrefix = {arXiv}, primaryClass = {cs.CR},
+  doi    = {10.48550/arXiv.2503.22738},
+  url    = {https://arxiv.org/abs/2503.22738}
+}
+
+@misc{wang2025agentvigil,
+  title  = {{AgentVigil}: Generic Black-Box Red-teaming for Indirect Prompt Injection against {LLM} Agents},
+  author = {Wang, Zhun and Siu, Vincent and Ye, Zhe and Shi, Tianneng and Nie, Yuzhou and Zhao, Xuandong and Wang, Chenguang and Guo, Wenbo and Song, Dawn},
+  year   = {2025}, month = may,
+  eprint = {2505.05849}, archivePrefix = {arXiv}, primaryClass = {cs.CR},
+  doi    = {10.48550/arXiv.2505.05849},
+  url    = {https://arxiv.org/abs/2505.05849}
+}
+
+@misc{lu2025dream,
+  title  = {{DREAM}: Dynamic Red-teaming across Environments for {AI} Models},
+  author = {Lu, Liming and Gu, Xiang and Huang, Junyu and Du, Jiawei and Zheng, Xu and Liu, Yunhuai and Zhou, Yongbin and Pang, Shuchao},
+  year   = {2025}, month = dec,
+  eprint = {2512.19016}, archivePrefix = {arXiv}, primaryClass = {cs.CR},
+  doi    = {10.48550/arXiv.2512.19016},
+  url    = {https://arxiv.org/abs/2512.19016}
+}
+
+@misc{liu2026clawkeeper,
+  title  = {{ClawKeeper}: Comprehensive Safety Protection for {OpenClaw} Agents Through Skills, Plugins, and Watchers},
+  author = {Liu, Songyang and Li, Chaozhuo and Wang, Chenxu and Hou, Jinyu and Chen, Zejian and Zhang, Litian and Liu, Zheng and Ye, Qiwei and Hei, Yiming and Zhang, Xi and Wang, Zhongyuan},
+  year   = {2026}, month = mar,
+  eprint = {2603.24414}, archivePrefix = {arXiv}, primaryClass = {cs.CR},
+  doi    = {10.48550/arXiv.2603.24414},
+  url    = {https://arxiv.org/abs/2603.24414}
+}
+```
+
+**All 15 candidate citations now verified.** Ready for selective addition to `p15.bib` for §1.7 / §4.4 / §4.6 references.
 
 ### Verified BibTeX entries for the §2-Related-Work runtime-defence family
 
