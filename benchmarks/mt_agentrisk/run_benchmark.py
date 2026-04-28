@@ -440,66 +440,72 @@ def main():
                 session_id = f"t24-{model_key}-{defence}-{scenario.id.replace('/', '-')}"
                 print(f"\n  [{i+1}/{len(scenarios)}] {scenario.id} ", end="", flush=True)
 
-                # Per-scenario reset
-                sandbox.reset_for_scenario(scenario.scenario_path)
+                try:
+                    # Per-scenario reset
+                    sandbox.reset_for_scenario(scenario.scenario_path)
 
-                # Build turn manager
-                step_budget = MODEL_STEP_BUDGET.get(model_key, args.max_turns * 10)
-                if scenario.turns_yml_path:
-                    turn_mgr = TurnManager.from_yaml(scenario.turns_yml_path,
-                                                     max_turns=args.max_turns)
-                else:
-                    turn_mgr = TurnManager.single_turn(scenario.task_instruction,
-                                                       max_steps=step_budget)
+                    # Build turn manager
+                    step_budget = MODEL_STEP_BUDGET.get(model_key, args.max_turns * 10)
+                    if scenario.turns_yml_path:
+                        turn_mgr = TurnManager.from_yaml(scenario.turns_yml_path,
+                                                         max_turns=args.max_turns)
+                    else:
+                        turn_mgr = TurnManager.single_turn(scenario.task_instruction,
+                                                           max_steps=step_budget)
 
-                # Register intent with Dredd
-                if dredd:
-                    dredd.register_intent(session_id, scenario.task_instruction)
+                    # Register intent with Dredd
+                    if dredd:
+                        dredd.register_intent(session_id, scenario.task_instruction)
 
-                # Determine tools for this scenario's surface
-                surface_tools = mcp.get_tools_for_surface(scenario.tool_surface)
-                if not surface_tools:
-                    surface_tools = all_tools
+                    # Determine tools for this scenario's surface
+                    surface_tools = mcp.get_tools_for_surface(scenario.tool_surface)
+                    if not surface_tools:
+                        surface_tools = all_tools
 
-                # Run the agent loop
-                result = run_scenario(
-                    llm=llm,
-                    mcp=mcp,
-                    turn_manager=turn_mgr,
-                    tools=surface_tools,
-                    scenario_id=scenario.id,
-                    tool_surface=scenario.tool_surface,
-                    dredd=dredd,
-                    session_id=session_id,
-                )
+                    # Run the agent loop
+                    result = run_scenario(
+                        llm=llm,
+                        mcp=mcp,
+                        turn_manager=turn_mgr,
+                        tools=surface_tools,
+                        scenario_id=scenario.id,
+                        tool_surface=scenario.tool_surface,
+                        dredd=dredd,
+                        session_id=session_id,
+                    )
 
-                # Judge the trajectory
-                verdict = classify_trajectory(
-                    transcript=result.transcript,
-                    scenario_instruction=scenario.task_instruction,
-                    judge_model=args.benchmark_judge_model,
-                    judge_region=args.benchmark_judge_region,
-                )
+                    # Judge the trajectory
+                    verdict = classify_trajectory(
+                        transcript=result.transcript,
+                        scenario_instruction=scenario.task_instruction,
+                        judge_model=args.benchmark_judge_model,
+                        judge_region=args.benchmark_judge_region,
+                    )
 
-                # End Dredd session
-                if dredd:
-                    dredd.end_session(session_id)
+                    # End Dredd session
+                    if dredd:
+                        dredd.end_session(session_id)
 
-                # Record
-                surface = scenario.tool_surface
-                if surface not in surface_verdicts:
-                    surface_verdicts[surface] = []
-                surface_verdicts[surface].append(verdict.label)
+                    # Record
+                    surface = scenario.tool_surface
+                    if surface not in surface_verdicts:
+                        surface_verdicts[surface] = []
+                    surface_verdicts[surface].append(verdict.label)
 
-                # Write per-cell JSON
-                out_path = write_cell_json(
-                    result, verdict, model_key, defence, scenario,
-                    output_dir, run_id, config,
-                )
+                    # Write per-cell JSON
+                    out_path = write_cell_json(
+                        result, verdict, model_key, defence, scenario,
+                        output_dir, run_id, config,
+                    )
 
-                status_char = {"COMPLETE": "✗", "REJECT": "✓", "FAILED": "?"}
-                print(f"{status_char.get(verdict.label, '?')} {verdict.label} "
-                      f"({result.total_steps}steps {result.elapsed_seconds:.0f}s)", flush=True)
+                    status_char = {"COMPLETE": "✗", "REJECT": "✓", "FAILED": "?"}
+                    print(f"{status_char.get(verdict.label, '?')} {verdict.label} "
+                          f"({result.total_steps}steps {result.elapsed_seconds:.0f}s)", flush=True)
+
+                except Exception as e:
+                    logger.error("Scenario %s skipped: %s", scenario.id, e)
+                    print(f"⚠ SKIPPED ({type(e).__name__}: {e})", flush=True)
+
                 completed += 1
 
             # Write summary for this (model, defence) cell
