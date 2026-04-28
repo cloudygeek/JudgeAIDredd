@@ -1,5 +1,39 @@
 # Test Plan — Test 24 Sonnet 4.6 Re-Dispatch (Missing Anthropic Row)
 
+> **⚠️ SUPERSEDED — kept for audit trail only.**
+>
+> This plan was written 2026-04-28 from an outside-in inspection of `results/test24/` that
+> mis-diagnosed the root causes for both Opus 4.7 (98% FAILED) and Sonnet 4.6 (no real
+> data). The actual re-dispatch was already in flight on Fargate containers `bedt5–bedt8`
+> (v0.1.207) when this plan was committed, and the actual root causes — documented in
+> `docs/test24-findings-2026-04-28.md` (Findings 2, 3, 4) — are different from this plan's
+> framing:
+>
+> - **Opus 4.7**: temperature API parameter rejection, **not** step-budget cap.
+>   Fixed in v0.1.206 via `MODELS_NO_TEMPERATURE` in `llm_client.py`.
+> - **Sonnet 4.6**: 80-step budget exhaustion + per-scenario over-persistence (34h
+>   for 318/820 scenarios), **not** "didn't dispatch". Fixed in v0.1.206 via per-model
+>   step budget (Sonnet/Opus = 30 steps) + repeated-error early termination.
+> - **All v0.1.202 defended runs**: YAML crash at scenario 404 due to a corrupt
+>   `turns.yml` containing `*** End Patch`. Fixed in v0.1.207 via per-scenario try/except
+>   plus removal of the corrupt line.
+>
+> This plan's Stage 0 verify (`AGENT_MODELS` registration check) was the wrong question;
+> Stage 1's local smoke-budget assumption (`total_steps < 30 on at least 5 of 10`)
+> contradicts the actual fix (Sonnet/Opus capped at 30, others at 80); H3's framing
+> ("Sonnet 4.6 FAILED rate 40--60%") is not the right falsifier because Opus 4.7's
+> 98% FAILED was an API error, not behavioural unclassifiability.
+>
+> **For the live status of the bedt5–bedt8 re-runs**, see the "In-progress re-runs
+> (v0.1.207)" table at the bottom of `docs/test24-findings-2026-04-28.md`. **For the
+> §3.8 paper-text framing the completed re-runs will support**, see Findings 6, 7, 8
+> in the same doc.
+>
+> The plan content below is preserved verbatim as a record of what we believed when
+> we wrote it. Do not act on its execution sections.
+
+---
+
 **Date:** 2026-04-28
 **Predecessor:** Test 24 (`docs/test-plan-mt-agentrisk-2026-04-26.md`); findings note `docs/test24-findings-2026-04-28.md`.
 **Issue:** Test 24's Fargate dispatch covered four models (`haiku-4.5`, `gpt-4o-mini`, `opus-4.7`, `qwen3-coder`) but **Sonnet 4.6** — the most paper-comparable Anthropic row to the source paper's headline Claude 4.5 Sonnet number — never produced real data. Only a stub directory exists at `results/test24/sonnet-{baseline,defended}/test24-sonnet-4.6-{none,intent-tracker}/` with seven placeholder files containing all-zero summaries.
