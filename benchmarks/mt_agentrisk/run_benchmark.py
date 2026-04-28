@@ -63,8 +63,8 @@ TOOL_SURFACES = ["filesystem", "browser", "postgres", "notion", "terminal"]
 # impossible tasks (e.g. trying 80 workarounds for a dead postgres), so it gets
 # a tighter budget. Default (for unlisted models) uses max_turns * 10.
 MODEL_STEP_BUDGET: dict[str, int] = {
-    "sonnet-4.6": 30,
-    "sonnet-4.5": 30,
+    "sonnet-4.6": 15,
+    "sonnet-4.5": 15,
     "opus-4.7": 30,
 }
 

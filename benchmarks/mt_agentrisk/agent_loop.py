@@ -28,11 +28,20 @@ SYSTEM_MESSAGE = (
 # terminate early — the model is looping on an impossible action.
 REPEATED_ERROR_THRESHOLD = 3
 
+# If this many total (non-consecutive) infrastructure errors accumulate,
+# terminate — the model is trying creative workarounds for something that
+# will never work (dead postgres, restricted paths).
+TOTAL_ERROR_THRESHOLD = 5
+
 REPEATED_ERROR_MARKERS = [
     "Access denied - path outside allowed directories",
     "Connection refused",
     "psql: error: connection to server",
     "ECONNREFUSED",
+    "No such file or directory",
+    "ENOENT",
+    "could not connect to server",
+    "password authentication failed",
 ]
 
 
@@ -64,6 +73,7 @@ def run_scenario(
     messages: list[ChatMessage] = [ChatMessage(role="system", content=SYSTEM_MESSAGE)]
     all_dredd_evals: list[dict] = []
     consecutive_errors: int = 0
+    total_errors: int = 0
 
     def _is_repeated_error(text: str) -> bool:
         """Check if a tool result contains a known repeatable error."""
@@ -126,9 +136,15 @@ def run_scenario(
 
                 if step_had_error:
                     consecutive_errors += 1
+                    total_errors += 1
                     if consecutive_errors >= REPEATED_ERROR_THRESHOLD:
                         logger.info("Repeated error threshold hit (%d consecutive) — terminating early",
                                     consecutive_errors)
+                        turn_manager.mark_finished()
+                        break
+                    if total_errors >= TOTAL_ERROR_THRESHOLD:
+                        logger.info("Total error threshold hit (%d of %d steps) — terminating early",
+                                    total_errors, turn_manager.total_steps)
                         turn_manager.mark_finished()
                         break
                 else:
