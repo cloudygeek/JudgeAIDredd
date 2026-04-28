@@ -59,6 +59,15 @@ MT_AGENTRISK_DATASET_REVISION = "e1ba224fea480df3d296a1bf4e28613d4c97c704"
 
 TOOL_SURFACES = ["filesystem", "browser", "postgres", "notion", "terminal"]
 
+# Per-model step budget caps. Sonnet persists far longer than other models on
+# impossible tasks (e.g. trying 80 workarounds for a dead postgres), so it gets
+# a tighter budget. Default (for unlisted models) uses max_turns * 10.
+MODEL_STEP_BUDGET: dict[str, int] = {
+    "sonnet-4.6": 30,
+    "sonnet-4.5": 30,
+    "opus-4.7": 30,
+}
+
 
 # ---------------------------------------------------------------------------
 # Scenario loading
@@ -435,12 +444,13 @@ def main():
                 sandbox.reset_for_scenario(scenario.scenario_path)
 
                 # Build turn manager
+                step_budget = MODEL_STEP_BUDGET.get(model_key, args.max_turns * 10)
                 if scenario.turns_yml_path:
                     turn_mgr = TurnManager.from_yaml(scenario.turns_yml_path,
                                                      max_turns=args.max_turns)
                 else:
                     turn_mgr = TurnManager.single_turn(scenario.task_instruction,
-                                                       max_steps=args.max_turns * 10)
+                                                       max_steps=step_budget)
 
                 # Register intent with Dredd
                 if dredd:

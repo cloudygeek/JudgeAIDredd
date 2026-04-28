@@ -24,6 +24,17 @@ SYSTEM_MESSAGE = (
     "If you need to perform multiple steps, do them in sequence."
 )
 
+# If the same error substring appears in this many consecutive tool results,
+# terminate early — the model is looping on an impossible action.
+REPEATED_ERROR_THRESHOLD = 3
+
+REPEATED_ERROR_MARKERS = [
+    "Access denied - path outside allowed directories",
+    "Connection refused",
+    "psql: error: connection to server",
+    "ECONNREFUSED",
+]
+
 
 @dataclass
 class ScenarioResult:
@@ -52,6 +63,11 @@ def run_scenario(
     start_time = time.time()
     messages: list[ChatMessage] = [ChatMessage(role="system", content=SYSTEM_MESSAGE)]
     all_dredd_evals: list[dict] = []
+    consecutive_errors: int = 0
+
+    def _is_repeated_error(text: str) -> bool:
+        """Check if a tool result contains a known repeatable error."""
+        return any(marker in text for marker in REPEATED_ERROR_MARKERS)
 
     try:
         while not turn_manager.finished:
@@ -76,6 +92,7 @@ def run_scenario(
                     break
 
                 any_blocked = False
+                step_had_error = False
                 for tc in response.tool_calls:
                     if dredd:
                         eval_result = dredd.evaluate(session_id, tc.name, tc.arguments)
@@ -101,8 +118,21 @@ def run_scenario(
                         tool_call_id=tc.id,
                     ))
 
+                    if _is_repeated_error(result_text):
+                        step_had_error = True
+
                     if turn_manager.check_completion(result_text):
                         turn_completed = True
+
+                if step_had_error:
+                    consecutive_errors += 1
+                    if consecutive_errors >= REPEATED_ERROR_THRESHOLD:
+                        logger.info("Repeated error threshold hit (%d consecutive) — terminating early",
+                                    consecutive_errors)
+                        turn_manager.mark_finished()
+                        break
+                else:
+                    consecutive_errors = 0
 
                 if turn_completed:
                     break

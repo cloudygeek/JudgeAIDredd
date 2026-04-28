@@ -184,6 +184,9 @@ def _parse_bedrock_response(response: dict) -> ChatMessage:
 # Bedrock Anthropic client (Claude models via Bedrock Converse API)
 # ---------------------------------------------------------------------------
 
+MODELS_NO_TEMPERATURE = {"eu.anthropic.claude-opus-4-7"}
+
+
 class BedrockAnthropicClient:
     """Claude models via Bedrock Converse API (same wire format as BedrockConverseClient)."""
 
@@ -203,10 +206,13 @@ class BedrockAnthropicClient:
 
     def chat(self, messages: list[ChatMessage], tools: list[ToolDef]) -> ChatMessage:
         system_prompt, bedrock_messages = _messages_to_bedrock(messages)
+        inference_config: dict[str, Any] = {"maxTokens": self.max_tokens}
+        if self.model_id not in MODELS_NO_TEMPERATURE:
+            inference_config["temperature"] = self.temperature
         kwargs: dict[str, Any] = {
             "modelId": self.model_id,
             "messages": bedrock_messages,
-            "inferenceConfig": {"maxTokens": self.max_tokens, "temperature": self.temperature},
+            "inferenceConfig": inference_config,
         }
         if system_prompt:
             kwargs["system"] = system_prompt
