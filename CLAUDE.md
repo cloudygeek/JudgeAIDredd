@@ -97,6 +97,7 @@ cp <project>/fargate/docker-entrypoint-test20.sh ./docker-entrypoint-test20.sh
 cp <project>/fargate/docker-entrypoint-test21.sh ./docker-entrypoint-test21.sh
 cp <project>/fargate/docker-entrypoint-test23.sh ./docker-entrypoint-test23.sh
 cp <project>/fargate/docker-entrypoint-test24.sh ./docker-entrypoint-test24.sh
+cp <project>/fargate/docker-entrypoint-test22.sh ./docker-entrypoint-test22.sh
 cp <project>/fargate/docker-entrypoint-test25.sh ./docker-entrypoint-test25.sh
 
 # AgentDojo benchmark (Python) — vendored into the image
@@ -191,6 +192,7 @@ Session logs go to `$DATA_DIR/sessions/`, console logs to `$DATA_DIR/logs/`. Bot
 | `fargate/docker-entrypoint-test18.sh` | Test 18: T3e Exfiltration Under Recommended Pipeline |
 | `fargate/docker-entrypoint-test20.sh` | Test 20: AgentDojo Cross-Vendor with Qwen3 (Bedrock) |
 | `fargate/docker-entrypoint-test21.sh` | Test 21: AgentDojo with Anthropic Claude as Defended Agent |
+| `fargate/docker-entrypoint-test22.sh` | Test 22: P14 Cross-Technique Generalisation (T4 + T5) |
 | `fargate/docker-entrypoint-test23.sh` | Test 23: T3e Cross-Vendor with Qwen3 (Bedrock Converse) |
 | `fargate/docker-entrypoint-test24.sh` | Test 24: MT-AgentRisk Multi-Turn Tool-Grounded Safety Benchmark |
 | `fargate/docker-entrypoint-test25.sh` | Test 25: AgentLAB Long-Horizon Cross-Vendor Smoke |

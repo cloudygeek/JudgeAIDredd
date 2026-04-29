@@ -44,6 +44,7 @@ const ENTRYPOINTS = {
   "18": "/docker-entrypoint-test18.sh",
   "20": "/docker-entrypoint-test20.sh",
   "21": "/docker-entrypoint-test21.sh",
+  "22": "/docker-entrypoint-test22.sh",
   "23": "/docker-entrypoint-test23.sh",
   "24": "/docker-entrypoint-test24.sh",
   "25": "/docker-entrypoint-test25.sh",
