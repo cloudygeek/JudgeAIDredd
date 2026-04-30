@@ -35,6 +35,7 @@ COPY tsconfig.json ./
 COPY src/ ./src/
 COPY scenarios/ ./scenarios/
 COPY workspace-template/ ./workspace-template/
+COPY scripts/ ./scripts/
 
 # ── AgentDojo benchmark (Python) ────────────────────────────────────────────
 # All wheels are vendored in the zip (no network access to PyPI needed).
