@@ -83,22 +83,8 @@ cd /tmp && rm -rf dredd-rezip && mkdir dredd-rezip && cd dredd-rezip
 cp -r <project>/src <project>/scenarios <project>/workspace-template \
       <project>/package.json <project>/package-lock.json <project>/tsconfig.json .
 
-# Entrypoints (flat layout — all sit at zip root)
-cp <project>/fargate/docker-entrypoint.sh      ./docker-entrypoint.sh
-cp <project>/fargate/docker-entrypoint-test1.sh ./docker-entrypoint-test1.sh
-cp <project>/fargate/docker-entrypoint-test3.sh ./docker-entrypoint-test3.sh
-cp <project>/fargate/docker-entrypoint-test3a.sh ./docker-entrypoint-test3a.sh
-cp <project>/fargate/docker-entrypoint-test4.sh ./docker-entrypoint-test4.sh
-cp <project>/fargate/docker-entrypoint-test8.sh ./docker-entrypoint-test8.sh
-cp <project>/fargate/docker-entrypoint-test9.sh ./docker-entrypoint-test9.sh
-cp <project>/fargate/docker-entrypoint-test9a.sh ./docker-entrypoint-test9a.sh
-cp <project>/fargate/docker-entrypoint-test12.sh ./docker-entrypoint-test12.sh
-cp <project>/fargate/docker-entrypoint-test20.sh ./docker-entrypoint-test20.sh
-cp <project>/fargate/docker-entrypoint-test21.sh ./docker-entrypoint-test21.sh
-cp <project>/fargate/docker-entrypoint-test23.sh ./docker-entrypoint-test23.sh
-cp <project>/fargate/docker-entrypoint-test24.sh ./docker-entrypoint-test24.sh
-cp <project>/fargate/docker-entrypoint-test22.sh ./docker-entrypoint-test22.sh
-cp <project>/fargate/docker-entrypoint-test25.sh ./docker-entrypoint-test25.sh
+# Entrypoints (flat layout — all sit at zip root; glob copies all current+future)
+cp <project>/fargate/docker-entrypoint*.sh ./
 
 # AgentDojo benchmark (Python) — vendored into the image
 cp -r <project>/benchmarks ./benchmarks

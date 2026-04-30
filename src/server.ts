@@ -579,14 +579,19 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     if (!registeredSessions.has(session_id)) {
       const projectRoot = tracker.getProjectRoot(session_id);
       const policyOnly = (await import("./tool-policy.js")).evaluateToolPolicy(tool_name, tool_input ?? {}, projectRoot);
+      const noGoalDetail = transcriptContent
+        ? "backfill from transcript content failed"
+        : transcript_path
+          ? "backfill from transcript file failed"
+          : "no transcript provided";
       if (policyOnly.decision === "deny" && !isLearn) {
         return json(res, 200, {
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
             permissionDecision: "deny",
-            permissionDecisionReason: `Judge Dredd (no goal): ${policyOnly.reason}`,
+            permissionDecisionReason: `Judge Dredd (no goal, ${noGoalDetail}): ${policyOnly.reason}`,
           },
-          _meta: { allowed: false, stage: "policy-deny", reason: policyOnly.reason },
+          _meta: { allowed: false, stage: "policy-deny", reason: policyOnly.reason, noGoalDetail },
         });
       }
       // Allow — no goal to drift from, policy didn't deny
@@ -594,9 +599,9 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "allow",
-          permissionDecisionReason: "Judge Dredd: no goal registered yet, policy allows",
+          permissionDecisionReason: `Judge Dredd: no goal registered (${noGoalDetail}), policy allows`,
         },
-        _meta: { allowed: true, stage: "no-goal-allow", reason: "No goal registered, policy allows" },
+        _meta: { allowed: true, stage: "no-goal-allow", reason: "No goal registered, policy allows", noGoalDetail },
       });
     }
   }

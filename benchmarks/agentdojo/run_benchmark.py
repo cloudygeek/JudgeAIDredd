@@ -87,6 +87,33 @@ def _patch_openai_retry():
         print(f"warning: could not patch openai retry: {e}", file=sys.stderr)
 
 
+def _patch_anthropic_temperature():
+    """Opus 4.7 rejects the `temperature` parameter. Patch chat_completion_request
+    to omit temperature for models that don't support it."""
+    try:
+        from agentdojo.agent_pipeline.llms import anthropic_llm
+        from anthropic import NOT_GIVEN
+
+        _original_ccr = anthropic_llm.chat_completion_request
+
+        async def patched_ccr(client, model, messages, tools, max_tokens,
+                              system_prompt=None, temperature=0.0,
+                              thinking_budget_tokens=None):
+            if "opus-4-7" in model or "opus-4-7" in str(getattr(client, '_model', '')):
+                temperature = None
+            return await _original_ccr(
+                client, model, messages, tools, max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                thinking_budget_tokens=thinking_budget_tokens,
+            )
+
+        anthropic_llm.chat_completion_request = patched_ccr
+    except Exception as e:
+        print(f"warning: could not patch anthropic temperature: {e}", file=sys.stderr)
+
+
+_patch_anthropic_temperature()
 _patch_openai_retry()
 _patch_openai_tool_call_decode()
 
