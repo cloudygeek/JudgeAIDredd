@@ -63,14 +63,19 @@ echo ""
 echo ">>> Checking for T3e and MT-AgentRisk result files..."
 
 # Pull down result files from S3 if not already present locally
-# Test 26 needs results from tests 18/19/23 (T3e) and test24 (MT-AgentRisk)
-for prefix in test18-t19 test23-s3 test24; do
-    if [ ! -d "results/${prefix}" ]; then
-        echo "  Pulling results/${prefix} from S3..."
-        aws s3 sync "s3://${S3_BUCKET}/${prefix}/" "results/${prefix}/" \
+# Test 26 needs results from tests 18/23 (T3e) and test24 (MT-AgentRisk)
+# S3 prefixes: test18/, test23/, test24/
+# Local paths: results/test18-t19/, results/test23-s3/, results/test24/
+# (script searches results/**/t3e-*.json recursively)
+declare -A S3_MAP=( ["test18"]="results/test18-t19" ["test23"]="results/test23-s3" ["test24"]="results/test24" )
+for s3prefix in test18 test23 test24; do
+    local_dir="${S3_MAP[$s3prefix]}"
+    if [ ! -d "${local_dir}" ]; then
+        echo "  Pulling s3://${S3_BUCKET}/${s3prefix}/ → ${local_dir}/..."
+        aws s3 sync "s3://${S3_BUCKET}/${s3prefix}/" "${local_dir}/" \
             --region "${S3_REGION}" 2>/dev/null || true
     else
-        echo "  results/${prefix} already present"
+        echo "  ${local_dir} already present"
     fi
 done
 
