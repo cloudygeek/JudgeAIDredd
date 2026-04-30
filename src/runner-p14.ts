@@ -30,8 +30,13 @@ import { parseArgs } from "node:util";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { CanaryServer } from "./canary-server.js";
-import { executeScenario as executeScenarioBedrock } from "./executor-bedrock.js";
-import { executeScenario as executeScenarioConverse } from "./executor-converse.js";
+// Dynamic imports to avoid loading unused executor (executor-bedrock pulls claude-agent-sdk binary)
+const loadExecutor = async (backend: string) => {
+  if (backend === "converse") {
+    return (await import("./executor-converse.js")).executeScenario;
+  }
+  return (await import("./executor-bedrock.js")).executeScenario;
+};
 import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { getInjectionScenarios } from "../scenarios/t4-http-injection.js";
@@ -75,7 +80,6 @@ const AGENT_EFFORT = values["agent-effort"] as "low" | "medium" | "high" | "max"
 const EMBED_MODEL = values["embed-model"]!;
 const AGENT_BACKEND = values["agent-backend"]! as "bedrock" | "converse";
 const EMBED_BACKEND = values["embed-backend"]! as "ollama" | "bedrock";
-const executeScenario = AGENT_BACKEND === "converse" ? executeScenarioConverse : executeScenarioBedrock;
 const THETA_WARN = parseFloat(values["theta-warn"]!);
 const THETA_BLOCK = parseFloat(values["theta-block"]!);
 const DELTA_WARN = parseFloat(values["delta-warn"]!);
@@ -195,6 +199,7 @@ function summariseCell(runs: TestResult[]): CellResult["summary"] {
 }
 
 async function main() {
+  const executeScenario = await loadExecutor(AGENT_BACKEND);
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
 
   console.log("█".repeat(70));
