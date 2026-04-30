@@ -77,30 +77,82 @@ def agg_test18(root: Path) -> None:
     print()
 
 
+def _scan_scenarios(root: Path) -> dict[tuple[str, str, str], dict]:
+    """Scan per-scenario JSONs under root and return per-(model, arm, suite) stats.
+
+    Returns {(model, arm, suite): {"sec_n": int, "sec_fail": int, "util_n": int, "util_pass": int}}.
+    Each per-scenario JSON has fields: security (bool), utility (bool), suite_name.
+    """
+    MODEL_MAP = {
+        "claude-3-opus-20240229": "eu.anthropic.claude-opus-4-7",
+        "claude-3-5-sonnet-20241022": "eu.anthropic.claude-sonnet-4-6",
+        "gpt-4o-2024-05-13": None,  # resolved from cell dir name
+    }
+    cells: dict[tuple[str, str, str], dict] = {}
+    for cell_dir in sorted(root.iterdir()):
+        if not cell_dir.is_dir() or not cell_dir.name.startswith("agentdojo-"):
+            continue
+        name = cell_dir.name.removeprefix("agentdojo-")
+        if name.endswith("-baseline"):
+            arm = "baseline"
+            model_slug = name[:-9]
+        elif name.endswith("-B7.1-office"):
+            arm = "defended"
+            model_slug = name[:-12]
+        else:
+            continue
+        for scenario_json in cell_dir.rglob("injection_task_*.json"):
+            if "summary" in scenario_json.name:
+                continue
+            try:
+                d = json.load(open(scenario_json))
+            except Exception:
+                continue
+            suite = d.get("suite_name")
+            if not suite:
+                continue
+            pipeline = d.get("pipeline_name", "")
+            model = MODEL_MAP.get(pipeline.replace("-dredd-B7.1", ""))
+            if model is None:
+                if "qwen3-235b" in model_slug:
+                    model = "qwen.qwen3-235b-a22b-2507-v1:0"
+                elif "qwen3-32b" in model_slug:
+                    model = "qwen.qwen3-32b-v1:0"
+                else:
+                    model = model_slug
+            key = (model, arm, suite)
+            stats = cells.setdefault(key, {"sec_n": 0, "atk_succ": 0, "util_n": 0, "util_pass": 0})
+            if d.get("security") is not None:
+                stats["sec_n"] += 1
+                # security=True means injected task succeeded (attack success)
+                if d["security"]:
+                    stats["atk_succ"] += 1
+            if d.get("utility") is not None:
+                stats["util_n"] += 1
+                if d["utility"]:
+                    stats["util_pass"] += 1
+    return cells
+
+
 def agg_test20_21(root: Path, label: str) -> None:
-    """Test 20/21 — AgentDojo important_instructions. summary-*.json schema."""
+    """Test 20/21 — AgentDojo important_instructions. Scans per-scenario JSONs."""
     print("=" * 88)
     print(f"{label} — {root}")
     print("=" * 88)
     print(f"{'Model':<32} {'Arm':<10} {'Suite':<11} {'sec_N':>6} {'ASR':>6}  {'CI':>16}  {'util':>6}")
-    by_model: dict[tuple, dict] = {}
-    for f in sorted(glob(str(root / "**/summary-*.json"), recursive=True)):
-        try:
-            d = json.load(open(f))
-        except Exception:
-            continue
-        arm = "baseline" if d["defense"] == "none" else "defended"
-        for s in d["suites"]:
-            asr = s["asr"]; util = s["utility"]
-            lo, hi = wilson(asr, s["security_n"])
-            print(f"  {d['model']:<30} {arm:<10} {s['suite']:<11} "
-                  f"{s['security_n']:>6} {100*asr:>5.1f}%  [{lo:>4.1f},{hi:>5.1f}]  {100*util:>5.1f}%")
-        # Weighted aggregate
-        sec = sum(s["security_n"] for s in d["suites"])
-        asr_succ = sum(s["asr"] * s["security_n"] for s in d["suites"])
-        util_total = sum(s["utility_n"] for s in d["suites"])
-        util_w = sum(s["utility"] * s["utility_n"] for s in d["suites"]) / util_total
-        by_model.setdefault(d["model"], {})[arm] = (asr_succ / sec, sec, util_w)
+    cells = _scan_scenarios(root)
+    by_model: dict[str, dict] = {}
+    for (model, arm, suite) in sorted(cells):
+        s = cells[(model, arm, suite)]
+        sec_n = s["sec_n"]; atk = s["atk_succ"]
+        asr = atk / sec_n if sec_n else 0
+        util = s["util_pass"] / s["util_n"] if s["util_n"] else 0
+        lo, hi = wilson(asr, sec_n)
+        print(f"  {model:<30} {arm:<10} {suite:<11} "
+              f"{sec_n:>6} {100*asr:>5.1f}%  [{lo:>4.1f},{hi:>5.1f}]  {100*util:>5.1f}%")
+        ma = by_model.setdefault(model, {}).setdefault(arm, {"sec": 0, "atk_succ": 0, "util_n": 0, "util_pass": 0})
+        ma["sec"] += sec_n; ma["atk_succ"] += atk
+        ma["util_n"] += s["util_n"]; ma["util_pass"] += s["util_pass"]
 
     print()
     print("Weighted aggregate:")
@@ -108,12 +160,14 @@ def agg_test20_21(root: Path, label: str) -> None:
     for m in sorted(by_model):
         b = by_model[m].get("baseline"); df = by_model[m].get("defended")
         if b:
-            asr, n, u = b
-            print(f"  {m:<30} {'baseline':<10} {100*asr:>6.2f}%  {fmt_pct(asr,n)[6:]:>16}  {100*u:>6.1f}%")
+            asr = b["atk_succ"] / b["sec"] if b["sec"] else 0
+            u = b["util_pass"] / b["util_n"] if b["util_n"] else 0
+            print(f"  {m:<30} {'baseline':<10} {100*asr:>6.2f}%  {fmt_pct(asr,b['sec'])[6:]:>16}  {100*u:>6.1f}%")
         if df:
-            asr, n, u = df
-            delta = 100*(asr - b[0]) if b else 0
-            print(f"  {m:<30} {'defended':<10} {100*asr:>6.2f}%  {fmt_pct(asr,n)[6:]:>16}  {100*u:>6.1f}%  {delta:>+11.1f}pp")
+            asr_d = df["atk_succ"] / df["sec"] if df["sec"] else 0
+            u_d = df["util_pass"] / df["util_n"] if df["util_n"] else 0
+            delta = 100*(asr_d - (b["atk_succ"]/b["sec"] if b and b["sec"] else 0))
+            print(f"  {m:<30} {'defended':<10} {100*asr_d:>6.2f}%  {fmt_pct(asr_d,df['sec'])[6:]:>16}  {100*u_d:>6.1f}%  {delta:>+11.1f}pp")
     print()
 
 
