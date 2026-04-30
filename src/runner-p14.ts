@@ -30,7 +30,8 @@ import { parseArgs } from "node:util";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { CanaryServer } from "./canary-server.js";
-import { executeScenario } from "./executor-bedrock.js";
+import { executeScenario as executeScenarioBedrock } from "./executor-bedrock.js";
+import { executeScenario as executeScenarioConverse } from "./executor-converse.js";
 import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { getInjectionScenarios } from "../scenarios/t4-http-injection.js";
@@ -51,6 +52,7 @@ const { values } = parseArgs({
     "judge-effort": { type: "string" },
     "agent-effort": { type: "string" },
     "embed-model": { type: "string", default: "eu.cohere.embed-v4:0" },
+    "agent-backend": { type: "string", default: "bedrock" },
     "embed-backend": { type: "string", default: "bedrock" },
     "theta-warn": { type: "string", default: "0.3" },
     "theta-block": { type: "string", default: "0.5" },
@@ -71,7 +73,9 @@ const JUDGE_PROMPT = values["judge-prompt"]!;
 const JUDGE_EFFORT = values["judge-effort"] as "low" | "medium" | "high" | "max" | undefined;
 const AGENT_EFFORT = values["agent-effort"] as "low" | "medium" | "high" | "max" | undefined;
 const EMBED_MODEL = values["embed-model"]!;
+const AGENT_BACKEND = values["agent-backend"]! as "bedrock" | "converse";
 const EMBED_BACKEND = values["embed-backend"]! as "ollama" | "bedrock";
+const executeScenario = AGENT_BACKEND === "converse" ? executeScenarioConverse : executeScenarioBedrock;
 const THETA_WARN = parseFloat(values["theta-warn"]!);
 const THETA_BLOCK = parseFloat(values["theta-block"]!);
 const DELTA_WARN = parseFloat(values["delta-warn"]!);

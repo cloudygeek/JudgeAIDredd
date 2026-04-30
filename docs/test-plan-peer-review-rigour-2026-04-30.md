@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-30
 **Predecessor:** Fourth-pass peer review (`Cloud-Security/Adrian/p15/PEER_REVIEW_2026-04-30.md`); the post-review banner downgrades the recommendation from Major to Moderate revisions after Tests 20/21 re-aggregation closed M1 / Q1 / Q6, but six major comments remain. **Two of those six (M2 and M4) require new runs to resolve;** four (M3, M5, M6, M7, M8) can be addressed editorially in Round A. This plan covers the two run-requiring items.
-**Status:** Ready to dispatch. Both sub-tests reuse existing executors and require no new engineering.
+**Status:** Ready to dispatch after `src/dual-grade.ts` wrapper (Test 26 Stage 1). Test 27 requires no new engineering (converse backend support added to `runner-p14.ts`).
 
 ## What this plan dispatches
 
@@ -179,8 +179,8 @@ Total: 1 model × 2 techniques × 4 arms × 75 reps = **600 runs** if matching T
 ### Stage 0 — Verify Test 22 runner accepts Qwen models (~10 min, $0)
 
 ```bash
-grep -E 'qwen|MODELS' /Users/adrian/IdeaProjects/JudgeAIDredd/src/runner-p14.ts | head
-grep 'qwen' /Users/adrian/IdeaProjects/JudgeAIDredd/fargate/docker-entrypoint-test22.sh
+grep -E 'qwen|MODELS' src/runner-p14.ts | head
+grep 'qwen' fargate/docker-entrypoint-test22.sh
 ```
 
 If Qwen3 235B A22B is not in the model map, add it (~5 lines in `runner-p14.ts`). Otherwise proceed.
@@ -193,6 +193,7 @@ AWS_REGION=eu-central-1 \
     --models qwen3-235b \
     --techniques T4 \
     --defences C4-baseline \
+    --agent-backend converse \
     --reps 5 \
     --output-dir results/test27-smoke/
 ```
@@ -210,6 +211,7 @@ AWS_REGION=eu-central-1 \
     --models qwen3-235b \
     --techniques T4,T5 \
     --defences C4-baseline,C4-judge,C1-baseline,C1-judge \
+    --agent-backend converse \
     --reps 25 \
     --output-dir results/test27/
 ```
@@ -258,7 +260,7 @@ Budget cap: $20.
 
 - **Bedrock access** for Qwen3 235B A22B in `eu-central-1` (already present from Tests 20 + 23).
 - **OpenAI API key** for the GPT-4o-mini judge (already present from Test 17 / §3.8 GPT-4o-mini runs).
-- **`runner-p14.ts`** with Qwen support (Stage 0 verifies; ~5 lines if missing).
+- **`runner-p14.ts`** with `--agent-backend converse` support (added; Qwen model map in `executor-converse.ts`).
 - **`src/dual-grade.ts`** wrapper for the cross-judge call (~half-day to write if not present).
 
 ## Output expectations

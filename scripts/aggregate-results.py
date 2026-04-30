@@ -15,6 +15,7 @@ correspond to known schemas:
   23      T3e cross-vendor. dict-with-runs schema.
   24      MT-AgentRisk. per-trajectory JSONs with judge.mt_agentrisk.label.
   25      AgentLAB. dict-with-trajectories schema; attackSucceeded field.
+  27      Qwen3 235B on T4+T5 (peer-review M4). Same schema as Test 22.
 
 All Wilson 95% CIs use the standard formula. ASR is reported with the
 attack-class-appropriate metric (hijackSucceeded / exfiltrationDetected /
@@ -276,6 +277,7 @@ DISPATCH = {
     "23": (lambda: agg_test18(Path("results/test23-s3"))),
     "24": (lambda: agg_test24(Path("results/test24"))),
     "25": (lambda: agg_test25(Path("results/test25-fix"))),
+    "27": (lambda: agg_test22(Path("results/test27"))),
 }
 
 
