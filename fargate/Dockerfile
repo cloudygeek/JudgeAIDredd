@@ -48,6 +48,9 @@ RUN pip3 install --break-system-packages --no-index --find-links /tmp/python-whe
     && rm -rf /tmp/python-wheels/
 COPY benchmarks/ ./benchmarks/
 
+# ── Test 26 Python dependencies (cross-judge dual-grade) ───────────────────
+RUN pip3 install --break-system-packages numpy scikit-learn openai
+
 # ── MT-AgentRisk infrastructure (Test 24) ──────────────────────────────────
 # PostgreSQL for database-surface scenarios
 RUN apt-get update && apt-get install -y --no-install-recommends \
