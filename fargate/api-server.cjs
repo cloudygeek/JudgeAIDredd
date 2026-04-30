@@ -48,6 +48,8 @@ const ENTRYPOINTS = {
   "23": "/docker-entrypoint-test23.sh",
   "24": "/docker-entrypoint-test24.sh",
   "25": "/docker-entrypoint-test25.sh",
+  "26": "/docker-entrypoint-test26.sh",
+  "27": "/docker-entrypoint-test27.sh",
 };
 const DEFAULT_TEST = process.env.TEST_NUM || "7";
 const BUILD_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
