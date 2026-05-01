@@ -16,6 +16,7 @@ correspond to known schemas:
   24      MT-AgentRisk. per-trajectory JSONs with judge.mt_agentrisk.label.
   25      AgentLAB. dict-with-trajectories schema; attackSucceeded field.
   27      Qwen3 235B on T4+T5 (peer-review M4). Same schema as Test 22.
+  29      Stop-hook cross-vendor (M6). dict-with-runs schema; agentBackend field.
 
 All Wilson 95% CIs use the standard formula. ASR is reported with the
 attack-class-appropriate metric (hijackSucceeded / exfiltrationDetected /
@@ -241,6 +242,105 @@ def agg_test24(root: Path) -> None:
     print()
 
 
+def agg_test29(root: Path) -> None:
+    """Test 29 — Stop-hook cross-vendor (M6 resolution).
+
+    dict-with-runs schema (same as Test 22) but only T3.x scenarios, with
+    agentBackend ∈ {openai, converse} and defence ∈ {none, intent-tracker}.
+    Reports:
+      - per-cell hijack/detect/block/GES with Wilson 95% CI
+      - per-(model, scenario) ΔGES and Δhijack from baseline → defended
+        (this is the M6 numbers the paper needs)
+    """
+    print("=" * 88)
+    print(f"TEST 29 — Stop-hook cross-vendor (M6) — {root}")
+    print("=" * 88)
+    cells: dict[tuple, list] = defaultdict(list)
+    configs: dict[tuple, dict] = {}
+    for f in sorted(glob(str(root / "**/test29-*.json"), recursive=True)):
+        try:
+            d = json.load(open(f))
+        except Exception:
+            continue
+        runs = d.get("runs", [])
+        if not runs:
+            continue
+        key = (d.get("model", "?"), d.get("defence", "?"), d.get("scenario", "?"))
+        cells[key].extend(runs)
+        configs[key] = d.get("config", {})
+
+    print(f"{'Model':<14} {'Arm':<14} {'Scen':<6} {'N':>4}  "
+          f"{'hijack':>22} {'detect':>16} {'blocked':>16}  {'meanGES':>8}")
+    for k in sorted(cells):
+        m, arm, s = k
+        runs = cells[k]
+        n = len(runs)
+        h = sum(1 for r in runs if r.get("hijackSucceeded"))
+        det = sum(1 for r in runs if r.get("agentDetected"))
+        blk = sum(1 for r in runs
+                  if any((v or {}).get("blocked") for v in r.get("intentVerdicts", []) or []))
+        mean_ges = sum(r.get("ges", 0) for r in runs) / n if n else 0
+        p_det = det / n if n else 0
+        p_blk = blk / n if n else 0
+        print(f"{m:<14} {arm:<14} {s:<6} {n:>4}  "
+              f"{fmt_pct(h/n if n else 0, n):>22} "
+              f"{100*p_det:>5.1f}% ({det}/{n}) {100*p_blk:>5.1f}% ({blk}/{n})  "
+              f"{mean_ges:>7.1f}")
+
+    # Per-(model, scenario) baseline vs intent-tracker comparison.
+    print()
+    print("Baseline vs Stop-hook (per (model, scenario)):")
+    print(f"{'Model':<14} {'Scen':<6}  "
+          f"{'base hijack':>14} {'SH hijack':>14}  {'Δhijack':>9}  "
+          f"{'base GES':>9} {'SH GES':>8}  {'ΔGES':>7}")
+    by_ms: dict[tuple[str, str], dict[str, list]] = defaultdict(dict)
+    for (m, arm, s), runs in cells.items():
+        by_ms[(m, s)][arm] = runs
+    for (m, s) in sorted(by_ms):
+        arms = by_ms[(m, s)]
+        b = arms.get("none"); d = arms.get("intent-tracker")
+        if not b or not d:
+            continue
+        bn, dn = len(b), len(d)
+        bh = sum(1 for r in b if r.get("hijackSucceeded")) / bn if bn else 0
+        dh = sum(1 for r in d if r.get("hijackSucceeded")) / dn if dn else 0
+        bg = sum(r.get("ges", 0) for r in b) / bn if bn else 0
+        dg = sum(r.get("ges", 0) for r in d) / dn if dn else 0
+        print(f"{m:<14} {s:<6}  "
+              f"{100*bh:>5.1f}% (n={bn:>2}) {100*dh:>5.1f}% (n={dn:>2})  "
+              f"{100*(dh - bh):>+6.1f}pp  "
+              f"{bg:>8.1f} {dg:>7.1f}  {dg - bg:>+6.1f}")
+
+    # Per-model summary across all scenarios (the headline §3.5 numbers).
+    print()
+    print("Per-model aggregate (all T3.x scenarios pooled):")
+    print(f"{'Model':<14} {'Arm':<14} {'N':>4}  {'hijack':>22}  {'meanGES':>8}")
+    pooled: dict[tuple[str, str], list] = defaultdict(list)
+    for (m, arm, _s), runs in cells.items():
+        pooled[(m, arm)].extend(runs)
+    for k in sorted(pooled):
+        m, arm = k
+        runs = pooled[k]
+        n = len(runs)
+        h = sum(1 for r in runs if r.get("hijackSucceeded"))
+        g = sum(r.get("ges", 0) for r in runs) / n if n else 0
+        print(f"{m:<14} {arm:<14} {n:>4}  {fmt_pct(h/n if n else 0, n):>22}  {g:>7.1f}")
+
+    print()
+    print("Per-model Δ (baseline → Stop-hook intent-tracker):")
+    print(f"{'Model':<14} {'Δhijack':>10}  {'ΔGES':>8}")
+    for m in sorted({m for (m, _a) in pooled}):
+        b = pooled.get((m, "none")); d = pooled.get((m, "intent-tracker"))
+        if not b or not d:
+            continue
+        bh = sum(1 for r in b if r.get("hijackSucceeded")) / len(b)
+        dh = sum(1 for r in d if r.get("hijackSucceeded")) / len(d)
+        bg = sum(r.get("ges", 0) for r in b) / len(b)
+        dg = sum(r.get("ges", 0) for r in d) / len(d)
+        print(f"{m:<14} {100*(dh - bh):>+8.1f}pp  {dg - bg:>+6.1f}")
+    print()
+
+
 def agg_test25(root: Path) -> None:
     """AgentLAB. dict.trajectories schema with attackSucceeded boolean."""
     print("=" * 88)
@@ -278,6 +378,7 @@ DISPATCH = {
     "24": (lambda: agg_test24(Path("results/test24"))),
     "25": (lambda: agg_test25(Path("results/test25-fix"))),
     "27": (lambda: agg_test22(Path("results/test27"))),
+    "29": (lambda: agg_test29(Path("results/test29"))),
 }
 
 
