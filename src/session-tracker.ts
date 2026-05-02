@@ -126,6 +126,11 @@ export interface SessionState {
   projectRoot: string | null;
   /** CLAUDE.md scan results (if suspicious patterns found on session start) */
   claudeMdScan: import("./claudemd-scanner.js").ClaudeMdScanResult | null;
+  /** Number of times the judge has returned a "hijacked" verdict in autonomous mode */
+  hijackStrikes: number;
+  /** Once the strike threshold is hit, the session is locked: every subsequent
+   *  tool call is denied without running the pipeline. */
+  lockedHijacked: boolean;
 }
 
 export class SessionTracker {
@@ -155,6 +160,8 @@ export class SessionTracker {
         turnMetrics: [],
         projectRoot: null,
         claudeMdScan: null,
+        hijackStrikes: 0,
+        lockedHijacked: false,
       });
     }
     return this.sessions.get(sessionId)!;
@@ -360,6 +367,37 @@ export class SessionTracker {
    */
   getDriftDetector(sessionId: string): DriftDetector {
     return this.getSession(sessionId).driftDetector;
+  }
+
+  /**
+   * Record a "hijacked" judge verdict against a session and lock it if the
+   * configured strike threshold is reached. Once locked, every subsequent
+   * tool call should be denied without re-running the pipeline.
+   */
+  recordHijackStrike(sessionId: string, threshold: number): {
+    strikes: number;
+    locked: boolean;
+    justLocked: boolean;
+  } {
+    const session = this.getSession(sessionId);
+    const wasLocked = session.lockedHijacked;
+    session.hijackStrikes += 1;
+    if (!wasLocked && session.hijackStrikes >= threshold) {
+      session.lockedHijacked = true;
+    }
+    return {
+      strikes: session.hijackStrikes,
+      locked: session.lockedHijacked,
+      justLocked: !wasLocked && session.lockedHijacked,
+    };
+  }
+
+  isLocked(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.lockedHijacked ?? false;
+  }
+
+  getHijackStrikes(sessionId: string): number {
+    return this.sessions.get(sessionId)?.hijackStrikes ?? 0;
   }
 
   /**

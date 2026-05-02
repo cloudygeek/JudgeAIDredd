@@ -13,6 +13,7 @@ set -euo pipefail
 #   PORT              server port                   (default: 3000)
 #   DATA_DIR          base data directory           (default: /data)
 #   AWS_REGION        AWS region for Bedrock        (default: eu-west-2)
+#   HIJACK_THRESHOLD  strikes before autonomous lock (default: 2)
 
 MODE="${MODE:-interactive}"
 BACKEND="${BACKEND:-bedrock}"
@@ -22,6 +23,7 @@ HARDENED="${HARDENED:-B7.1}"
 JUDGE_EFFORT="${JUDGE_EFFORT:-}"
 PORT="${PORT:-3000}"
 DATA_DIR="${DATA_DIR:-/data}"
+HIJACK_THRESHOLD="${HIJACK_THRESHOLD:-2}"
 
 export AWS_REGION="${AWS_REGION:-eu-west-2}"
 
@@ -33,14 +35,15 @@ mkdir -p "$SESSION_DIR" "$LOG_DIR"
 echo "═══════════════════════════════════════════════════════"
 echo "  Judge AI Dredd — Standalone Server"
 echo "═══════════════════════════════════════════════════════"
-echo "  Mode:       $MODE"
-echo "  Backend:    $BACKEND"
-echo "  Judge:      $JUDGE_MODEL"
-echo "  Embedding:  $EMBEDDING_MODEL"
-echo "  Prompt:     $HARDENED"
-echo "  Port:       $PORT"
-echo "  Sessions:   $SESSION_DIR"
-echo "  Logs:       $LOG_DIR"
+echo "  Mode:           $MODE"
+echo "  Backend:        $BACKEND"
+echo "  Judge:          $JUDGE_MODEL"
+echo "  Embedding:      $EMBEDDING_MODEL"
+echo "  Prompt:         $HARDENED"
+echo "  Hijack lock:    $HIJACK_THRESHOLD strike(s)"
+echo "  Port:           $PORT"
+echo "  Sessions:       $SESSION_DIR"
+echo "  Logs:           $LOG_DIR"
 echo "═══════════════════════════════════════════════════════"
 
 ARGS=(
@@ -50,6 +53,7 @@ ARGS=(
   --judge-model "$JUDGE_MODEL"
   --embedding-model "$EMBEDDING_MODEL"
   --prompt "$HARDENED"
+  --hijack-threshold "$HIJACK_THRESHOLD"
   --log-dir "$SESSION_DIR"
   --console-log-dir "$LOG_DIR"
 )
