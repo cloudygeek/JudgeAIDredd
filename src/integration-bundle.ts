@@ -146,15 +146,32 @@ cp dredd-hook.sh ~/.claude/dredd/
 chmod +x ~/.claude/dredd/dredd-hook.sh
 \`\`\`
 
-## 2. Wire it up in ~/.claude/settings.json
+## 2. Wire up the hooks
 
-Either merge \`settings.json\` from this bundle into your existing
-\`~/.claude/settings.json\`, or — if you have no hooks yet — just copy it:
+Pick one scope:
+
+### Global — every Claude Code session on this machine
 
 \`\`\`bash
 mkdir -p ~/.claude
 cp settings.json ~/.claude/settings.json
 \`\`\`
+
+Merge the \`hooks\` and \`env\` sections manually if \`~/.claude/settings.json\`
+already exists.
+
+### Per-project — only inside one codebase
+
+\`\`\`bash
+cd /path/to/your/project
+mkdir -p .claude
+cp /tmp/dredd/settings.json .claude/settings.json
+\`\`\`
+
+Commit \`.claude/settings.json\` to share the integration with your team,
+or rename to \`.claude/settings.local.json\` (git-ignored by default) to
+keep it to yourself. If the file already exists, merge the \`hooks\` and
+\`env\` sections instead of overwriting.
 
 The script defaults to the URL above but respects \`$DREDD_URL\` if set.
 
