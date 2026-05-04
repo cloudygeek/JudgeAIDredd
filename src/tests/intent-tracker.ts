@@ -15,11 +15,11 @@
  */
 
 import { TurnLogger } from "./turn-logger.js";
-import { DriftDetector } from "./drift-detector.js";
-import { IntentJudge, type JudgeVerdict } from "./intent-judge.js";
-import { checkOllama, isBedrockModel } from "./ollama-client.js";
-import { checkBedrock } from "./bedrock-client.js";
-import type { TurnLog, IntentVerdict } from "./types.js";
+import { DriftDetector } from "../drift-detector.js";
+import { IntentJudge, type JudgeVerdict } from "../intent-judge.js";
+import { checkOllama, isBedrockModel } from "../ollama-client.js";
+import { checkBedrock } from "../bedrock-client.js";
+import type { TurnLog, IntentVerdict } from "../types.js";
 
 export interface IntentTrackerConfig {
   /** Embedding model for drift detection (default: nomic-embed-text) */
@@ -43,7 +43,7 @@ export interface IntentTrackerConfig {
   /** Reasoning effort for the LLM judge (low/medium/high/max) */
   judgeEffort?: "low" | "medium" | "high" | "max";
   /** Judge prompt variant: true/false for B7/standard, or "B7.1", "B7.1-office" */
-  hardened?: boolean | import("./intent-judge.js").PromptVariant;
+  hardened?: boolean | import("../intent-judge.js").PromptVariant;
 }
 
 const DEFAULTS: Required<IntentTrackerConfig> = {

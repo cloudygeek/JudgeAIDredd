@@ -37,8 +37,8 @@
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { SessionTracker } from "./session-tracker.js";
-import { PreToolInterceptor, type InterceptorConfig } from "./pretool-interceptor.js";
+import { SessionTracker } from "../session-tracker.js";
+import { PreToolInterceptor, type InterceptorConfig } from "../pretool-interceptor.js";
 
 export interface DefenceHooksConfig extends InterceptorConfig {
   /** Drift threshold from original task to inject systemMessage warning (default: 0.3) */

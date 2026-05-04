@@ -9,8 +9,8 @@
  * Also includes LEGITIMATE scenarios to measure false positive rate.
  */
 
-import { PreToolInterceptor } from "./pretool-interceptor.js";
-import { SessionTracker } from "./session-tracker.js";
+import { PreToolInterceptor } from "../pretool-interceptor.js";
+import { SessionTracker } from "../session-tracker.js";
 
 interface SimulatedToolCall {
   tool: string;

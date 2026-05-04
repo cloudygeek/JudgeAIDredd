@@ -76,7 +76,7 @@ for effort in "${EFFORTS[@]}"; do
     CONFIG_FLAG="--config ${CONFIG_FILTER}"
   fi
 
-  npx tsx src/test-pipeline-e2e.ts ${CONFIG_FLAG} ${EFFORT_FLAG} || {
+  npx tsx src/tests/test-pipeline-e2e.ts ${CONFIG_FLAG} ${EFFORT_FLAG} || {
     echo "  FAILED: effort=${effort}"
     continue
   }

@@ -160,7 +160,7 @@ run_combo() {
         local RUN_START
         RUN_START=$(date -u +%s)
 
-        if npx tsx src/runner-bedrock.ts \
+        if npx tsx src/tests/runner-bedrock.ts \
             --model        "${model}" \
             --scenario     "${scenario}" \
             --defence      "${defence}" \

@@ -148,7 +148,7 @@ for model in "${MODEL_LIST[@]}"; do
                 EFFORT_ARGS+=(--effort "${EFFORT}")
             fi
 
-            if npx tsx src/runner-bedrock.ts \
+            if npx tsx src/tests/runner-bedrock.ts \
                 --model        "${model}" \
                 --scenario     "${scenario}" \
                 --defence      "${defence}" \

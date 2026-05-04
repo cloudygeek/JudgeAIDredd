@@ -13,10 +13,10 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { detectCanaries } from "./turn-logger.js";
 import { CanaryServer } from "./canary-server.js";
-import type { InjectionScenario } from "../scenarios/t4-http-injection.js";
-import type { MultiStageScenario } from "../scenarios/t5-multistage.js";
-import type { ClaudeMdScenario } from "../scenarios/t6-claudemd-poisoning.js";
-import type { TurnLog, ToolCallLog } from "./types.js";
+import type { InjectionScenario } from "../../scenarios/t4-http-injection.js";
+import type { MultiStageScenario } from "../../scenarios/t5-multistage.js";
+import type { ClaudeMdScenario } from "../../scenarios/t6-claudemd-poisoning.js";
+import type { TurnLog, ToolCallLog } from "../types.js";
 import { mkdtempSync, cpSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

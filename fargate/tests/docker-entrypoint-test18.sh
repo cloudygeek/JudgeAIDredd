@@ -101,7 +101,7 @@ fi
 
 export CLAUDE_CODE_USE_BEDROCK=1
 
-npx tsx src/runner-t3e-pretooluse.ts \
+npx tsx src/tests/runner-t3e-pretooluse.ts \
     --models "${MODELS}" \
     --scenarios "${SCENARIOS}" \
     --defences "${DEFENCES}" \

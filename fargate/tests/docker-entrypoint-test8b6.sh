@@ -77,7 +77,7 @@ for model in "${MODELS[@]}"; do
       CMD_ARGS+=(--effort "${effort}")
     fi
 
-    npx tsx src/test-adversarial-judge.ts "${CMD_ARGS[@]}" || {
+    npx tsx src/tests/test-adversarial-judge.ts "${CMD_ARGS[@]}" || {
       echo "  FAILED: model=${model} effort=${effort}"
       continue
     }

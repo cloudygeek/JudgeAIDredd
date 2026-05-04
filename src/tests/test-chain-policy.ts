@@ -1,4 +1,4 @@
-import { evaluateToolPolicy, formatPolicyResult } from "./tool-policy.js";
+import { evaluateToolPolicy, formatPolicyResult } from "../tool-policy.js";
 
 const tests = [
   // Should ALLOW (all parts safe)

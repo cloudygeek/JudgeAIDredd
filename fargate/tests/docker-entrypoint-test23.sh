@@ -129,7 +129,7 @@ echo "════════════════════════�
 export AGENT_REGION
 export AWS_REGION="${JUDGE_REGION}"
 
-npx tsx src/runner-t3e-pretooluse.ts \
+npx tsx src/tests/runner-t3e-pretooluse.ts \
     --models "${MODELS}" \
     --scenarios "${SCENARIOS}" \
     --defences "${DEFENCES}" \

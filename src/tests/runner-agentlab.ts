@@ -35,9 +35,9 @@ import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { TurnLogger, detectCanaries } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
-import { PreToolInterceptor } from "./pretool-interceptor.js";
+import { PreToolInterceptor } from "../pretool-interceptor.js";
 import { createDefenceHooks } from "./sdk-hooks.js";
-import type { TurnLog, ToolCallLog, TestResult, IntentVerdict } from "./types.js";
+import type { TurnLog, ToolCallLog, TestResult, IntentVerdict } from "../types.js";
 
 interface InterceptionLog {
   turn: number;

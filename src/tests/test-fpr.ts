@@ -22,9 +22,9 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { executeScenario } from "./executor.js";
 import { IntentTracker } from "./intent-tracker.js";
-import { legitimateTasks, getLegitimateScenarios } from "../scenarios/legitimate-tasks.js";
-import { getBuildInfo } from "./build-info.js";
-import type { IntentVerdict } from "./types.js";
+import { legitimateTasks, getLegitimateScenarios } from "../../scenarios/legitimate-tasks.js";
+import { getBuildInfo } from "../build-info.js";
+import type { IntentVerdict } from "../types.js";
 
 const { values } = parseArgs({
   options: {

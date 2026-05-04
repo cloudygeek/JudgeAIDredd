@@ -40,12 +40,12 @@
 import { parseArgs } from "node:util";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { HijackScenario } from "../scenarios/t3-goal-hijacking.js";
-import { getScenarios } from "../scenarios/t3-goal-hijacking.js";
+import type { HijackScenario } from "../../scenarios/t3-goal-hijacking.js";
+import { getScenarios } from "../../scenarios/t3-goal-hijacking.js";
 import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
-import type { TestResult } from "./types.js";
-import { getBuildInfo } from "./build-info.js";
+import type { TestResult } from "../types.js";
+import { getBuildInfo } from "../build-info.js";
 
 // Dynamic executor load — avoids pulling in @anthropic-ai/claude-agent-sdk
 // when the test targets a non-Anthropic backend.

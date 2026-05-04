@@ -15,8 +15,8 @@
  *   twelvelabs.marengo-embed-2-7-v1:0  Marengo Embed 2.7 (us-east-1)
  */
 
-import { bedrockEmbed } from "./bedrock-client.js";
-import { cosineSimilarity } from "./ollama-client.js";
+import { bedrockEmbed } from "../bedrock-client.js";
+import { cosineSimilarity } from "../ollama-client.js";
 
 const REVIEW_THRESHOLD = 0.6;
 const DENY_THRESHOLD = 0.2;

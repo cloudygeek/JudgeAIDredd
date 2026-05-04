@@ -45,9 +45,9 @@ import { executeScenario as executeBedrockScenario } from "./executor-bedrock.js
 import { executeScenario as executeConverseScenario } from "./executor-converse.js";
 import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
-import { getExfilScenarios } from "../scenarios/t3e-goal-hijacking-exfil.js";
-import type { HijackScenario } from "../scenarios/t3-goal-hijacking.js";
-import type { TestResult } from "./types.js";
+import { getExfilScenarios } from "../../scenarios/t3e-goal-hijacking-exfil.js";
+import type { HijackScenario } from "../../scenarios/t3-goal-hijacking.js";
+import type { TestResult } from "../types.js";
 
 const { values } = parseArgs({
   options: {

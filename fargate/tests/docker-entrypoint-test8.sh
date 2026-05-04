@@ -101,7 +101,7 @@ for model in "${MODELS[@]}"; do
       CMD_ARGS+=(--b6)
     fi
 
-    npx tsx src/test-adversarial-judge.ts "${CMD_ARGS[@]}" || {
+    npx tsx src/tests/test-adversarial-judge.ts "${CMD_ARGS[@]}" || {
       echo "  FAILED: model=${model:-all} effort=${effort}"
       continue
     }

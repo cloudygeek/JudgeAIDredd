@@ -9,7 +9,7 @@
  * post-test analysis. No intervention — the hijack should succeed.
  */
 
-import { TurnLog, ToolCallLog, CANARY_PREFIXES, IntentVerdict } from "./types.js";
+import { TurnLog, ToolCallLog, CANARY_PREFIXES, IntentVerdict } from "../types.js";
 
 export class TurnLogger {
   private turns: TurnLog[] = [];

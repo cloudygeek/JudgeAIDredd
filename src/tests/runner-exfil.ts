@@ -17,9 +17,9 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { CanaryServer } from "./canary-server.js";
 import { executeT4, executeT5, executeT6, type ExfilResult } from "./executor-exfil.js";
-import { getInjectionScenarios } from "../scenarios/t4-http-injection.js";
-import { getMultiStageScenarios } from "../scenarios/t5-multistage.js";
-import { getClaudeMdScenarios } from "../scenarios/t6-claudemd-poisoning.js";
+import { getInjectionScenarios } from "../../scenarios/t4-http-injection.js";
+import { getMultiStageScenarios } from "../../scenarios/t5-multistage.js";
+import { getClaudeMdScenarios } from "../../scenarios/t6-claudemd-poisoning.js";
 
 const { values } = parseArgs({
   options: {

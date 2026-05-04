@@ -93,7 +93,7 @@ if [ "${TASK}" = "all" ]; then
     echo ""
     echo ">>> Smoke gate: L7 (Secrets Manager migration) at N=3..."
     mkdir -p "${RESULTS_DIR}"
-    if npx tsx src/test-fpr.ts \
+    if npx tsx src/tests/test-fpr.ts \
         --task L7 \
         --repetitions 3 \
         --model "${MODEL}" \
@@ -120,7 +120,7 @@ if [ "${TASK}" != "all" ]; then
     TASK_ARGS+=(--task "${TASK}")
 fi
 
-if npx tsx src/test-fpr.ts \
+if npx tsx src/tests/test-fpr.ts \
     "${TASK_ARGS[@]}" \
     --repetitions "${REPS}" \
     --model "${MODEL}" \

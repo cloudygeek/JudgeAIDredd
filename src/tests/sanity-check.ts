@@ -1,4 +1,4 @@
-import { embed, cosineSimilarity, chat, checkOllama } from "./ollama-client.js";
+import { embed, cosineSimilarity, chat, checkOllama } from "../ollama-client.js";
 
 async function main() {
   // Preflight

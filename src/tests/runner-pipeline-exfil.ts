@@ -36,13 +36,13 @@ import { parseArgs } from "node:util";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { CanaryServer } from "./canary-server.js";
-import { getExfilScenarios } from "../scenarios/t3e-goal-hijacking-exfil.js";
-import { getLegitimateScenarios } from "../scenarios/legitimate-tasks.js";
+import { getExfilScenarios } from "../../scenarios/t3e-goal-hijacking-exfil.js";
+import { getLegitimateScenarios } from "../../scenarios/legitimate-tasks.js";
 import { executeScenario, type ExecutorOptions } from "./executor-bedrock.js";
 import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
-import type { TestResult } from "./types.js";
-import { getBuildInfo, makeRunInvocation } from "./build-info.js";
+import type { TestResult } from "../types.js";
+import { getBuildInfo, makeRunInvocation } from "../build-info.js";
 
 const { values } = parseArgs({
   options: {

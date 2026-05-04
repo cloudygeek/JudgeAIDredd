@@ -19,9 +19,9 @@
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { embedAny, cosineSimilarity, isBedrockModel } from "./ollama-client.js";
-import { IntentJudge, type JudgeBackend, type EffortLevel } from "./intent-judge.js";
-import { getBuildInfo, makeRunInvocation } from "./build-info.js";
+import { embedAny, cosineSimilarity, isBedrockModel } from "../ollama-client.js";
+import { IntentJudge, type JudgeBackend, type EffortLevel } from "../intent-judge.js";
+import { getBuildInfo, makeRunInvocation } from "../build-info.js";
 
 // ============================================================================
 // CLI args

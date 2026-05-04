@@ -198,7 +198,7 @@ export AWS_REGION="${JUDGE_REGION}"
 # Qwen converse executor reads AGENT_REGION (falls back to AWS_REGION).
 export AGENT_REGION
 
-npx tsx src/runner-stop-cross-vendor.ts \
+npx tsx src/tests/runner-stop-cross-vendor.ts \
     --agent-backend "${AGENT_BACKEND}" \
     --models "${AGENT_MODEL}" \
     --scenarios "${SCENARIOS}" \

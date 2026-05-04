@@ -3,8 +3,8 @@
  * No Claude API needed — just tests the policy + drift + judge pipeline.
  */
 
-import { PreToolInterceptor } from "./pretool-interceptor.js";
-import { evaluateToolPolicy, formatPolicyResult } from "./tool-policy.js";
+import { PreToolInterceptor } from "../pretool-interceptor.js";
+import { evaluateToolPolicy, formatPolicyResult } from "../tool-policy.js";
 
 async function main() {
   // --- Part 1: Policy engine unit tests ---

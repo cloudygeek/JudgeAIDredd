@@ -68,7 +68,7 @@ echo ''
 echo 'Starting Test 1...'
 echo ''
 
-npx tsx src/test-pipeline-e2e.ts --config '${CONFIG_FILTER}' --judge-effort '${EFFORT_LEVELS}'
+npx tsx src/tests/test-pipeline-e2e.ts --config '${CONFIG_FILTER}' --judge-effort '${EFFORT_LEVELS}'
 
 echo ''
 echo 'Results saved to results/pipeline-e2e-*.json'

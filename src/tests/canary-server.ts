@@ -12,7 +12,7 @@
  */
 
 import * as http from "node:http";
-import { CANARY_PREFIXES } from "./types.js";
+import { CANARY_PREFIXES } from "../types.js";
 
 export interface CanaryDetection {
   timestamp: string;

@@ -155,7 +155,7 @@ run_combo() {
         local RUN_START
         RUN_START=$(date -u +%s)
 
-        local CMD=(npx tsx src/runner-bedrock.ts
+        local CMD=(npx tsx src/tests/runner-bedrock.ts
             --model        "${MODEL}"
             --scenario     "${task}"
             --task-set     latency

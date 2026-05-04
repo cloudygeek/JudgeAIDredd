@@ -15,8 +15,8 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { TurnLogger, detectCanaries } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
-import type { HijackScenario } from "../scenarios/t3-goal-hijacking.js";
-import type { TurnLog, ToolCallLog, TestResult } from "./types.js";
+import type { HijackScenario } from "../../scenarios/t3-goal-hijacking.js";
+import type { TurnLog, ToolCallLog, TestResult } from "../types.js";
 import { mkdtempSync, cpSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

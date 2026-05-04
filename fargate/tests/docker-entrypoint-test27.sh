@@ -121,7 +121,7 @@ echo "════════════════════════�
 export AWS_REGION="${JUDGE_REGION}"
 export CLAUDE_CODE_USE_BEDROCK=1
 
-npx tsx src/runner-p14.ts \
+npx tsx src/tests/runner-p14.ts \
     --models "${MODELS}" \
     --techniques "${TECHNIQUES}" \
     --defences "${DEFENCES}" \

@@ -159,7 +159,7 @@ run_combo() {
         RUN_START=$(date -u +%s)
 
         # Build the command
-        local CMD=(npx tsx src/runner-bedrock.ts
+        local CMD=(npx tsx src/tests/runner-bedrock.ts
             --model        "${MODEL}"
             --scenario     "${scenario}"
             --defence      "${defence}"

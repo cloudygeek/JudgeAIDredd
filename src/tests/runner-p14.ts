@@ -39,10 +39,10 @@ const loadExecutor = async (backend: string) => {
 };
 import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
-import { getInjectionScenarios } from "../scenarios/t4-http-injection.js";
-import { getMultiStageScenarios } from "../scenarios/t5-multistage.js";
-import type { HijackScenario } from "../scenarios/t3-goal-hijacking.js";
-import type { TestResult } from "./types.js";
+import { getInjectionScenarios } from "../../scenarios/t4-http-injection.js";
+import { getMultiStageScenarios } from "../../scenarios/t5-multistage.js";
+import type { HijackScenario } from "../../scenarios/t3-goal-hijacking.js";
+import type { TestResult } from "../types.js";
 
 const { values } = parseArgs({
   options: {

@@ -24,8 +24,8 @@
 import { parseArgs } from "node:util";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { embedAny, cosineSimilarity } from "./ollama-client.js";
-import { getBuildInfo, makeRunInvocation } from "./build-info.js";
+import { embedAny, cosineSimilarity } from "../ollama-client.js";
+import { getBuildInfo, makeRunInvocation } from "../build-info.js";
 
 // ============================================================================
 // Models to compare

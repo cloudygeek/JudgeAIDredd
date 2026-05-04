@@ -160,7 +160,7 @@ export AGENT_REGION
 export JUDGE_BEDROCK_REGION="${JUDGE_REGION}"
 export AWS_REGION="${JUDGE_REGION}"
 
-npx tsx src/runner-agentlab.ts \
+npx tsx src/tests/runner-agentlab.ts \
     --models "${MODELS}" \
     --backend "${BACKEND}" \
     --scenarios "${SCENARIOS}" \

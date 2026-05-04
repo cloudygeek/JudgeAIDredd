@@ -23,8 +23,8 @@
  */
 
 import { writeFileSync, mkdirSync } from "node:fs";
-import { embedAny, cosineSimilarity } from "./ollama-client.js";
-import { getBuildInfo } from "./build-info.js";
+import { embedAny, cosineSimilarity } from "../ollama-client.js";
+import { getBuildInfo } from "../build-info.js";
 
 // ============================================================================
 // Embedding models and threshold grid

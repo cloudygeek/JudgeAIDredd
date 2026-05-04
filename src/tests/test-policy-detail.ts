@@ -1,4 +1,4 @@
-import { evaluateToolPolicy, formatPolicyResult } from "./tool-policy.js";
+import { evaluateToolPolicy, formatPolicyResult } from "../tool-policy.js";
 
 function showScenario(
   id: string,

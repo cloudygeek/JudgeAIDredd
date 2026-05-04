@@ -55,7 +55,7 @@ for cfg in "${CFG_ARRAY[@]}"; do
     USER="$USER" \
     AWS_REGION=eu-west-2 \
     AWS_DEFAULT_REGION=eu-west-2 \
-    bash -c "npx tsx src/test-pipeline-e2e.ts --config '${cfg}' --judge-effort '${EFFORT_LEVELS}'" \
+    bash -c "npx tsx src/tests/test-pipeline-e2e.ts --config '${cfg}' --judge-effort '${EFFORT_LEVELS}'" \
     >"${logfile}" 2>&1 &
 
   PIDS+=($!)

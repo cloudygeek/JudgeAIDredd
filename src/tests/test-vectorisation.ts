@@ -12,7 +12,7 @@
  *      (false negatives) or where legitimate tool calls score low (false positives).
  */
 
-import { embed, cosineSimilarity } from "./ollama-client.js";
+import { embed, cosineSimilarity } from "../ollama-client.js";
 
 // Models to compare
 const MODELS = [

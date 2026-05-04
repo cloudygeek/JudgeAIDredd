@@ -97,12 +97,12 @@ fi
 
 # ── Run ────────────────────────────────────────────────────────────────────
 echo ""
-echo ">>> Running: npx tsx src/runner-pipeline-exfil.ts ${CMD_ARGS[*]}"
+echo ">>> Running: npx tsx src/tests/runner-pipeline-exfil.ts ${CMD_ARGS[*]}"
 echo ""
 
 START_TIME=$(date +%s)
 
-npx tsx src/runner-pipeline-exfil.ts "${CMD_ARGS[@]}" || {
+npx tsx src/tests/runner-pipeline-exfil.ts "${CMD_ARGS[@]}" || {
   echo "  FAILED"
 }
 
