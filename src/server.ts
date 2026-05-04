@@ -138,6 +138,19 @@ function json(res: ServerResponse, status: number, data: unknown): void {
   res.end(JSON.stringify(data));
 }
 
+/**
+ * Derive the caller-visible origin for this request. Behind an ALB / reverse
+ * proxy, Host is the backend address — we need x-forwarded-* to reconstruct
+ * the URL the browser actually used.
+ */
+function resolvePublicOrigin(req: IncomingMessage): string {
+  const xfProto = (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0]?.trim();
+  const xfHost = (req.headers["x-forwarded-host"] as string | undefined)?.split(",")[0]?.trim();
+  const host = xfHost || req.headers.host || `localhost:${PORT}`;
+  const proto = xfProto || (host.startsWith("localhost") ? "http" : "https");
+  return `${proto}://${host}`;
+}
+
 // =========================================================================
 // Transcript Backfill
 // =========================================================================
@@ -1119,6 +1132,21 @@ const server = createServer(async (req, res) => {
         .sort()
         .reverse();
       return json(res, 200, files);
+    }
+
+    // API: integration bundle — zip of hook script + settings + README,
+    // with DREDD_URL baked in based on the caller's current origin.
+    if (req.method === "GET" && url.pathname === "/api/integration-bundle") {
+      const { buildIntegrationBundle } = await import("./integration-bundle.js");
+      const dreddUrl = resolvePublicOrigin(req);
+      const zip = buildIntegrationBundle(dreddUrl);
+      res.writeHead(200, {
+        "Content-Type": "application/zip",
+        "Content-Disposition": 'attachment; filename="judge-dredd-integration.zip"',
+        "Content-Length": zip.length,
+      });
+      res.end(zip);
+      return;
     }
 
     // API: get daily console log content

@@ -81,7 +81,7 @@ cd /tmp && rm -rf dredd-rezip && mkdir dredd-rezip && cd dredd-rezip
 
 # App source (no node_modules — Dockerfile handles deps).
 # Drop src/tests/ — test runners/executors aren't needed by the judge server.
-cp -r <project>/src \
+cp -r <project>/src <project>/hooks \
       <project>/package.json <project>/package-lock.json <project>/tsconfig.json .
 rm -rf src/tests
 
