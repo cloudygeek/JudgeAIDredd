@@ -22,8 +22,8 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { parseArgs } from "node:util";
-import { writeFileSync, appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { writeFileSync, appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync, statSync, realpathSync } from "node:fs";
+import { join, sep } from "node:path";
 import { inspect } from "node:util";
 import { InMemorySessionStore } from "./session-tracker.js";
 import { DynamoSessionStore } from "./dynamo-session-store.js";
@@ -159,10 +159,49 @@ const interceptor = new PreToolInterceptor({
 // Track which sessions have had their goal registered with the interceptor
 const registeredSessions = new Set<string>();
 
-async function readBody(req: IncomingMessage): Promise<string> {
+// Per-endpoint request-body size caps. Without these an unauthenticated
+// caller can stream gigabytes into the server, OOM the container, or stall
+// the event loop on JSON.parse.
+//
+// /intent and /evaluate accept transcript_content inline (up to a full Claude
+// Code JSONL), so they need the highest cap. Other endpoints have small,
+// fixed-shape bodies and get the default.
+const BODY_LIMIT_DEFAULT = 1 * 1024 * 1024;       //  1 MB for /track, /pivot, /end, /compact, /api/mode
+const BODY_LIMIT_TRANSCRIPT = 20 * 1024 * 1024;   // 20 MB for /intent and /evaluate (transcript inline)
+
+/**
+ * Thrown by `readBody` when the request exceeds the caller-supplied limit.
+ * The router catches this and returns 413 rather than a generic 500.
+ */
+class BodyTooLargeError extends Error {
+  readonly bodyLimit: number;
+  constructor(limit: number) {
+    super(`Request body exceeded ${limit} bytes`);
+    this.name = "BodyTooLargeError";
+    this.bodyLimit = limit;
+  }
+}
+
+async function readBody(req: IncomingMessage, maxBytes = BODY_LIMIT_DEFAULT): Promise<string> {
+  // Early reject on declared Content-Length. Saves us from even starting to
+  // buffer an obviously oversized body.
+  const declared = req.headers["content-length"];
+  if (declared) {
+    const n = parseInt(declared, 10);
+    if (!Number.isNaN(n) && n > maxBytes) throw new BodyTooLargeError(maxBytes);
+  }
   const chunks: Buffer[] = [];
+  let total = 0;
   for await (const chunk of req) {
-    chunks.push(chunk as Buffer);
+    const buf = chunk as Buffer;
+    total += buf.length;
+    if (total > maxBytes) {
+      // Stop reading immediately; destroying the request stream lets Node
+      // close the TCP connection rather than continuing to buffer.
+      req.destroy();
+      throw new BodyTooLargeError(maxBytes);
+    }
+    chunks.push(buf);
   }
   return Buffer.concat(chunks).toString("utf8");
 }
@@ -211,6 +250,68 @@ function rejectInvalidSessionId(res: ServerResponse, sessionId: unknown): sessio
     detail: `Must match ${SESSION_ID_PATTERN} (alphanumeric, dot, dash, underscore; 1–128 chars)`,
   });
   return true;
+}
+
+// ============================================================================
+// Filesystem path validation
+// ============================================================================
+//
+// `transcript_path` and `cwd` are caller-controlled strings that the server
+// used to feed straight into `readFileSync` / `join` + `readFileSync`. That's
+// an arbitrary local-file-read primitive — a malicious caller could pass
+// `/etc/passwd`, `/proc/1/environ`, `/var/run/secrets/...`, or anything else
+// the Fargate task role can read, and have the contents echoed back via
+// `/api/session-log/:id`.
+//
+// The defence is: require every server-read filesystem path to resolve to
+// somewhere that contains `/.claude/` in its realpath. That's the canonical
+// Claude Code data directory across macOS, Linux, and Windows (wslpath), and
+// it's the only place `transcript_path` / `cwd` legitimately point in real
+// deployments. It cleanly rejects `/etc`, `/proc`, `/root`, `/var`, and every
+// secret-bearing path while keeping `$HOME/.claude/projects/...` (local dev)
+// and per-user workspaces (`$HOME/foo/.claude/settings.json`) working.
+//
+// In the shared sandbox container, the hook always sends `transcript_content`
+// inline, so `transcript_path` is never used at all — this check still fires
+// defensively in case a future client sends a path.
+//
+// Override: set `DREDD_ALLOW_ANY_PATH=1` to disable (local dev escape hatch,
+// never set in production).
+const ALLOW_ANY_PATH = process.env.DREDD_ALLOW_ANY_PATH === "1";
+
+function isSafeServerReadablePath(p: unknown): p is string {
+  if (ALLOW_ANY_PATH) return typeof p === "string";
+  if (typeof p !== "string" || p.length === 0 || p.length > 4096) return false;
+  // Null byte is a classic way to terminate a path early — Node rejects at
+  // the syscall layer but we reject up-front for explicit defence.
+  if (p.includes("\0")) return false;
+  // Resolve symlinks and `..` so the containment check can't be bypassed by
+  // e.g. `/tmp/link-to-etc/passwd`.
+  let resolved: string;
+  try {
+    resolved = realpathSync(p);
+  } catch {
+    // Path doesn't exist — we have nothing to read, reject (not an error
+    // per se, but also not a valid useful input).
+    return false;
+  }
+  // Must contain `.claude` as a path component somewhere in the resolved
+  // path. Using sep-wrapped match so `/foo/claude-bar/...` doesn't slip
+  // through on a substring compare.
+  const marker = `${sep}.claude${sep}`;
+  const normalised = resolved.endsWith(sep) ? resolved : resolved + sep;
+  return normalised.includes(marker);
+}
+
+/**
+ * Sanitise a caller-supplied `transcript_path` or `cwd`. Returns the path
+ * when it resolves under `.claude/`; returns null otherwise (caller decides
+ * whether to 400 or silently ignore). We silently ignore rather than 400
+ * for `transcript_path` because the hook may legitimately omit it in remote
+ * mode, and we fall back to `transcript_content` anyway.
+ */
+function safeServerReadablePath(p: unknown): string | null {
+  return isSafeServerReadablePath(p) ? p : null;
 }
 
 /**
@@ -307,11 +408,12 @@ function extractLastUserAndPriorAssistant(
   if (isContent) {
     raw = transcriptPathOrContent;
   } else {
-    if (!transcriptPathOrContent || !existsSync(transcriptPathOrContent)) {
+    const safe = safeServerReadablePath(transcriptPathOrContent);
+    if (!safe) {
       return { lastUser: null, priorAssistant: null, images: [] };
     }
     try {
-      raw = readFileSync(transcriptPathOrContent, "utf8");
+      raw = readFileSync(safe, "utf8");
     } catch {
       return { lastUser: null, priorAssistant: null, images: [] };
     }
@@ -385,9 +487,10 @@ async function backfillFromTranscript(
   if (isContent) {
     raw = transcriptPathOrContent;
   } else {
-    if (!transcriptPathOrContent || !existsSync(transcriptPathOrContent)) return;
+    const safe = safeServerReadablePath(transcriptPathOrContent);
+    if (!safe) return;
     try {
-      raw = readFileSync(transcriptPathOrContent, "utf8");
+      raw = readFileSync(safe, "utf8");
     } catch {
       return;
     }
@@ -523,7 +626,7 @@ async function backfillFromTranscript(
 // POST /intent — UserPromptSubmit
 // =========================================================================
 async function handleIntent(req: IncomingMessage, res: ServerResponse) {
-  const body = JSON.parse(await readBody(req));
+  const body = JSON.parse(await readBody(req, BODY_LIMIT_TRANSCRIPT));
   const { session_id, prompt, transcript_path, cwd } = body;
   // Remote-compatible fields: inline content sent by the hook
   const transcriptContent: string | undefined = body.transcript_content;
@@ -535,19 +638,28 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   }
 
   // Store the Claude instance's working directory as the sandbox boundary.
-  // setProjectRoot ignores subsequent calls so the first cwd wins.
+  // setProjectRoot ignores subsequent calls so the first cwd wins. The cwd
+  // itself is just a string used for startsWith-style path comparison by the
+  // policy engine — it is NOT read from disk. The only cwd-based disk read
+  // is the CLAUDE.md scanner below, which we guard explicitly.
   if (cwd) {
     await tracker.setProjectRoot(session_id, cwd);
 
-    // Scan CLAUDE.md on first session contact for injection patterns
+    // Scan CLAUDE.md on first session contact for injection patterns.
+    // Prefer inline content (remote hook mode) over reading from disk. The
+    // disk path is guarded by `safeServerReadablePath` so a caller can't use
+    // `cwd="/etc"` to trigger an arbitrary `/etc/CLAUDE.md` read.
     if (!registeredSessions.has(session_id)) {
-      let scan: ClaudeMdScanResult;
+      let scan: ClaudeMdScanResult | null = null;
       if (claudeMdContent) {
         scan = scanClaudeMdContent(claudeMdContent, `${cwd}/CLAUDE.md`);
       } else {
-        scan = scanClaudeMd(cwd);
+        const safeCwd = safeServerReadablePath(cwd);
+        if (safeCwd) {
+          scan = scanClaudeMd(safeCwd);
+        }
       }
-      if (scan.findings.length > 0) {
+      if (scan && scan.findings.length > 0) {
         console.warn(`  [${session_id.substring(0, 8)}] [CLAUDEMD-SCAN] ${scan.summary}`);
         for (const f of scan.findings) {
           console.warn(`    ${f.severity.toUpperCase()} ${f.pattern} (${f.file}:${f.line}): ${f.snippet}`);
@@ -667,6 +779,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
 async function handleRegister(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
   const { task } = body;
+  // readBody used the default 1 MB cap — task is just a sentence.
   if (!task) {
     return json(res, 400, { error: "Missing task" });
   }
@@ -685,7 +798,7 @@ const LOCKED_MESSAGE =
   "this session has been classified as hijacked and further tool calls will not be allowed.";
 
 async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
-  const body = JSON.parse(await readBody(req));
+  const body = JSON.parse(await readBody(req, BODY_LIMIT_TRANSCRIPT));
 
   // Support benchmark format: { session, proposed_action: { tool, parameters } }
   const isBenchmarkFormat = body.proposed_action && body.session;
@@ -1468,12 +1581,46 @@ const server = createServer(async (req, res) => {
 
     json(res, 404, { error: "Not found" });
   } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      // 413 Payload Too Large; don't echo the body limit details in the
+      // message to anything fancier than an operator log.
+      console.warn(`[413] ${req.method} ${url.pathname}: body exceeded ${err.bodyLimit} bytes`);
+      return json(res, 413, { error: "Request body too large" });
+    }
+    // JSON.parse error surfaces here as a SyntaxError — respond with 400
+    // rather than 500 so callers can distinguish client error from server
+    // error. Avoid echoing the parser message verbatim (it may include
+    // input snippets).
+    if (err instanceof SyntaxError) {
+      console.warn(`[400] ${req.method} ${url.pathname}: invalid JSON: ${err.message}`);
+      return json(res, 400, { error: "Invalid JSON body" });
+    }
     console.error(`[ERROR] ${req.method} ${url.pathname}:`, err);
-    json(res, 500, {
-      error: err instanceof Error ? err.message : String(err),
-    });
+    json(res, 500, { error: "Internal server error" });
   }
 });
+
+// Socket / header / request timeouts.
+//
+//   headersTimeout:  how long we'll wait for the caller to finish sending
+//                    request headers before closing the connection. 30s is
+//                    generous; it's a defence against slow-loris, not a
+//                    normal-traffic budget.
+//   requestTimeout:  upper bound from "connection accepted" to "request body
+//                    fully received". Must be >= headersTimeout per Node
+//                    docs. Set to 120s so /intent with an inline 20MB
+//                    transcript from a distant hook still succeeds even on
+//                    a slow link.
+//   keepAliveTimeout:how long the server holds an idle TCP connection open
+//                    between requests. Default 5s is fine; set explicitly
+//                    so it's visible.
+//
+// These are socket-level. The per-request *processing* timeout (e.g.
+// Bedrock stuck for 2 minutes) is a separate concern tracked in task #11 /
+// #12 — we'll wrap interceptor.evaluate in Promise.race there.
+server.headersTimeout = 30_000;
+server.requestTimeout = 120_000;
+server.keepAliveTimeout = 5_000;
 
 // =========================================================================
 // Startup
@@ -1489,8 +1636,16 @@ async function main() {
   console.log(`  JUDGE AI DREDD — HTTP Server v${pkg.version}`);
   console.log("█".repeat(50));
 
-  // Preflight
-  await interceptor.preflight();
+  // Preflight. Set DREDD_SKIP_PREFLIGHT=1 to serve even when Bedrock/Ollama
+  // are unreachable — useful for local integration tests of endpoints that
+  // don't invoke the judge (health, session-id validation, body caps). Not
+  // for production: without preflight, model/creds errors surface only on
+  // the first judge call rather than at boot.
+  if (process.env.DREDD_SKIP_PREFLIGHT === "1") {
+    console.warn("  [PREFLIGHT] skipped (DREDD_SKIP_PREFLIGHT=1) — test mode");
+  } else {
+    await interceptor.preflight();
+  }
   console.log(`  Mode:            ${CONFIG.mode}`);
   console.log(`  Embedding model: ${CONFIG.embeddingModel}`);
   console.log(`  Judge backend:   ${CONFIG.judgeBackend}`);
