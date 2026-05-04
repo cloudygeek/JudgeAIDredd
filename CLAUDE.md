@@ -144,8 +144,26 @@ docker run -p 3000:3000 \
 | `PORT` | `3000` | Server port |
 | `DATA_DIR` | `/data` | Base directory for sessions and logs |
 | `AWS_REGION` | `eu-west-2` | AWS region for Bedrock |
+| `STORE_BACKEND` | `dynamo` (sandbox) / `memory` (local) | Session state backend |
+| `DYNAMO_TABLE_NAME` | `jaid-sessions` | DynamoDB table for session state |
+| `DYNAMO_REGION` | `eu-west-1` | Region of the Dynamo table (distinct from Bedrock region) |
 
-Session logs go to `$DATA_DIR/sessions/`, console logs to `$DATA_DIR/logs/`. Both are viewable via the dashboard (Logs tab).
+Session logs: see the **Session storage** note below — Dynamo-backed for the shared sandbox deployment. Console logs (`dredd-YYYY-MM-DD.log`) still live on disk in `$DATA_DIR/logs/` and are viewable via the dashboard (Logs tab).
+
+## Session storage
+
+The shared sandbox server behind `https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal/` uses a **DynamoDB-backed `SessionStore`** (`src/dynamo-session-store.ts`) wrapped in a write-through LRU cache (`src/cached-session-store.ts`). Behaviour:
+
+- **Every state mutation is persisted synchronously** to `jaid-sessions` in eu-west-1 — `/intent`, `/evaluate`, `/track`, `/pivot`, `/compact`, `/end` all write to Dynamo as part of the request.
+- **Reads hit the in-container cache first**; cache miss triggers a Query across all sort keys under `SESSION#<session_id>` to reconstruct full state.
+- **ALB sticky cookies** (wired into `hooks/dredd-hook.sh` via a per-session `~/.claude/dredd/cookies/<session_id>.jar`) pin a session to one container so the cache stays hot. Task replacement surfaces as a transparent cache miss + `loadSession()` round-trip — no loss of session state.
+- **No more `results/*.json` on disk.** Dashboard endpoints (`/api/sessions`, `/api/session-log/:id`) assemble the old JSON shape from Dynamo on demand; legacy `results/*.json` files still surface as a fallback.
+- **Selection**: `STORE_BACKEND=dynamo` on sandbox containers (the entrypoint defaults to it). Local dev stays on `STORE_BACKEND=memory` (default) unless you export it.
+
+Per-session item shape:
+- `pk = SESSION#<session_id>`, `sk = META | TURN#<n> | TOOL#<turn>#<seq> | FILE#W#<pathHash> | FILE#R#<ts>#<seq> | ENV#<name> | METRIC#<n> | PIVOT#<ts>`
+- GSI1 (`gsi1pk = "SESSION"`, `gsi1sk = startedAt`) is set only on META for cheap dashboard listing
+- TTL `ttl` (epoch seconds), 30d, refreshed on every write
 
 ### Checking `/data` persistence
 
