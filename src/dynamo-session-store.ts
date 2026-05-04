@@ -18,6 +18,25 @@
  *
  * TTL: `ttl` attribute (epoch seconds), refreshed on every write, 30d default.
  *
+ * Injection-resistance invariants (DO NOT BREAK):
+ *   - Never use PartiQL. All queries go through the parameterised
+ *     DocumentClient commands (GetCommand/QueryCommand/etc.), so values
+ *     are bound via ExpressionAttributeValues, not string-concatenated.
+ *   - Never build UpdateExpression / KeyConditionExpression from user
+ *     input. Expression placeholders (`:name`) are authored in-code; only
+ *     their VALUES come from callers. Key names come from literal object
+ *     keys in fixed-shape records.
+ *   - Never spread a user-supplied object into an Item without a known
+ *     attribute-name allow-list. Today we only spread internal records
+ *     (intent, meta) whose keys are compile-time literals.
+ *   - The `session_id` portion of pk/sk is structurally validated on
+ *     ingest (see SESSION_ID_PATTERN in server.ts). No `#`, no whitespace,
+ *     bounded length, so it cannot collide with sibling sort-key prefixes.
+ *
+ * Defence-in-depth: per-field size caps enforced before each PutItem so
+ * a single giant attribute can't bust the 400KB item limit and surface as
+ * a 500 on hot-path writes.
+ *
  * TODO(#7): batched writes + SIGTERM flush. Today every mutation is its own
  *           PutItem/UpdateItem; that's fine for correctness, not for cost.
  */
@@ -56,6 +75,33 @@ const TTL_DAYS = 30;
 const TTL_SECONDS = TTL_DAYS * 24 * 60 * 60;
 const GSI_NAME = "gsi1";
 const GSI_PK = "SESSION";
+
+// Per-field size caps. DynamoDB enforces a 400KB hard limit per item; we
+// cap well under that so a single huge attribute (e.g. a pasted file
+// dump in a user prompt) can't break writes. Values are truncated silently
+// — the judge has already seen the full content via the request body.
+const MAX_PROMPT_BYTES = 100_000;    // user prompt text
+const MAX_TOOL_INPUT_BYTES = 50_000; // serialised tool_input
+const MAX_FILE_CONTENT_BYTES = 10_000; // already truncated in sanitisers; belt-and-braces
+
+function truncString(s: string, limit: number): string {
+  if (s.length <= limit) return s;
+  return s.substring(0, limit);
+}
+
+function truncToolInput(input: Record<string, unknown>): Record<string, unknown> {
+  const json = JSON.stringify(input);
+  if (json.length <= MAX_TOOL_INPUT_BYTES) return input;
+  // Overrun: keep the shape but replace each string value with a truncated
+  // copy. Shape preservation matters for the judge and the dashboard.
+  const clipped: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input)) {
+    clipped[k] = typeof v === "string"
+      ? truncString(v, Math.floor(MAX_TOOL_INPUT_BYTES / Math.max(1, Object.keys(input).length)))
+      : v;
+  }
+  return clipped;
+}
 
 function now(): number {
   return Math.floor(Date.now() / 1000);
@@ -510,12 +556,16 @@ export class DynamoSessionStore implements SessionStore {
       skipDrift && !isFirst ? null : (await embedAny(prompt, this.embeddingModel))[0];
 
     const timestamp = new Date().toISOString();
+    // Cap the stored prompt so a pasted log dump can't bust the 400KB
+    // DynamoDB item limit. Embeddings are computed on the full prompt
+    // before truncation — we only shrink what goes on disk.
+    const storedPrompt = truncString(prompt, MAX_PROMPT_BYTES);
 
     if (isFirst) {
       const intent: TurnIntent = {
         turnNumber: 0,
         timestamp,
-        prompt,
+        prompt: storedPrompt,
         embedding: promptEmbedding ?? [],
         images: images?.length ? images : undefined,
       };
@@ -555,7 +605,7 @@ export class DynamoSessionStore implements SessionStore {
     const intent: TurnIntent = {
       turnNumber: nextTurn,
       timestamp,
-      prompt,
+      prompt: storedPrompt,
       embedding: promptEmbedding ?? [],
       images: images?.length ? images : undefined,
     };
@@ -700,7 +750,7 @@ export class DynamoSessionStore implements SessionStore {
           sk: `TOOL#${pad(turnNumber)}#${pad(seq)}`,
           turnNumber,
           tool,
-          input,
+          input: truncToolInput(input),
           decision,
           similarity,
           timestamp: new Date().toISOString(),

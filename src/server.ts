@@ -172,6 +172,47 @@ function json(res: ServerResponse, status: number, data: unknown): void {
   res.end(JSON.stringify(data));
 }
 
+// ============================================================================
+// session_id validation
+// ============================================================================
+//
+// The session_id flows into:
+//   - DynamoDB keys (`pk = SESSION#<session_id>`, sort keys derived from it)
+//   - Dashboard HTML (inline onclick="showDetail('<session_id>')" handlers)
+//   - Filesystem paths (legacy session-*.json logs, cookie jar filenames)
+//
+// Those contexts each have their own escape rules. Enforcing a single strict
+// shape at ingest is simpler and safer than getting every escape path right.
+//
+// Claude Code generates UUID-v4 session ids. Other clients (Claude Agent SDK,
+// custom hooks) may use different shapes but all practical values we've seen
+// are hex + hyphens. We allow a small superset — alphanumeric, `_`, `-`, `.`
+// — and cap length so a malicious caller can't push huge keys through.
+//
+// TODO: relax this if other agentic IDEs / CLIs adopt Dredd with wider
+//       session-id shapes. The safer path is to keep this strict and teach
+//       those clients to provide a hook-layer normaliser, rather than loosen
+//       the regex globally.
+const SESSION_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+
+function isValidSessionId(v: unknown): v is string {
+  return typeof v === "string" && SESSION_ID_PATTERN.test(v);
+}
+
+/**
+ * Guard used by every endpoint that accepts a session_id. Sends a 400 and
+ * returns false when the id is malformed, so the handler can early-return
+ * without duplicating the error shape.
+ */
+function rejectInvalidSessionId(res: ServerResponse, sessionId: unknown): sessionId is never {
+  if (isValidSessionId(sessionId)) return false;
+  json(res, 400, {
+    error: "Invalid session_id",
+    detail: `Must match ${SESSION_ID_PATTERN} (alphanumeric, dot, dash, underscore; 1–128 chars)`,
+  });
+  return true;
+}
+
 /**
  * Derive the caller-visible origin for this request. Behind an ALB / reverse
  * proxy, Host is the backend address — we need x-forwarded-* to reconstruct
@@ -488,8 +529,9 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   const transcriptContent: string | undefined = body.transcript_content;
   const claudeMdContent: string | undefined = body.claudemd_content;
 
-  if (!session_id || !prompt) {
-    return json(res, 400, { error: "Missing session_id or prompt" });
+  if (rejectInvalidSessionId(res, session_id)) return;
+  if (!prompt) {
+    return json(res, 400, { error: "Missing prompt" });
   }
 
   // Store the Claude instance's working directory as the sandbox boundary.
@@ -655,8 +697,9 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const mode: TrustMode = body.mode ?? CONFIG.mode;
   const isLearn = mode === "learn";
 
-  if (!session_id || !tool_name) {
-    return json(res, 400, { error: "Missing session_id or tool_name" });
+  if (rejectInvalidSessionId(res, session_id)) return;
+  if (!tool_name) {
+    return json(res, 400, { error: "Missing tool_name" });
   }
 
   // If no goal registered yet, try backfill or fail-open.
@@ -905,8 +948,9 @@ async function handleTrack(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
   const { session_id, tool_name, tool_input, tool_output } = body;
 
-  if (!session_id || !tool_name) {
-    return json(res, 400, { error: "Missing session_id or tool_name" });
+  if (rejectInvalidSessionId(res, session_id)) return;
+  if (!tool_name) {
+    return json(res, 400, { error: "Missing tool_name" });
   }
 
   // Track file reads
@@ -993,9 +1037,7 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
   const { session_id } = body;
 
-  if (!session_id) {
-    return json(res, 400, { error: "Missing session_id" });
-  }
+  if (rejectInvalidSessionId(res, session_id)) return;
 
   const sessionLog = await buildSessionLogShape(session_id);
   const summary = (sessionLog?.summary as any) ?? { turns: 0, toolCalls: 0, denied: 0 };
@@ -1023,6 +1065,7 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
 // GET /session/:id — Debug
 // =========================================================================
 async function handleSessionGet(res: ServerResponse, sessionId: string) {
+  if (rejectInvalidSessionId(res, sessionId)) return;
   const ctx = await tracker.getSessionContext(sessionId);
   const summary = await tracker.getFullSessionSummary(sessionId);
   json(res, 200, { ...ctx, summary });
@@ -1035,9 +1078,7 @@ async function handlePivot(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
   const { session_id, reason } = body;
 
-  if (!session_id) {
-    return json(res, 400, { error: "Missing session_id" });
-  }
+  if (rejectInvalidSessionId(res, session_id)) return;
 
   await tracker.pivotSession(session_id, reason ?? "User changed direction");
 
@@ -1056,9 +1097,7 @@ async function handleCompact(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req));
   const { session_id } = body;
 
-  if (!session_id) {
-    return json(res, 400, { error: "Missing session_id" });
-  }
+  if (rejectInvalidSessionId(res, session_id)) return;
 
   // Context is being compacted — the model will lose older conversation.
   // We keep our full tracking state but note the boundary.
