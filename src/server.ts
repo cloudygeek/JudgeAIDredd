@@ -1186,8 +1186,8 @@ async function main() {
     console.log(`    Scope creep at 0.2, drift warning at 0.3, block at 0.5.`);
   }
 
-  server.listen(PORT, () => {
-    console.log(`\n  Listening on http://localhost:${PORT}`);
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`\n  Listening on http://0.0.0.0:${PORT}`);
     console.log(`\n  Dashboard:  http://localhost:${PORT}/`);
     console.log(`\n  Endpoints:`);
     console.log(`    POST /intent    — UserPromptSubmit (register intent)`);
@@ -1201,6 +1201,12 @@ async function main() {
     console.log(`    GET  /api/logs      — daily console log listing`);
     console.log(`    GET  /api/feed      — live event feed`);
     console.log("█".repeat(50));
+  });
+
+  process.on("SIGTERM", () => {
+    console.log("SIGTERM received, shutting down gracefully");
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 10_000);
   });
 }
 

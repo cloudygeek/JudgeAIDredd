@@ -65,7 +65,7 @@ Single bash script handling all hook events. Reads JSON from stdin, calls the ri
 
 ## Container image (AI Sandbox / Fargate)
 
-The container runs test harnesses on the AI Sandbox platform. It packages the app into a zip that the platform's CodeBuild pipeline turns into a Docker image.
+The AI Sandbox container runs the standalone judge server for user testing. It packages the app into a zip that the platform's CodeBuild pipeline turns into a Docker image. Test harnesses (AgentDojo, MT-AgentRisk, Playwright etc.) are NOT in the sandbox zip — they still live under `fargate/tests/` and `fargate/Dockerfile` for local/automated runs.
 
 **IMPORTANT:** Always commit before building the zip so the pre-commit hook bumps the version. The version prints on the sandbox status page — without a bump you can't tell old and new deployments apart. Do NOT include `node_modules/` in the zip — the Dockerfile runs `npm install` during the Docker build. Always delete the old zip before rebuilding (zip appends, it doesn't replace).
 
@@ -76,31 +76,21 @@ The container runs test harnesses on the AI Sandbox platform. It packages the ap
 git add -A && git commit -m "your message"
 
 # 2. Build the zip — always delete old zip first
-rm -f judge-ai-dredd-t3-sandbox.zip
+rm -f judge-ai-dredd-sandbox.zip
 cd /tmp && rm -rf dredd-rezip && mkdir dredd-rezip && cd dredd-rezip
 
 # App source (no node_modules — Dockerfile handles deps)
-cp -r <project>/src <project>/scenarios <project>/workspace-template \
+cp -r <project>/src \
       <project>/package.json <project>/package-lock.json <project>/tsconfig.json .
 
-# Entrypoints (flat layout — all sit at zip root; glob copies all current+future)
-cp <project>/fargate/docker-entrypoint*.sh ./
+# Judge entrypoint + flat-layout Dockerfile (zip root, no fargate/ prefix)
+cp <project>/fargate/docker-entrypoint-judge.sh ./
+cp <project>/fargate/Dockerfile.judge-zip ./Dockerfile
 
-# AgentDojo benchmark (Python) — vendored into the image
-cp -r <project>/benchmarks ./benchmarks
-
-# AgentDojo source (Dockerfile pip installs it)
-cp -r /path/to/agentdojo ./agentdojo
-
-# API server + Dockerfile + assets
-cp <project>/fargate/api-server.cjs ./server.js
-cp <project>/fargate/Dockerfile ./Dockerfile
-cp <project>/src/web/logo.png ./logo.png 2>/dev/null || true
-
-zip -qr <project>/judge-ai-dredd-t3-sandbox.zip .
+zip -qr <project>/judge-ai-dredd-sandbox.zip .
 ```
 
-The zip layout is **flat** — `Dockerfile`, entrypoints, and `server.js` sit at the root (not under `fargate/`).
+The zip layout is **flat** — `Dockerfile`, `docker-entrypoint-judge.sh`, `package.json`, and `src/` all sit at the zip root (not under `fargate/`).
 
 ### Building the Docker image locally
 
@@ -109,11 +99,11 @@ The zip layout is **flat** — `Dockerfile`, entrypoints, and `server.js` sit at
 aws ecr get-login-password --region eu-west-1 | \
   docker login --username AWS --password-stdin 891377407345.dkr.ecr.eu-west-1.amazonaws.com
 
-# Build from project root (uses fargate/Dockerfile)
-docker build -f fargate/Dockerfile \
+# Build from project root (uses fargate/Dockerfile.judge)
+docker build -f fargate/Dockerfile.judge \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
   --build-arg GIT_DIRTY=$(if [ -n "$(git status --porcelain)" ]; then echo true; else echo false; fi) \
-  -t judge-ai-dredd-test7 .
+  -t judge-ai-dredd-judge .
 ```
 
 ## Standalone judge container (for vibe coders)
@@ -158,30 +148,31 @@ Session logs go to `$DATA_DIR/sessions/`, console logs to `$DATA_DIR/logs/`. Bot
 | File | Role |
 |---|---|
 | `fargate/Dockerfile` | Test runner image — node:22-slim + AWS CLI v2 + Python + Playwright |
-| `fargate/Dockerfile.judge` | Standalone judge image — lightweight, just server + dashboard |
+| `fargate/Dockerfile.judge` | Standalone judge image (local builds from project root) |
+| `fargate/Dockerfile.judge-zip` | Standalone judge image for the AI Sandbox zip — flat layout, COPY paths without `fargate/` |
 | `fargate/docker-entrypoint-judge.sh` | Judge entrypoint — reads env vars, starts server with /data paths |
-| `fargate/docker-entrypoint.sh` | Test 7: Cross-Model Agent Testing |
-| `fargate/docker-entrypoint-test1.sh` | Test 1: Combined Pipeline E2E (effort sweep) |
-| `fargate/docker-entrypoint-test3.sh` | Test 3: Statistical Robustness |
-| `fargate/docker-entrypoint-test3a.sh` | Test 3a: Statistical Robustness — Opus 4.7 + effort |
-| `fargate/docker-entrypoint-test4.sh` | Test 4: Goal Anchoring Effectiveness |
-| `fargate/docker-entrypoint-test8.sh` | Test 8: Adversarial Judge Robustness (effort sweep) |
-| `fargate/docker-entrypoint-test9.sh` | Test 9: Latency Impact |
-| `fargate/docker-entrypoint-test9a.sh` | Test 9a: Latency Impact — effort dimension |
-| `fargate/docker-entrypoint-test12.sh` | Test 12: AgentDojo External Benchmark |
-| `fargate/docker-entrypoint-test12a.sh` | Test 12a: AgentDojo B7.1-office rerun (token-expiry fix) |
-| `fargate/docker-entrypoint-test13.sh` | Test 13: Prompt-Reduction Benchmark (single trace) |
-| `fargate/docker-entrypoint-test14.sh` | Test 14: Prompt-Reduction Corpus Benchmark |
-| `fargate/docker-entrypoint-test15.sh` | Test 15: FPR under Prompt v2 (B7.1) |
-| `fargate/docker-entrypoint-test16.sh` | Test 16: Cross-Model Recommended Pipeline (Cohere v4 + B7.1) |
-| `fargate/docker-entrypoint-test17.sh` | Test 17: AgentDojo GPT-4o Tier-Match (flexible defence) |
-| `fargate/docker-entrypoint-test18.sh` | Test 18: T3e Exfiltration Under Recommended Pipeline |
-| `fargate/docker-entrypoint-test20.sh` | Test 20: AgentDojo Cross-Vendor with Qwen3 (Bedrock) |
-| `fargate/docker-entrypoint-test21.sh` | Test 21: AgentDojo with Anthropic Claude as Defended Agent |
-| `fargate/docker-entrypoint-test22.sh` | Test 22: P14 Cross-Technique Generalisation (T4 + T5) |
-| `fargate/docker-entrypoint-test23.sh` | Test 23: T3e Cross-Vendor with Qwen3 (Bedrock Converse) |
-| `fargate/docker-entrypoint-test24.sh` | Test 24: MT-AgentRisk Multi-Turn Tool-Grounded Safety Benchmark |
-| `fargate/docker-entrypoint-test25.sh` | Test 25: AgentLAB Long-Horizon Cross-Vendor Smoke |
+| `fargate/tests/docker-entrypoint.sh` | Test 7: Cross-Model Agent Testing |
+| `fargate/tests/docker-entrypoint-test1.sh` | Test 1: Combined Pipeline E2E (effort sweep) |
+| `fargate/tests/docker-entrypoint-test3.sh` | Test 3: Statistical Robustness |
+| `fargate/tests/docker-entrypoint-test3a.sh` | Test 3a: Statistical Robustness — Opus 4.7 + effort |
+| `fargate/tests/docker-entrypoint-test4.sh` | Test 4: Goal Anchoring Effectiveness |
+| `fargate/tests/docker-entrypoint-test8.sh` | Test 8: Adversarial Judge Robustness (effort sweep) |
+| `fargate/tests/docker-entrypoint-test9.sh` | Test 9: Latency Impact |
+| `fargate/tests/docker-entrypoint-test9a.sh` | Test 9a: Latency Impact — effort dimension |
+| `fargate/tests/docker-entrypoint-test12.sh` | Test 12: AgentDojo External Benchmark |
+| `fargate/tests/docker-entrypoint-test12a.sh` | Test 12a: AgentDojo B7.1-office rerun (token-expiry fix) |
+| `fargate/tests/docker-entrypoint-test13.sh` | Test 13: Prompt-Reduction Benchmark (single trace) |
+| `fargate/tests/docker-entrypoint-test14.sh` | Test 14: Prompt-Reduction Corpus Benchmark |
+| `fargate/tests/docker-entrypoint-test15.sh` | Test 15: FPR under Prompt v2 (B7.1) |
+| `fargate/tests/docker-entrypoint-test16.sh` | Test 16: Cross-Model Recommended Pipeline (Cohere v4 + B7.1) |
+| `fargate/tests/docker-entrypoint-test17.sh` | Test 17: AgentDojo GPT-4o Tier-Match (flexible defence) |
+| `fargate/tests/docker-entrypoint-test18.sh` | Test 18: T3e Exfiltration Under Recommended Pipeline |
+| `fargate/tests/docker-entrypoint-test20.sh` | Test 20: AgentDojo Cross-Vendor with Qwen3 (Bedrock) |
+| `fargate/tests/docker-entrypoint-test21.sh` | Test 21: AgentDojo with Anthropic Claude as Defended Agent |
+| `fargate/tests/docker-entrypoint-test22.sh` | Test 22: P14 Cross-Technique Generalisation (T4 + T5) |
+| `fargate/tests/docker-entrypoint-test23.sh` | Test 23: T3e Cross-Vendor with Qwen3 (Bedrock Converse) |
+| `fargate/tests/docker-entrypoint-test24.sh` | Test 24: MT-AgentRisk Multi-Turn Tool-Grounded Safety Benchmark |
+| `fargate/tests/docker-entrypoint-test25.sh` | Test 25: AgentLAB Long-Horizon Cross-Vendor Smoke |
 | `fargate/api-server.cjs` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
 | `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-west-2.amazonaws.com`) |
 | `fargate/infra/` | Terraform for the Fargate task definition and supporting resources |
