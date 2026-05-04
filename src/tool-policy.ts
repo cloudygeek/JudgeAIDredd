@@ -270,6 +270,70 @@ function isRmLimitedToTmp(command: string): boolean {
 }
 
 /**
+ * Narrow carve-out for non-recursive `rm -f <literal-path>`. Idempotent
+ * "delete if present" is the canonical cleanup pattern in build scripts
+ * (e.g. `rm -f some-artifact.zip` before rebuilding) and on its own is
+ * not what the `rm -f` deny rule was added to stop. The deny rule still
+ * catches `rm -rf`, `rm -fr`, and any force-delete with a wildcard,
+ * variable, tilde, or path traversal in the target.
+ *
+ * Rules:
+ *   - Must be exactly `rm` with flags that include `f`/`force` but NOT
+ *     `r`/`R`/`recursive`/`--dir`/`-d` (no recursion, no directories).
+ *   - Exactly one target. Multiple targets fall through — if you want
+ *     to delete many things, say so explicitly and go through review.
+ *   - Target must be a literal path: no `*`, `?`, `[`, `$`, backtick,
+ *     `~`, `..`, no trailing `/`, no shell metacharacters.
+ *   - Target must NOT be absolute (e.g. /etc/...) unless under /tmp/;
+ *     the existing `isRmLimitedToTmp` already covers the /tmp case.
+ */
+function isRmForceSingleLiteralFile(command: string): boolean {
+  const trimmed = command.trim();
+  // Split into the rm call and its tokens.
+  const m = /^rm((?:\s+-[a-zA-Z]+|\s+--[a-zA-Z-]+(?:=\S+)?)*)\s+(\S+)\s*$/.exec(trimmed);
+  if (!m) return false;
+
+  const flagBlock = m[1];
+  const target = m[2];
+
+  // Tokenise the flag block so short-flag clusters (-rf) and long flags
+  // (--force) are checked independently; otherwise the `r` at the end of
+  // "--force" falsely triggers the recursive check.
+  const tokens = flagBlock.trim().split(/\s+/).filter(Boolean);
+  let hasForce = false;
+  let hasRecursive = false;
+  let hasDir = false;
+  for (const tok of tokens) {
+    if (tok.startsWith("--")) {
+      if (tok === "--force") hasForce = true;
+      else if (tok === "--recursive") hasRecursive = true;
+      else if (tok === "--dir") hasDir = true;
+    } else if (tok.startsWith("-")) {
+      // Short-flag cluster like "-rf": inspect each letter.
+      for (const ch of tok.slice(1)) {
+        if (ch === "f") hasForce = true;
+        else if (ch === "r" || ch === "R") hasRecursive = true;
+        else if (ch === "d") hasDir = true;
+      }
+    }
+  }
+  if (!hasForce || hasRecursive || hasDir) return false;
+
+  // Reject dangerous patterns in the target.
+  if (/[*?\[\]$`(){}~]/.test(target)) return false;      // globs, vars, subshells, home
+  if (target.includes("..")) return false;                // path traversal
+  if (target.endsWith("/")) return false;                 // directory-looking
+  if (target === "." || target === "..") return false;
+
+  // Absolute paths: only allowed under /tmp/ via the other carve-out.
+  // Everything else in absolute-path land (e.g. /etc/passwd) falls through
+  // to the deny list.
+  if (target.startsWith("/") && !/^\/tmp\/\S/.test(target)) return false;
+
+  return true;
+}
+
+/**
  * Evaluate a single bash command (no chaining operators) against policy lists.
  */
 interface SingleBashResult {
@@ -280,11 +344,20 @@ interface SingleBashResult {
 }
 
 function evaluateSingleBashCommand(command: string): SingleBashResult {
-  // Narrow carve-out: allow destructive delete when every target is under
-  // /tmp/. Build-scratch workflows (zip staging, etc.) need this; the path
-  // check stops it becoming a general bypass.
+  // Narrow carve-outs: allow destructive delete when every target is under
+  // /tmp/, or when the command is a non-recursive `rm -f <literal-file>`.
+  // Build-scratch workflows (zip staging, artifact cleanup) need these; the
+  // path / shape checks stop them becoming a general bypass.
   if (isRmLimitedToTmp(command)) {
     return { decision: "allow", reason: "rm under /tmp/", matchedRule: "ALLOW:Bash:rm-tmp", command };
+  }
+  if (isRmForceSingleLiteralFile(command)) {
+    return {
+      decision: "allow",
+      reason: "rm -f of a single literal file (non-recursive)",
+      matchedRule: "ALLOW:Bash:rm-f-literal",
+      command,
+    };
   }
 
   // Match rules against the sanitized command (commit-message bodies
@@ -428,9 +501,12 @@ export function evaluateToolPolicy(
   if (tool === "Bash") {
     const command = String(input.command ?? "").trim();
 
-    // Narrow carve-out before the deny-list sweep: rm -rf is OK if every
-    // target is under /tmp/. Unchained only; chained commands fall through
-    // to per-part evaluation which applies the same carve-out.
+    // Narrow carve-outs before the deny-list sweep:
+    //   1. rm -rf is OK if every target is under /tmp/.
+    //   2. rm -f <literal-file> (non-recursive, single target) is a common
+    //      idempotent cleanup and is safe without recursion.
+    // Unchained only; chained commands fall through to per-part evaluation
+    // which applies the same carve-outs.
     const unchained = !/&&|\|\||;|\|/.test(command);
     if (unchained && isRmLimitedToTmp(command)) {
       return {
@@ -440,19 +516,35 @@ export function evaluateToolPolicy(
         matchedRule: "ALLOW:Bash:rm-tmp",
       };
     }
+    if (unchained && isRmForceSingleLiteralFile(command)) {
+      return {
+        decision: "allow",
+        tool,
+        reason: "rm -f of a single literal file (non-recursive)",
+        matchedRule: "ALLOW:Bash:rm-f-literal",
+      };
+    }
 
     // Check deny list first against the FULL command (highest priority).
     // Use the sanitized view so git commit/tag message bodies don't trigger
     // deny rules on free-form descriptive text.
+    //
+    // Only applied to unchained commands. For chained commands we fall
+    // through to per-part evaluation so that narrow carve-outs (e.g.
+    // `rm -rf /tmp/...` or `rm -f <literal>`) can match on each segment —
+    // a full-command sweep would otherwise short-circuit on the raw `rm -f`
+    // substring before the chain splitter ever runs.
     const matchTarget = sanitizeForMatching(command);
-    for (const rule of DENIED_BASH_PATTERNS) {
-      if (rule.pattern.test(matchTarget)) {
-        return {
-          decision: "deny",
-          tool,
-          reason: rule.reason,
-          matchedRule: `DENY:Bash:${rule.pattern}`,
-        };
+    if (unchained) {
+      for (const rule of DENIED_BASH_PATTERNS) {
+        if (rule.pattern.test(matchTarget)) {
+          return {
+            decision: "deny",
+            tool,
+            reason: rule.reason,
+            matchedRule: `DENY:Bash:${rule.pattern}`,
+          };
+        }
       }
     }
 
