@@ -990,7 +990,10 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
 
   try {
-    if (req.method === "GET" && url.pathname === "/health") {
+    // /health is often intercepted by the hosting platform's ALB target-group
+    // health check, so it never reaches the container. /api/health is our own
+    // path — platform doesn't touch it — and is what the dashboard hits.
+    if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/api/health")) {
       const pkg = JSON.parse(
         (await import("node:fs")).readFileSync(
           new URL("../package.json", import.meta.url), "utf8"
