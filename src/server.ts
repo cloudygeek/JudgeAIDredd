@@ -296,9 +296,7 @@ async function backfillFromTranscript(
   try {
     const lines = raw.trim().split("\n").filter(Boolean);
 
-    let firstUserPrompt: string | null = null;
-    let firstUserImages: ImageBlock[] = [];
-    let turnCount = 0;
+    const userPrompts: { text: string; images: ImageBlock[] }[] = [];
     const toolCalls: { tool: string; input: Record<string, unknown> }[] = [];
     const filesRead: string[] = [];
     const filesWritten: { path: string; content: string; isEdit: boolean }[] = [];
@@ -307,21 +305,20 @@ async function backfillFromTranscript(
       try {
         const msg = JSON.parse(line);
 
-        // Extract first user message as original intent
-        if (msg.type === "user" && !firstUserPrompt) {
+        // Collect EVERY user text prompt so backfill can replay the full
+        // intent history into the tracker — important for `claude --continue`
+        // and for Dredd restarts mid-session.
+        if (msg.type === "user") {
           const contentBlocks = msg.message?.content ?? [];
           const textBlocks = contentBlocks
             .filter((b: any) => b.type === "text")
             .map((b: any) => b.text);
           if (textBlocks.length > 0) {
-            firstUserPrompt = textBlocks.join("\n");
-            firstUserImages = extractImagesFromContentBlocks(contentBlocks);
+            userPrompts.push({
+              text: textBlocks.join("\n"),
+              images: extractImagesFromContentBlocks(contentBlocks),
+            });
           }
-        }
-
-        // Count user messages as turns
-        if (msg.type === "user" && msg.message?.content?.some((b: any) => b.type === "text")) {
-          turnCount++;
         }
 
         // Extract tool calls from assistant messages
@@ -359,24 +356,46 @@ async function backfillFromTranscript(
       }
     }
 
-    // Prefer the *last* user prompt (combined with the prior assistant turn)
-    // as the goal — backfill is only used when Dredd starts mid-session, and
-    // the most recent exchange is what the agent is currently acting on.
+    if (userPrompts.length === 0) return;
+
+    // Prefer the last *substantive* user prompt (non-confirmation) as the
+    // current goal. If the final turn was a confirmation like "yes",
+    // extractLastUserAndPriorAssistant walks back to the real instruction.
     const { lastUser, priorAssistant, images: lastImages } = extractLastUserAndPriorAssistant(raw, true);
-    const goalPrompt = lastUser ?? firstUserPrompt;
-    if (!goalPrompt) return;
-    const goalImages = lastImages.length ? lastImages : firstUserImages;
+    // Locate which userPrompts entry matches the chosen goal so we replay
+    // everything *before* it and avoid double-registering it at the end.
+    let goalIdx = userPrompts.length - 1;
+    if (lastUser) {
+      for (let i = userPrompts.length - 1; i >= 0; i--) {
+        if (userPrompts[i].text === lastUser) { goalIdx = i; break; }
+      }
+    }
+    const goalEntry = userPrompts[goalIdx];
+    const goalPrompt = lastUser ?? goalEntry.text;
+    const goalImages = lastImages.length ? lastImages : goalEntry.images;
     const contextualGoal = buildContextualIntent(goalPrompt, priorAssistant);
 
     console.log(
       `  [BACKFILL] Session ${sessionId.substring(0, 8)}: ` +
-      `${turnCount} turns, ${toolCalls.length} tools, ` +
+      `${userPrompts.length} user prompts, ${toolCalls.length} tools, ` +
       `${filesRead.length} reads, ${filesWritten.length} writes` +
       `${goalImages.length ? `, ${goalImages.length} image(s)` : ""}` +
       ` from transcript`
     );
 
-    // Register the most-recent intent (with prior assistant context)
+    // Replay prompts up to (but not including) the goal prompt so turnIntents[]
+    // mirrors what Dredd would have if it had been running all session. The
+    // first call hits the originalIntent=null branch in the tracker and always
+    // embeds regardless of skipDrift — that gives us the originalEmbedding.
+    // Subsequent calls with skipDrift=true skip the embedding to keep backfill
+    // cheap on long sessions.
+    for (let i = 0; i < goalIdx; i++) {
+      const p = userPrompts[i];
+      await tracker.registerIntent(sessionId, p.text, true, p.images);
+    }
+    // Finally register the goal prompt with skipDrift=false so drift-from-
+    // original is computed (unless this is also the first prompt, in which
+    // case it just becomes originalIntent).
     await tracker.registerIntent(sessionId, goalPrompt, false, goalImages);
     await interceptor.registerGoal(contextualGoal, goalImages);
     registeredSessions.add(sessionId);

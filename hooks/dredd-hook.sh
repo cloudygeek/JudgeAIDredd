@@ -64,12 +64,23 @@ if ! curl -s --connect-timeout 1 "$DREDD_URL/health" > /dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# Helper: read transcript content (last 200 lines to keep payload bounded)
+# Helper: read transcript content.
+#
+# UserPromptSubmit sends the full transcript so server-side backfill can
+# replay every user turn (see $TRANSCRIPT_TAIL_LIMIT below). PreToolUse
+# uses a bounded tail to keep high-frequency tool events cheap — backfill
+# from PreToolUse only fires if Dredd hasn't seen this session yet, which
+# is rare once UserPromptSubmit has already run for the session.
 # ---------------------------------------------------------------------------
 read_transcript_content() {
   local tp="$1"
+  local limit="${2:-0}"   # 0 = whole file
   if [ -n "$tp" ] && [ -f "$tp" ]; then
-    tail -200 "$tp"
+    if [ "$limit" -gt 0 ]; then
+      tail -"$limit" "$tp"
+    else
+      cat "$tp"
+    fi
   fi
 }
 
@@ -99,8 +110,10 @@ case "$HOOK_EVENT" in
     TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
     CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 
-    # Read file contents locally and send inline
-    TRANSCRIPT_CONTENT=$(read_transcript_content "$TRANSCRIPT_PATH")
+    # Full transcript — the server replays every user turn into the tracker
+    # so resumed sessions (`claude --continue`) retain their complete intent
+    # history, not just first + last prompt.
+    TRANSCRIPT_CONTENT=$(read_transcript_content "$TRANSCRIPT_PATH" 0)
     CLAUDEMD_CONTENT=$(read_claudemd_content "$CWD")
 
     RESPONSE=$(curl -s -X POST "$DREDD_URL/intent" \
@@ -139,8 +152,11 @@ case "$HOOK_EVENT" in
         | head -c 500)
     fi
 
-    # Read transcript content for backfill (only needed if server hasn't seen this session)
-    TRANSCRIPT_CONTENT=$(read_transcript_content "$TRANSCRIPT_PATH")
+    # Read transcript content for backfill (only needed if server hasn't
+    # seen this session). Bounded tail keeps hot-path tool-call overhead low;
+    # UserPromptSubmit already sends the full transcript, so by the time
+    # evaluate fires Dredd normally has the full history anyway.
+    TRANSCRIPT_CONTENT=$(read_transcript_content "$TRANSCRIPT_PATH" 500)
 
     RESPONSE=$(curl -s -X POST "$DREDD_URL/evaluate" \
       -H "Content-Type: application/json" \

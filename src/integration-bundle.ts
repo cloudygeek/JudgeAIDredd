@@ -196,9 +196,40 @@ your first prompt.
 - **Hook runs but blocks nothing** — the server defaults to interactive mode;
   check the dashboard's mode badge. \`autonomous\` mode blocks on hijack,
   \`learn\` mode blocks nothing by design.
-- **Every tool call is denied** — the judge server is probably mis-pointed at
-  a different project's intent. Run \`rm ~/.claude/projects/*/\` session JSONL
-  or start a new session.
+- **Every tool call is denied** — the judge's reconstructed goal is wrong
+  (common after context compaction). Either start a fresh session or send
+  a \`/pivot\` to the server with the real goal.
+
+## Disable the hook
+
+Three scopes depending on how you installed it.
+
+### Global (installed via \`~/.claude/settings.json\`)
+
+\`\`\`bash
+mv ~/.claude/settings.json ~/.claude/settings.json.dredd-off
+# re-enable with: mv ~/.claude/settings.json.dredd-off ~/.claude/settings.json
+\`\`\`
+
+If the file has unrelated settings you want to keep, delete just the
+\`hooks\` and \`env.DREDD_URL\` keys instead.
+
+### Per-project (installed via \`.claude/settings.json\`)
+
+\`\`\`bash
+cd /path/to/your/project
+mv .claude/settings.json .claude/settings.json.dredd-off
+\`\`\`
+
+### Single session (no config edits)
+
+Point \`DREDD_URL\` at an unreachable address — the hook's health-check
+probe fails, the hook returns an empty response, and Claude Code proceeds
+as if no hook were installed:
+
+\`\`\`bash
+DREDD_URL=http://127.0.0.1:1 claude
+\`\`\`
 `;
 }
 
