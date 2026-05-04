@@ -1257,6 +1257,55 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    // API: /api/whoami — discovery endpoint for the auth migration.
+    // Surfaces the OIDC headers the ALB forwards (x-amzn-oidc-data is the
+    // JWT of claims, x-amzn-oidc-identity is the user sub, x-amzn-oidc-
+    // accesstoken is the raw access token). When OIDC isn't wired on the
+    // listener yet, all three will be absent — that's the signal to ask
+    // the platform team to enable it.
+    //
+    // Read-only: does not trust or enforce these headers for auth. This
+    // endpoint exists so the dashboard settings page can show the
+    // currently-logged-in user (or, before OIDC is wired, show that no
+    // identity has been forwarded).
+    if (req.method === "GET" && url.pathname === "/api/whoami") {
+      const oidcData = req.headers["x-amzn-oidc-data"] as string | undefined;
+      const oidcIdentity = req.headers["x-amzn-oidc-identity"] as string | undefined;
+      const hasAccessToken = !!req.headers["x-amzn-oidc-accesstoken"];
+
+      // Decode the JWT claims without verifying the signature — the ALB has
+      // already verified before forwarding. This is DISPLAY ONLY. Do NOT
+      // use these claims for authorisation decisions without ALB-signature
+      // verification (see task #17).
+      let claims: Record<string, unknown> | null = null;
+      let decodeError: string | null = null;
+      if (oidcData) {
+        try {
+          const parts = oidcData.split(".");
+          if (parts.length === 3) {
+            const payload = Buffer.from(parts[1], "base64").toString("utf8");
+            claims = JSON.parse(payload);
+          } else {
+            decodeError = `Expected 3 JWT segments, got ${parts.length}`;
+          }
+        } catch (err) {
+          decodeError = err instanceof Error ? err.message : String(err);
+        }
+      }
+
+      return json(res, 200, {
+        authWired: !!oidcData,
+        identity: oidcIdentity ?? null,
+        hasAccessToken,
+        claims,
+        decodeError,
+        // List of relevant headers we saw, for operator visibility.
+        seenHeaders: Object.keys(req.headers)
+          .filter((h) => h.toLowerCase().startsWith("x-amzn-"))
+          .sort(),
+      });
+    }
+
     // API: runtime mode switch — flips CONFIG.mode in-process so the dashboard
     // can toggle interactive/autonomous/learn without a restart. Shared state;
     // anyone on the dashboard flips it for every client.

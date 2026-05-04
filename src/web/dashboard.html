@@ -280,6 +280,9 @@
           <option value="learn">learn</option>
         </select>
         <button class="refresh-btn" onclick="refresh()">Refresh</button>
+        <button class="refresh-btn" onclick="openSettings()" title="Account and auth settings" aria-label="Settings">
+          <span style="font-size:16px;line-height:1;vertical-align:-2px">⚙</span>
+        </button>
       </div>
     </header>
 
@@ -558,6 +561,25 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     </div>
   </div>
 
+  <!-- SETTINGS MODAL -->
+  <div id="settings-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;align-items:flex-start;justify-content:center;padding-top:60px" onclick="closeSettingsIfOverlay(event)">
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;max-width:720px;width:92%;max-height:80vh;overflow-y:auto;padding:24px" role="dialog" aria-labelledby="settings-title">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h2 id="settings-title" style="margin:0;font-size:18px">Settings</h2>
+        <button class="refresh-btn" onclick="closeSettings()" aria-label="Close">Close</button>
+      </div>
+
+      <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 8px">Your identity</h3>
+      <div id="settings-identity-summary" class="muted" style="font-size:13px;margin-bottom:12px">Loading...</div>
+
+      <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 8px">JWT claims <span class="muted" style="text-transform:none;font-size:11px;margin-left:8px">(from <code>x-amzn-oidc-data</code>)</span></h3>
+      <pre id="settings-claims" style="max-height:320px"></pre>
+
+      <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 8px">OIDC headers</h3>
+      <pre id="settings-headers" style="max-height:120px"></pre>
+    </div>
+  </div>
+
   <script>
     const API = window.location.origin;
     let sessionsData = [];
@@ -607,6 +629,61 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         : '';
       return `<div class="feed-entry"><span class="feed-time">${time}</span> ${sidHtml}<span class="${cls}">${icon}</span> <span class="feed-tool">${esc(f.tool ?? f.type ?? '')}</span> ${stageHtml}<span class="muted" title="${msgEsc}">${msgEsc}</span></div>`;
     }
+
+    // Settings modal — fetches /api/whoami and renders the OIDC JWT claims
+    // forwarded by the ALB. If OIDC isn't wired on the listener, all fields
+    // come back empty; we surface that state explicitly so it's clear the
+    // auth plumbing needs to be turned on at the infra layer.
+    async function openSettings() {
+      const overlay = document.getElementById('settings-overlay');
+      overlay.style.display = 'flex';
+      document.getElementById('settings-identity-summary').textContent = 'Loading...';
+      document.getElementById('settings-claims').textContent = '';
+      document.getElementById('settings-headers').textContent = '';
+      try {
+        const r = await fetch(`${API}/api/whoami`);
+        const data = await r.json();
+        const summary = document.getElementById('settings-identity-summary');
+        if (!data.authWired) {
+          summary.innerHTML = '<span style="color:var(--amber)">OIDC not wired at the ALB.</span> ' +
+            'The listener is not forwarding <code>x-amzn-oidc-data</code>. ' +
+            'Ask the AI Sandbox platform team to enable an OIDC authenticate action ' +
+            'on the listener rule — then this page will show your identity.';
+        } else {
+          const sub = data.identity ?? data.claims?.sub ?? '(unknown)';
+          const email = data.claims?.email ?? data.claims?.preferred_username ?? '';
+          summary.innerHTML = `<strong>${esc(email || sub)}</strong>` +
+            (email && sub && email !== sub ? ` <span class="muted">(${esc(sub)})</span>` : '') +
+            `<br><span class="muted">Source: ALB OIDC</span>`;
+        }
+        document.getElementById('settings-claims').textContent =
+          data.claims
+            ? JSON.stringify(data.claims, null, 2)
+            : (data.decodeError
+              ? `Failed to decode JWT: ${data.decodeError}`
+              : '(no JWT forwarded)');
+        const headerLines = data.seenHeaders.length
+          ? data.seenHeaders.map(h => `${h}: ${data[h] !== undefined ? data[h] : '(present, value not echoed)'}`).join('\n')
+          : '(none of x-amzn-oidc-* were forwarded to the container)';
+        document.getElementById('settings-headers').textContent = headerLines;
+      } catch (err) {
+        document.getElementById('settings-identity-summary').textContent =
+          `Failed to load: ${err.message}`;
+      }
+    }
+    function closeSettings() {
+      document.getElementById('settings-overlay').style.display = 'none';
+    }
+    function closeSettingsIfOverlay(event) {
+      if (event.target.id === 'settings-overlay') closeSettings();
+    }
+    // Escape also closes the modal
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        const s = document.getElementById('settings-overlay');
+        if (s && s.style.display !== 'none') closeSettings();
+      }
+    });
 
     // Populate the "Integrate" tab URL hints so users can see which judge
     // they're about to connect to before downloading.
