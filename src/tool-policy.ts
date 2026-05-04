@@ -204,6 +204,37 @@ const SENSITIVE_WRITE_PATTERNS: PatternRule[] = [
 ];
 
 /**
+ * Git commit/tag messages are free-form text that often legitimately contains
+ * strings like destructive-delete commands or bare words like "env var" when
+ * describing a change. Those are payload, not executable — but naive regex
+ * matching over the raw command trips deny rules on them. This strips the
+ * message body (returning a placeholder) so pattern matching sees only the
+ * actual invocation.
+ *
+ * Only applied to `git commit` / `git tag`; every other command is returned
+ * unchanged so heredoc bodies (e.g. `bash <<EOF ... EOF`) still deny on
+ * dangerous content.
+ */
+function sanitizeForMatching(command: string): string {
+  if (!/^git\s+(commit|tag)\b/.test(command.trim())) return command;
+
+  let s = command;
+  // -m "..." / -m '...' — quoted message arg.
+  s = s.replace(/\s-m\s+"(?:[^"\\]|\\.)*"/g, ' -m "<msg>"');
+  s = s.replace(/\s-m\s+'(?:[^'\\]|\\.)*'/g, " -m '<msg>'");
+  // --message="..." / --message='...' / --message=bare
+  s = s.replace(/\s--message=(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)/g, " --message=<msg>");
+  // -m=... variants.
+  s = s.replace(/\s-m=(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)/g, " -m=<msg>");
+  // -m $(...) command substitution.
+  s = s.replace(/\s-m\s+\$\([\s\S]*?\)/g, " -m $(<msg>)");
+  // Heredoc bodies: <<EOF ... EOF / <<-EOF ... EOF / <<'EOF' ... EOF
+  s = s.replace(/<<-?\s*(['"]?)(\w+)\1\s*\n[\s\S]*?\n\2\s*/g, "<<$2\n<msg>\n$2\n");
+
+  return s;
+}
+
+/**
  * Narrow carve-out for `rm` / `rmdir` with destructive flags: the command
  * is allowed when every path target sits under /tmp/ (or the literal path
  * is /tmp itself is NOT allowed — that would wipe the whole tmpdir).
@@ -249,16 +280,20 @@ interface SingleBashResult {
 }
 
 function evaluateSingleBashCommand(command: string): SingleBashResult {
-  // Narrow carve-out: allow rm -rf when every target is under /tmp/.
-  // Build-scratch workflows (zip staging, etc.) need this; the path check
-  // stops it becoming a general rm -rf bypass.
+  // Narrow carve-out: allow destructive delete when every target is under
+  // /tmp/. Build-scratch workflows (zip staging, etc.) need this; the path
+  // check stops it becoming a general bypass.
   if (isRmLimitedToTmp(command)) {
     return { decision: "allow", reason: "rm under /tmp/", matchedRule: "ALLOW:Bash:rm-tmp", command };
   }
 
+  // Match rules against the sanitized command (commit-message bodies
+  // stripped); the returned `command` and reason still use the original.
+  const matchTarget = sanitizeForMatching(command);
+
   // Deny list
   for (const rule of DENIED_BASH_PATTERNS) {
-    if (rule.pattern.test(command)) {
+    if (rule.pattern.test(matchTarget)) {
       return { decision: "deny", reason: rule.reason, matchedRule: `DENY:Bash:${rule.pattern}`, command };
     }
   }
@@ -267,14 +302,14 @@ function evaluateSingleBashCommand(command: string): SingleBashResult {
   for (const rule of REVIEW_BASH_PATTERNS) {
     // Skip the &&, ||, ; rules since we already split on those
     if (rule.reason.includes("chaining")) continue;
-    if (rule.pattern.test(command)) {
+    if (rule.pattern.test(matchTarget)) {
       return { decision: "review", reason: rule.reason, matchedRule: `REVIEW:Bash:${rule.pattern}`, command };
     }
   }
 
   // Allow list
   for (const rule of ALLOWED_BASH_PATTERNS) {
-    if (rule.pattern.test(command)) {
+    if (rule.pattern.test(matchTarget)) {
       return { decision: "allow", reason: rule.reason, matchedRule: `ALLOW:Bash:${rule.pattern}`, command };
     }
   }
@@ -406,9 +441,12 @@ export function evaluateToolPolicy(
       };
     }
 
-    // Check deny list first against the FULL command (highest priority)
+    // Check deny list first against the FULL command (highest priority).
+    // Use the sanitized view so git commit/tag message bodies don't trigger
+    // deny rules on free-form descriptive text.
+    const matchTarget = sanitizeForMatching(command);
     for (const rule of DENIED_BASH_PATTERNS) {
-      if (rule.pattern.test(command)) {
+      if (rule.pattern.test(matchTarget)) {
         return {
           decision: "deny",
           tool,
