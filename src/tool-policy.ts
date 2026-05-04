@@ -204,6 +204,46 @@ const SENSITIVE_WRITE_PATTERNS: PatternRule[] = [
 ];
 
 /**
+ * Is `command` an invocation of `git <subcommand>` from the given list,
+ * allowing for git's global flags (`-C <path>`, `-c key=val`, `--git-dir=`,
+ * `--work-tree=`, `--no-pager`, etc.) between `git` and the subcommand?
+ *
+ * The previous version matched only `^git\s+(commit|tag)\b`, which misses
+ * common forms like `git -C /path commit -m ...` — the `-C <path>` global
+ * option comes before the subcommand. Without detection, sanitisation
+ * below never fires and free-form commit message bodies are swept by
+ * deny rules like `\benv\b` ("Dump environment").
+ */
+function isGitSubcommand(command: string, subcommands: readonly string[]): boolean {
+  const trimmed = command.trim();
+  if (!/^git(\s|$)/.test(trimmed)) return false;
+
+  // Tokens after the literal "git". Simple whitespace split is fine here
+  // because we're only scanning up to the first non-flag token; anything
+  // past that (args, quoted messages, heredocs) doesn't matter for this
+  // check.
+  const tokens = trimmed.split(/\s+/).slice(1);
+  let i = 0;
+  while (i < tokens.length) {
+    const t = tokens[i];
+    if (!t.startsWith("-")) {
+      return subcommands.includes(t);
+    }
+    // -C <path> and -c <key=val> take a value in the NEXT token when
+    // no `=` is fused into the flag itself.
+    if ((t === "-C" || t === "-c") && !t.includes("=")) {
+      i += 2; continue;
+    }
+    // Long options: `--long=value` is self-contained; `--long value`
+    // requires the next token. We conservatively assume bare long
+    // flags are boolean and skip only 1 token — worst case this over-
+    // consumes nothing and we find the subcommand one token later.
+    i += 1;
+  }
+  return false;
+}
+
+/**
  * Git commit/tag messages are free-form text that often legitimately contains
  * strings like destructive-delete commands or bare words like "env var" when
  * describing a change. Those are payload, not executable — but naive regex
@@ -216,7 +256,7 @@ const SENSITIVE_WRITE_PATTERNS: PatternRule[] = [
  * dangerous content.
  */
 function sanitizeForMatching(command: string): string {
-  if (!/^git\s+(commit|tag)\b/.test(command.trim())) return command;
+  if (!isGitSubcommand(command, ["commit", "tag"])) return command;
 
   let s = command;
   // -m "..." / -m '...' — quoted message arg.
@@ -232,6 +272,89 @@ function sanitizeForMatching(command: string): string {
   s = s.replace(/<<-?\s*(['"]?)(\w+)\1\s*\n[\s\S]*?\n\2\s*/g, "<<$2\n<msg>\n$2\n");
 
   return s;
+}
+
+/**
+ * Split `command` on top-level chain operators (`&&`, `||`, `;`, `|`) while
+ * treating heredoc bodies, command substitutions, backticks, and quoted
+ * strings as opaque tokens.
+ *
+ * A naive `command.split(/&&|\|\||;|\|/)` finds chain operators inside
+ * quoted strings and heredoc bodies — which is wrong. For example:
+ *
+ *   git commit -m "$(cat <<'EOF'
+ *   add foo && bar
+ *   EOF
+ *   )"
+ *
+ * has exactly one top-level command. The naive splitter sees "&&" inside
+ * the heredoc body and yields two parts, neither of which is a valid git
+ * invocation, which causes sanitisation to fail downstream.
+ *
+ * Approach: extract heredoc blocks, `$(...)` and backtick substitutions,
+ * and double/single-quoted strings into placeholders so the splitter sees
+ * only real top-level chain operators. After splitting, re-inject the
+ * placeholders into whichever part they came from.
+ */
+export function splitChainedSafely(command: string): string[] {
+  const placeholders: Array<{ key: string; content: string }> = [];
+  let s = command;
+
+  // The order matters: heredocs first (they can span newlines and contain
+  // everything else), then command substitutions (which can contain quoted
+  // strings), then backticks, then plain quoted strings.
+  const replace = (re: RegExp, prefix: string) => {
+    s = s.replace(re, (match) => {
+      const key = `\0${prefix}${placeholders.length}\0`;
+      placeholders.push({ key, content: match });
+      return key;
+    });
+  };
+
+  // Heredocs: <<WORD / <<-WORD / <<'WORD' / <<"WORD" ... WORD
+  // The terminator must be on its own line, optionally indented for <<-.
+  replace(/<<(-?)(['"]?)(\w+)\2([\s\S]*?\n)\s*\3(?=\s|$)/g, "H");
+
+  // $(...) substitution — balance is approximate (no nesting).
+  replace(/\$\([^()]*\)/g, "S");
+
+  // `...` backtick substitution.
+  replace(/`[^`]*`/g, "B");
+
+  // "..." / '...' quoted strings.
+  replace(/"(?:[^"\\]|\\.)*"/g, "D");
+  replace(/'(?:[^'\\]|\\.)*'/g, "Q");
+
+  // Now split on top-level chain operators.
+  const parts = s.split(/\s*(?:&&|\|\||;|\|)\s*/).filter(Boolean);
+
+  // Re-inject placeholders. Placeholders are unique and never overlap
+  // with user content (contain NUL bytes), so a plain replace is safe.
+  return parts.map((p) => {
+    let reconstructed = p;
+    // Iterate until no more placeholders — handles nested extractions
+    // where a heredoc placeholder itself contains a quoted placeholder.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const { key, content } of placeholders) {
+        if (reconstructed.includes(key)) {
+          reconstructed = reconstructed.split(key).join(content);
+          changed = true;
+        }
+      }
+    }
+    return reconstructed.trim();
+  });
+}
+
+/**
+ * Does the command contain a top-level chain operator?
+ * Mirror of `splitChainedSafely` but yes/no — used to early-exit the
+ * unchained carve-outs without paying the cost of full tokenisation.
+ */
+function hasTopLevelChain(command: string): boolean {
+  return splitChainedSafely(command).length > 1;
 }
 
 /**
@@ -506,8 +629,10 @@ export function evaluateToolPolicy(
     //   2. rm -f <literal-file> (non-recursive, single target) is a common
     //      idempotent cleanup and is safe without recursion.
     // Unchained only; chained commands fall through to per-part evaluation
-    // which applies the same carve-outs.
-    const unchained = !/&&|\|\||;|\|/.test(command);
+    // which applies the same carve-outs. `hasTopLevelChain` uses the
+    // heredoc/quote-aware splitter so chain operators inside quoted strings
+    // or heredoc bodies don't fool us into taking the chained path.
+    const unchained = !hasTopLevelChain(command);
     if (unchained && isRmLimitedToTmp(command)) {
       return {
         decision: "allow",
@@ -557,12 +682,12 @@ export function evaluateToolPolicy(
       }
     }
 
-    // If command is chained (&&, ||, ;, |), split and evaluate each part
-    if (/&&|\|\||;|\|/.test(command)) {
-      const parts = command
-        .split(/\s*(?:&&|\|\||;|\|)\s*/)
-        .map((p) => p.trim())
-        .filter(Boolean);
+    // If command is chained (&&, ||, ;, |), split and evaluate each part.
+    // Use the heredoc/quote-aware splitter so chain operators inside a
+    // commit-message heredoc or quoted argument don't get treated as
+    // top-level separators.
+    if (!unchained) {
+      const parts = splitChainedSafely(command);
 
       if (parts.length > 1) {
         const partResults = parts.map((part) => evaluateSingleBashCommand(part));
