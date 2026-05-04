@@ -1577,25 +1577,45 @@ const server = createServer(async (req, res) => {
     //   Fallback: any session-*.json left on disk from before the store
     //   migration, so we don't lose sight of historical runs.
     if (req.method === "GET" && url.pathname === "/api/sessions") {
-      const live = await tracker.listSessions(50);
-      const liveLogs = (await Promise.all(
-        live.map((s) => buildSessionLogShape(s.sessionId)),
+      // `?live=1` (default) → only not-yet-ended sessions. Filter happens
+      // server-side so we skip the per-session buildSessionLogShape work
+      // entirely for ended sessions. `?live=0` includes ended + legacy
+      // disk logs for operators who want full history.
+      const liveParam = url.searchParams.get("live");
+      const liveOnly = liveParam !== "0";
+
+      const all = await tracker.listSessions(50);
+      const selected = liveOnly ? all.filter((s) => !s.endedAt) : all;
+
+      const liveLogs: Record<string, unknown>[] = (await Promise.all(
+        selected.map(async (s): Promise<Record<string, unknown> | null> => {
+          const shape = await buildSessionLogShape(s.sessionId);
+          if (!shape) return null;
+          return { ...shape, startedAt: s.startedAt, endedAt: s.endedAt ?? null };
+        }),
       )).filter((x): x is Record<string, unknown> => x !== null);
       const liveIds = new Set(liveLogs.map((s) => s.sessionId as string));
 
-      const logDir = CONFIG.logDir;
+      // Legacy disk logs are definitionally ended (they were only written
+      // on /end). Skip them in live-only mode.
       const diskLogs: Record<string, unknown>[] = [];
-      if (existsSync(logDir)) {
-        const files = readdirSync(logDir)
-          .filter((f) => f.startsWith("session-") && f.endsWith(".json"))
-          .sort()
-          .reverse()
-          .slice(0, 50);
-        for (const f of files) {
-          try {
-            const parsed = JSON.parse(readFileSync(join(logDir, f), "utf8"));
-            if (!liveIds.has(parsed.sessionId)) diskLogs.push(parsed);
-          } catch { /* skip unreadable */ }
+      if (!liveOnly) {
+        const logDir = CONFIG.logDir;
+        if (existsSync(logDir)) {
+          const files = readdirSync(logDir)
+            .filter((f) => f.startsWith("session-") && f.endsWith(".json"))
+            .sort()
+            .reverse()
+            .slice(0, 50);
+          for (const f of files) {
+            try {
+              const parsed = JSON.parse(readFileSync(join(logDir, f), "utf8"));
+              if (!liveIds.has(parsed.sessionId)) {
+                if (!parsed.endedAt) parsed.endedAt = parsed.timestamp ?? new Date().toISOString();
+                diskLogs.push(parsed);
+              }
+            } catch { /* skip unreadable */ }
+          }
         }
       }
 
