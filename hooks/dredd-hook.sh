@@ -45,6 +45,9 @@
 # =============================================================================
 
 DREDD_URL="${DREDD_URL:-http://localhost:3001}"
+# Optional per-client trust mode override. Unset = use the server's default.
+# Accepts: interactive | autonomous | learn
+DREDD_MODE="${DREDD_MODE:-}"
 
 # Read hook input from stdin
 INPUT=$(cat)
@@ -56,7 +59,7 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 # If server is down, fall back to user prompt
 if ! curl -s --connect-timeout 1 "$DREDD_URL/health" > /dev/null 2>&1; then
   if [ "$HOOK_EVENT" = "PreToolUse" ]; then
-    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Judge Dredd server unavailable — requesting user approval"}}'
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Judge AI Dredd server unavailable — requesting user approval"}}'
   else
     echo '{}'
   fi
@@ -124,12 +127,14 @@ case "$HOOK_EVENT" in
         --arg cwd "$CWD" \
         --arg tc "$TRANSCRIPT_CONTENT" \
         --arg cm "$CLAUDEMD_CONTENT" \
+        --arg mode "$DREDD_MODE" \
         '{
           session_id: $sid,
           prompt: $prompt,
           cwd: $cwd,
           transcript_content: (if $tc == "" then null else $tc end),
-          claudemd_content: (if $cm == "" then null else $cm end)
+          claudemd_content: (if $cm == "" then null else $cm end),
+          mode: (if $mode == "" then null else $mode end)
         }')" \
       --connect-timeout 5 --max-time 30)
 
@@ -166,12 +171,14 @@ case "$HOOK_EVENT" in
         --argjson ti "$TOOL_INPUT" \
         --arg ar "$AGENT_REASONING" \
         --arg tc "$TRANSCRIPT_CONTENT" \
+        --arg mode "$DREDD_MODE" \
         '{
           session_id: $sid,
           tool_name: $tn,
           tool_input: $ti,
           agent_reasoning: $ar,
-          transcript_content: (if $tc == "" then null else $tc end)
+          transcript_content: (if $tc == "" then null else $tc end),
+          mode: (if $mode == "" then null else $mode end)
         }')" \
       --connect-timeout 5 --max-time 60)
 

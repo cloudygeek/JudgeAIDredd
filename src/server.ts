@@ -627,7 +627,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
             permissionDecision: "deny",
-            permissionDecisionReason: `Judge Dredd (no goal, ${noGoalDetail}): ${policyOnly.reason}`,
+            permissionDecisionReason: `Judge AI Dredd (no goal, ${noGoalDetail}): ${policyOnly.reason}`,
           },
           _meta: { allowed: false, stage: "policy-deny", reason: policyOnly.reason, noGoalDetail },
         });
@@ -637,7 +637,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "allow",
-          permissionDecisionReason: `Judge Dredd: no goal registered (${noGoalDetail}), policy allows`,
+          permissionDecisionReason: `Judge AI Dredd: no goal registered (${noGoalDetail}), policy allows`,
         },
         _meta: { allowed: true, stage: "no-goal-allow", reason: "No goal registered, policy allows", noGoalDetail },
       });
@@ -669,7 +669,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: `Judge Dredd: ${LOCKED_MESSAGE}`,
+        permissionDecisionReason: `Judge AI Dredd: ${LOCKED_MESSAGE}`,
       },
       systemMessage: LOCKED_MESSAGE,
       _meta: {
@@ -779,7 +779,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       hookResponse.hookSpecificOutput = {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: `Judge Dredd: ${LOCKED_MESSAGE}`,
+        permissionDecisionReason: `Judge AI Dredd: ${LOCKED_MESSAGE}`,
       };
       hookResponse.systemMessage = LOCKED_MESSAGE;
     } else {
@@ -796,7 +796,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       hookResponse.hookSpecificOutput = {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: `Judge Dredd: ${result.reason}`,
+        permissionDecisionReason: `Judge AI Dredd: ${result.reason}`,
       };
       hookResponse.systemMessage =
         `[SECURITY] Tool call ${tool_name} was blocked. Reason: ${result.reason}. ` +
@@ -807,7 +807,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     hookResponse.hookSpecificOutput = {
       hookEventName: "PreToolUse",
       permissionDecision: "allow",
-      permissionDecisionReason: `Judge Dredd: ${result.reason}`,
+      permissionDecisionReason: `Judge AI Dredd: ${result.reason}`,
     };
   }
 

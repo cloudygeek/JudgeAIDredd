@@ -204,6 +204,41 @@ const SENSITIVE_WRITE_PATTERNS: PatternRule[] = [
 ];
 
 /**
+ * Narrow carve-out for `rm` / `rmdir` with destructive flags: the command
+ * is allowed when every path target sits under /tmp/ (or the literal path
+ * is /tmp itself is NOT allowed — that would wipe the whole tmpdir).
+ * Returns false for anything that isn't an rm invocation so callers can
+ * safely use it as a guard.
+ */
+function isRmLimitedToTmp(command: string): boolean {
+  const trimmed = command.trim();
+  // Match: rm [flags...] <targets...>   (no leading tokens before rm)
+  const m = /^rm(?:\s+-[a-zA-Z]+|\s+--[a-zA-Z-]+(?:=\S+)?)*\s+(.+)$/.exec(trimmed);
+  if (!m) return false;
+
+  // Tokenise the target list. We intentionally don't handle quoted paths
+  // with embedded spaces — those hit the normal deny path. Glob chars in
+  // the target disqualify (rm -rf /tmp/foo/* is fine because /tmp/foo/*
+  // still starts with /tmp/; but rm -rf /* or $HOME/* is not).
+  const tail = m[1].trim();
+  const targets = tail.split(/\s+/).filter(t => !t.startsWith("-"));
+  if (targets.length === 0) return false;
+
+  for (const t of targets) {
+    // Reject shell metacharacters that could expand outside /tmp.
+    if (/[$`(){}]/.test(t)) return false;
+    // Strip surrounding quotes if any.
+    const unquoted = t.replace(/^['"]/, "").replace(/['"]$/, "");
+    // Must be an absolute path under /tmp/ (not bare /tmp).
+    if (!/^\/tmp\/\S/.test(unquoted)) return false;
+    // Block exact /tmp or attempts to escape via /tmp/../...
+    if (unquoted === "/tmp" || unquoted === "/tmp/") return false;
+    if (unquoted.includes("/..")) return false;
+  }
+  return true;
+}
+
+/**
  * Evaluate a single bash command (no chaining operators) against policy lists.
  */
 interface SingleBashResult {
@@ -214,6 +249,13 @@ interface SingleBashResult {
 }
 
 function evaluateSingleBashCommand(command: string): SingleBashResult {
+  // Narrow carve-out: allow rm -rf when every target is under /tmp/.
+  // Build-scratch workflows (zip staging, etc.) need this; the path check
+  // stops it becoming a general rm -rf bypass.
+  if (isRmLimitedToTmp(command)) {
+    return { decision: "allow", reason: "rm under /tmp/", matchedRule: "ALLOW:Bash:rm-tmp", command };
+  }
+
   // Deny list
   for (const rule of DENIED_BASH_PATTERNS) {
     if (rule.pattern.test(command)) {
@@ -350,6 +392,19 @@ export function evaluateToolPolicy(
   // --- Built-in tool: Bash ---
   if (tool === "Bash") {
     const command = String(input.command ?? "").trim();
+
+    // Narrow carve-out before the deny-list sweep: rm -rf is OK if every
+    // target is under /tmp/. Unchained only; chained commands fall through
+    // to per-part evaluation which applies the same carve-out.
+    const unchained = !/&&|\|\||;|\|/.test(command);
+    if (unchained && isRmLimitedToTmp(command)) {
+      return {
+        decision: "allow",
+        tool,
+        reason: "rm under /tmp/",
+        matchedRule: "ALLOW:Bash:rm-tmp",
+      };
+    }
 
     // Check deny list first against the FULL command (highest priority)
     for (const rule of DENIED_BASH_PATTERNS) {
