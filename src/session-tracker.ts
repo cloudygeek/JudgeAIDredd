@@ -1,5 +1,5 @@
 /**
- * Session Tracker
+ * In-memory SessionStore implementation.
  *
  * Maintains per-session state across hook invocations, tracking:
  *   - Original intent (from first UserPromptSubmit)
@@ -12,11 +12,16 @@
  *   PreToolUse → evaluates tool call against intent history
  *
  * Keyed by session_id so multiple concurrent sessions stay isolated.
+ *
+ * This class holds state in a process-local `Map`. For multi-container
+ * deployments behind an ALB, use `DynamoSessionStore` (wrapped in
+ * `CachedSessionStore`) instead — see `session-store.ts`.
  */
 
 import { DriftDetector } from "./drift-detector.js";
 import { embedAny, cosineSimilarity } from "./ollama-client.js";
 import { CANARY_PREFIXES } from "./types.js";
+import type { SessionStore, DriftClassification } from "./session-store.js";
 
 export interface ImageBlock {
   /** Base64-encoded image data */
@@ -133,7 +138,7 @@ export interface SessionState {
   lockedHijacked: boolean;
 }
 
-export class SessionTracker {
+export class InMemorySessionStore implements SessionStore {
   private sessions = new Map<string, SessionState>();
   private embeddingModel: string;
 
@@ -172,23 +177,28 @@ export class SessionTracker {
    * Called once on session registration (UserPromptSubmit). Ignored if already set
    * so that subsequent prompts don't overwrite the original boundary.
    */
-  setProjectRoot(sessionId: string, cwd: string): void {
+  async setProjectRoot(sessionId: string, cwd: string): Promise<void> {
     const session = this.getSession(sessionId);
     if (!session.projectRoot) {
       session.projectRoot = cwd;
     }
   }
 
-  getProjectRoot(sessionId: string): string | null {
+  async getProjectRoot(sessionId: string): Promise<string | null> {
     return this.sessions.get(sessionId)?.projectRoot ?? null;
   }
 
-  recordClaudeMdScan(sessionId: string, scan: import("./claudemd-scanner.js").ClaudeMdScanResult): void {
+  async recordClaudeMdScan(
+    sessionId: string,
+    scan: import("./claudemd-scanner.js").ClaudeMdScanResult,
+  ): Promise<void> {
     const session = this.getSession(sessionId);
     session.claudeMdScan = scan;
   }
 
-  getClaudeMdScan(sessionId: string): import("./claudemd-scanner.js").ClaudeMdScanResult | null {
+  async getClaudeMdScan(
+    sessionId: string,
+  ): Promise<import("./claudemd-scanner.js").ClaudeMdScanResult | null> {
     return this.sessions.get(sessionId)?.claudeMdScan ?? null;
   }
 
@@ -320,14 +330,14 @@ export class SessionTracker {
    * Called from PreToolUse hook.
    * Returns the session state needed for tool evaluation.
    */
-  getSessionContext(sessionId: string): {
+  async getSessionContext(sessionId: string): Promise<{
     originalTask: string | null;
     currentTurn: number;
     recentTools: ToolCallRecord[];
     turnIntents: TurnIntent[];
     originalEmbedding: number[] | null;
     intentImages: ImageBlock[] | undefined;
-  } {
+  }> {
     const session = this.getSession(sessionId);
     const latestIntent = session.turnIntents.length > 0
       ? session.turnIntents[session.turnIntents.length - 1]
@@ -345,13 +355,13 @@ export class SessionTracker {
   /**
    * Record a tool call decision.
    */
-  recordToolCall(
+  async recordToolCall(
     sessionId: string,
     tool: string,
     input: Record<string, unknown>,
     decision: "allow" | "deny" | "review",
     similarity: number | null
-  ): void {
+  ): Promise<void> {
     const session = this.getSession(sessionId);
     session.toolHistory.push({
       turnNumber: session.currentTurn,
@@ -374,11 +384,11 @@ export class SessionTracker {
    * configured strike threshold is reached. Once locked, every subsequent
    * tool call should be denied without re-running the pipeline.
    */
-  recordHijackStrike(sessionId: string, threshold: number): {
+  async recordHijackStrike(sessionId: string, threshold: number): Promise<{
     strikes: number;
     locked: boolean;
     justLocked: boolean;
-  } {
+  }> {
     const session = this.getSession(sessionId);
     const wasLocked = session.lockedHijacked;
     session.hijackStrikes += 1;
@@ -392,23 +402,23 @@ export class SessionTracker {
     };
   }
 
-  isLocked(sessionId: string): boolean {
+  async isLocked(sessionId: string): Promise<boolean> {
     return this.sessions.get(sessionId)?.lockedHijacked ?? false;
   }
 
-  getHijackStrikes(sessionId: string): number {
+  async getHijackStrikes(sessionId: string): Promise<number> {
     return this.sessions.get(sessionId)?.hijackStrikes ?? 0;
   }
 
   /**
    * Get full session summary for logging.
    */
-  getSessionSummary(sessionId: string): {
+  async getSessionSummary(sessionId: string): Promise<{
     turns: number;
     toolCalls: number;
     denied: number;
     intents: string[];
-  } {
+  }> {
     const session = this.getSession(sessionId);
     return {
       turns: session.currentTurn,
@@ -430,11 +440,11 @@ export class SessionTracker {
    * Tracks which files the agent has seen — if content from a read file
    * later appears in a write, that's a potential exfiltration signal.
    */
-  recordFileRead(
+  async recordFileRead(
     sessionId: string,
     filePath: string,
     content: string
-  ): void {
+  ): Promise<void> {
     const session = this.getSession(sessionId);
     const isSensitive = /\.env|\.pem|\.key|id_rsa|credentials|secret|password|token/i.test(filePath);
 
@@ -456,12 +466,12 @@ export class SessionTracker {
    * Record a file write or edit (from PostToolUse after Write/Edit completes).
    * Accumulates content per file so we can detect assembled payloads.
    */
-  recordFileWrite(
+  async recordFileWrite(
     sessionId: string,
     filePath: string,
     content: string,
     isEdit: boolean
-  ): void {
+  ): Promise<void> {
     const session = this.getSession(sessionId);
     const existing = session.filesWritten.get(filePath);
 
@@ -545,7 +555,7 @@ export class SessionTracker {
    * Get all files written this session with their accumulated content.
    * Used by PreToolUse to evaluate execution commands against written files.
    */
-  getWrittenFiles(sessionId: string): FileRecord[] {
+  async getWrittenFiles(sessionId: string): Promise<FileRecord[]> {
     const session = this.getSession(sessionId);
     return Array.from(session.filesWritten.values());
   }
@@ -553,23 +563,23 @@ export class SessionTracker {
   /**
    * Get files that have been written multiple times (potential payload splitting).
    */
-  getMultiWriteFiles(sessionId: string): FileRecord[] {
-    return this.getWrittenFiles(sessionId).filter((f) => f.writeCount > 1);
+  async getMultiWriteFiles(sessionId: string): Promise<FileRecord[]> {
+    return (await this.getWrittenFiles(sessionId)).filter((f) => f.writeCount > 1);
   }
 
   /**
    * Get files containing canary/sensitive data.
    */
-  getCanaryFiles(sessionId: string): FileRecord[] {
-    return this.getWrittenFiles(sessionId).filter((f) => f.containsCanary);
+  async getCanaryFiles(sessionId: string): Promise<FileRecord[]> {
+    return (await this.getWrittenFiles(sessionId)).filter((f) => f.containsCanary);
   }
 
   /**
    * Build a context summary of all written files for the judge.
    * Used when evaluating execution commands (Bash, git commit, etc.).
    */
-  getFileContextForJudge(sessionId: string): string {
-    const files = this.getWrittenFiles(sessionId);
+  async getFileContextForJudge(sessionId: string): Promise<string> {
+    const files = await this.getWrittenFiles(sessionId);
     if (files.length === 0) return "No files written this session.";
 
     const multiWrite = files.filter((f) => f.writeCount > 1);
@@ -616,10 +626,10 @@ export class SessionTracker {
    * Record an environment variable mutation detected in a Bash command.
    * Call from PostToolUse after a Bash command completes.
    */
-  recordEnvVar(
+  async recordEnvVar(
     sessionId: string,
     command: string
-  ): void {
+  ): Promise<void> {
     const session = this.getSession(sessionId);
 
     // Detect export VAR=value
@@ -668,7 +678,7 @@ export class SessionTracker {
   /**
    * Get all env vars set this session.
    */
-  getEnvVars(sessionId: string): EnvVarRecord[] {
+  async getEnvVars(sessionId: string): Promise<EnvVarRecord[]> {
     const session = this.getSession(sessionId);
     return Array.from(session.envVars.values());
   }
@@ -676,8 +686,8 @@ export class SessionTracker {
   /**
    * Get sensitive env vars set this session.
    */
-  getSensitiveEnvVars(sessionId: string): EnvVarRecord[] {
-    return this.getEnvVars(sessionId).filter((v) => v.isSensitive);
+  async getSensitiveEnvVars(sessionId: string): Promise<EnvVarRecord[]> {
+    return (await this.getEnvVars(sessionId)).filter((v) => v.isSensitive);
   }
 
   // =========================================================================
@@ -693,7 +703,7 @@ export class SessionTracker {
    *   0.3 - 0.5  → drifting (significant departure, needs judge)
    *   0.5+       → hijacked (severe departure, block)
    */
-  classifyDrift(drift: number | null): "on-task" | "scope-creep" | "drifting" | "hijacked" {
+  classifyDrift(drift: number | null): DriftClassification {
     if (drift === null) return "on-task";
     if (drift < 0.2) return "on-task";
     if (drift < 0.3) return "scope-creep";
@@ -705,7 +715,7 @@ export class SessionTracker {
    * Record turn metrics at the END of each turn.
    * Logs the drift level, classification, and actions taken.
    */
-  recordTurnMetrics(
+  async recordTurnMetrics(
     sessionId: string,
     driftFromOriginal: number | null,
     driftFromPrevious: number | null,
@@ -713,7 +723,7 @@ export class SessionTracker {
     toolCallsDenied: number,
     goalReminderInjected: boolean,
     blocked: boolean
-  ): void {
+  ): Promise<void> {
     const session = this.getSession(sessionId);
     const classification = this.classifyDrift(driftFromOriginal);
 
@@ -766,10 +776,10 @@ export class SessionTracker {
    * Get the goal reminder message based on drift classification.
    * Returns null if no reminder needed.
    */
-  getGoalReminder(
+  async getGoalReminder(
     sessionId: string,
     driftFromOriginal: number | null
-  ): string | null {
+  ): Promise<string | null> {
     const session = this.getSession(sessionId);
     const classification = this.classifyDrift(driftFromOriginal);
     const originalTask = session.originalIntent?.prompt ?? "(unknown)";
@@ -809,14 +819,14 @@ export class SessionTracker {
   /**
    * Get all turn metrics for the session.
    */
-  getTurnMetrics(sessionId: string): TurnMetrics[] {
+  async getTurnMetrics(sessionId: string): Promise<TurnMetrics[]> {
     return this.getSession(sessionId).turnMetrics;
   }
 
   /**
    * Get full session summary including file and env tracking.
    */
-  getFullSessionSummary(sessionId: string): {
+  async getFullSessionSummary(sessionId: string): Promise<{
     turns: number;
     toolCalls: number;
     denied: number;
@@ -827,16 +837,16 @@ export class SessionTracker {
     envVarsSet: number;
     sensitiveEnvVars: number;
     turnMetrics: TurnMetrics[];
-  } {
+  }> {
     const session = this.getSession(sessionId);
-    const basic = this.getSessionSummary(sessionId);
+    const basic = await this.getSessionSummary(sessionId);
     return {
       ...basic,
       filesWritten: session.filesWritten.size,
-      filesWithCanary: this.getCanaryFiles(sessionId).length,
-      multiWriteFiles: this.getMultiWriteFiles(sessionId).length,
+      filesWithCanary: (await this.getCanaryFiles(sessionId)).length,
+      multiWriteFiles: (await this.getMultiWriteFiles(sessionId)).length,
       envVarsSet: session.envVars.size,
-      sensitiveEnvVars: this.getSensitiveEnvVars(sessionId).length,
+      sensitiveEnvVars: (await this.getSensitiveEnvVars(sessionId)).length,
       turnMetrics: session.turnMetrics,
     };
   }
@@ -844,7 +854,14 @@ export class SessionTracker {
   /**
    * Clean up a completed session.
    */
-  endSession(sessionId: string): void {
+  async endSession(sessionId: string): Promise<void> {
     this.sessions.delete(sessionId);
   }
 }
+
+/**
+ * @deprecated Use `InMemorySessionStore` (or depend on the `SessionStore`
+ * interface from `session-store.ts`). Alias kept so archived tests and any
+ * external callers keep compiling.
+ */
+export { InMemorySessionStore as SessionTracker };

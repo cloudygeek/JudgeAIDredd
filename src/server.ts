@@ -25,7 +25,8 @@ import { parseArgs } from "node:util";
 import { writeFileSync, appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { inspect } from "node:util";
-import { SessionTracker, type ImageBlock } from "./session-tracker.js";
+import { InMemorySessionStore } from "./session-tracker.js";
+import type { SessionStore, ImageBlock } from "./session-store.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
 import type { PromptVariant } from "./intent-judge.js";
 import { exportPolicies } from "./tool-policy.js";
@@ -112,7 +113,7 @@ function addFeed(entry: typeof feed[0]) {
   if (feed.length > MAX_FEED) feed.splice(0, feed.length - MAX_FEED);
 }
 
-const tracker = new SessionTracker(CONFIG.embeddingModel);
+const tracker: SessionStore = new InMemorySessionStore(CONFIG.embeddingModel);
 const interceptor = new PreToolInterceptor({
   judgeModel: CONFIG.judgeModel,
   judgeBackend: CONFIG.judgeBackend,
@@ -423,15 +424,15 @@ async function backfillFromTranscript(
 
     // Replay file operations into the tracker
     for (const path of filesRead) {
-      tracker.recordFileRead(sessionId, path, "(backfilled)");
+      await tracker.recordFileRead(sessionId, path, "(backfilled)");
     }
     for (const file of filesWritten) {
-      tracker.recordFileWrite(sessionId, file.path, file.content, file.isEdit);
+      await tracker.recordFileWrite(sessionId, file.path, file.content, file.isEdit);
     }
 
     // Record tool calls
     for (const tc of toolCalls) {
-      tracker.recordToolCall(sessionId, tc.tool, tc.input, "allow", null);
+      await tracker.recordToolCall(sessionId, tc.tool, tc.input, "allow", null);
     }
 
     console.log(
@@ -462,7 +463,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   // Store the Claude instance's working directory as the sandbox boundary.
   // setProjectRoot ignores subsequent calls so the first cwd wins.
   if (cwd) {
-    tracker.setProjectRoot(session_id, cwd);
+    await tracker.setProjectRoot(session_id, cwd);
 
     // Scan CLAUDE.md on first session contact for injection patterns
     if (!registeredSessions.has(session_id)) {
@@ -477,7 +478,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
         for (const f of scan.findings) {
           console.warn(`    ${f.severity.toUpperCase()} ${f.pattern} (${f.file}:${f.line}): ${f.snippet}`);
         }
-        tracker.recordClaudeMdScan(session_id, scan);
+        await tracker.recordClaudeMdScan(session_id, scan);
       }
     }
   }
@@ -554,7 +555,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   // Get appropriate reminder (only in autonomous mode)
   const classification = tracker.classifyDrift(result.driftFromOriginal);
   const reminder = mode === "autonomous"
-    ? tracker.getGoalReminder(session_id, result.driftFromOriginal)
+    ? await tracker.getGoalReminder(session_id, result.driftFromOriginal)
     : null;
 
   // Build hook response
@@ -639,7 +640,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     // drift without a baseline. Policy deny list still applies (except in
     // learn mode, which only observes).
     if (!registeredSessions.has(session_id)) {
-      const projectRoot = tracker.getProjectRoot(session_id);
+      const projectRoot = await tracker.getProjectRoot(session_id);
       const policyOnly = (await import("./tool-policy.js")).evaluateToolPolicy(tool_name, tool_input ?? {}, projectRoot);
       const noGoalDetail = transcriptContent
         ? "backfill from transcript content failed"
@@ -671,8 +672,8 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   // Hijack lock — autonomous mode only. If this session has previously hit
   // the strike threshold, short-circuit every subsequent call with a deny
   // and the locked message. The pipeline doesn't run.
-  if (mode === "autonomous" && tracker.isLocked(session_id)) {
-    tracker.recordToolCall(session_id, tool_name, tool_input ?? {}, "deny", null);
+  if (mode === "autonomous" && (await tracker.isLocked(session_id))) {
+    await tracker.recordToolCall(session_id, tool_name, tool_input ?? {}, "deny", null);
     addFeed({
       timestamp: new Date().toISOString(),
       type: "tool",
@@ -700,7 +701,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
         allowed: false,
         stage: "session-locked",
         reason: LOCKED_MESSAGE,
-        hijackStrikes: tracker.getHijackStrikes(session_id),
+        hijackStrikes: await tracker.getHijackStrikes(session_id),
         locked: true,
       },
     });
@@ -710,14 +711,14 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   let fileContext: string | undefined;
   if (tool_name === "Bash") {
     const command = String(tool_input?.command ?? "");
-    const writtenFiles = tracker.getWrittenFiles(session_id);
+    const writtenFiles = await tracker.getWrittenFiles(session_id);
 
     const referencesWritten = writtenFiles.some((f) =>
       command.includes(f.path) || command.includes(f.path.split("/").pop()!)
     );
 
     if (referencesWritten || /git\s+(add|commit|push)/.test(command)) {
-      fileContext = tracker.getFileContextForJudge(session_id);
+      fileContext = await tracker.getFileContextForJudge(session_id);
     }
   }
 
@@ -733,7 +734,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     tool_name,
     tool_input ?? {},
     fullContext || undefined,
-    tracker.getProjectRoot(session_id)
+    await tracker.getProjectRoot(session_id)
   );
 
   // In learn mode, the full pipeline runs (for logging / FPR calibration)
@@ -743,7 +744,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   // in the session log + dashboard feed for offline review.
 
   // Record the decision (true verdict, regardless of learn-mode pass-through)
-  tracker.recordToolCall(
+  await tracker.recordToolCall(
     session_id,
     tool_name,
     tool_input ?? {},
@@ -759,7 +760,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     !result.allowed &&
     result.judgeVerdict?.verdict === "hijacked"
   ) {
-    lockState = tracker.recordHijackStrike(session_id, CONFIG.hijackThreshold);
+    lockState = await tracker.recordHijackStrike(session_id, CONFIG.hijackThreshold);
     if (lockState.justLocked) {
       console.warn(
         `  [${session_id.substring(0, 8)}] [LOCK] Hijack threshold reached ` +
@@ -810,7 +811,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       // Use the interceptor's *current* working goal (which interactive mode
       // updates each turn) rather than the session's stale very-first prompt.
       const currentGoal = interceptor.getCurrentGoal(session_id)
-        || tracker.getSessionContext(session_id).originalTask
+        || (await tracker.getSessionContext(session_id)).originalTask
         || "unknown";
       // Strip the contextual "PREVIOUS ASSISTANT RESPONSE: ..." prefix when
       // surfacing to the user — they only need to see the actual user prompt.
@@ -859,8 +860,8 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
             reasoning: result.judgeVerdict.reasoning,
           }
         : null,
-      hijackStrikes: lockState?.strikes ?? tracker.getHijackStrikes(session_id),
-      locked: lockState?.locked ?? tracker.isLocked(session_id),
+      hijackStrikes: lockState?.strikes ?? (await tracker.getHijackStrikes(session_id)),
+      locked: lockState?.locked ?? (await tracker.isLocked(session_id)),
     },
   });
 }
@@ -878,7 +879,7 @@ async function handleTrack(req: IncomingMessage, res: ServerResponse) {
 
   // Track file reads
   if (tool_name === "Read") {
-    tracker.recordFileRead(
+    await tracker.recordFileRead(
       session_id,
       String(tool_input?.file_path ?? ""),
       String(tool_output ?? "")
@@ -887,7 +888,7 @@ async function handleTrack(req: IncomingMessage, res: ServerResponse) {
 
   // Track file writes
   if (tool_name === "Write") {
-    tracker.recordFileWrite(
+    await tracker.recordFileWrite(
       session_id,
       String(tool_input?.file_path ?? ""),
       String(tool_input?.content ?? ""),
@@ -897,7 +898,7 @@ async function handleTrack(req: IncomingMessage, res: ServerResponse) {
 
   // Track file edits
   if (tool_name === "Edit") {
-    tracker.recordFileWrite(
+    await tracker.recordFileWrite(
       session_id,
       String(tool_input?.file_path ?? ""),
       String(tool_input?.new_string ?? ""),
@@ -907,7 +908,7 @@ async function handleTrack(req: IncomingMessage, res: ServerResponse) {
 
   // Track env vars in Bash
   if (tool_name === "Bash") {
-    tracker.recordEnvVar(session_id, String(tool_input?.command ?? ""));
+    await tracker.recordEnvVar(session_id, String(tool_input?.command ?? ""));
   }
 
   json(res, 200, {});
@@ -924,8 +925,8 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
     return json(res, 400, { error: "Missing session_id" });
   }
 
-  const summary = tracker.getFullSessionSummary(session_id);
-  const ctx = tracker.getSessionContext(session_id);
+  const summary = await tracker.getFullSessionSummary(session_id);
+  const ctx = await tracker.getSessionContext(session_id);
   const driftHistory = tracker.getDriftDetector(session_id).getHistory();
 
   // Write log
@@ -942,15 +943,15 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
     timestamp: new Date().toISOString(),
     originalTask: ctx.originalTask,
     summary,
-    hijackStrikes: tracker.getHijackStrikes(session_id),
-    lockedHijacked: tracker.isLocked(session_id),
+    hijackStrikes: await tracker.getHijackStrikes(session_id),
+    lockedHijacked: await tracker.isLocked(session_id),
     toolHistory: ctx.recentTools,
-    filesWritten: tracker.getWrittenFiles(session_id).map((f) => ({
+    filesWritten: (await tracker.getWrittenFiles(session_id)).map((f) => ({
       path: f.path,
       writeCount: f.writeCount,
       containsCanary: f.containsCanary,
     })),
-    envVars: tracker.getEnvVars(session_id),
+    envVars: await tracker.getEnvVars(session_id),
     driftHistory,
     turnMetrics: summary.turnMetrics,
     interceptorLog: interceptor.getLog(session_id).map((r) => ({
@@ -974,7 +975,7 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
 
   // Cleanup
   registeredSessions.delete(session_id);
-  tracker.endSession(session_id);
+  await tracker.endSession(session_id);
   interceptor.reset(session_id);
 
   json(res, 200, { logFile, summary });
@@ -983,9 +984,9 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
 // =========================================================================
 // GET /session/:id — Debug
 // =========================================================================
-function handleSessionGet(res: ServerResponse, sessionId: string) {
-  const ctx = tracker.getSessionContext(sessionId);
-  const summary = tracker.getFullSessionSummary(sessionId);
+async function handleSessionGet(res: ServerResponse, sessionId: string) {
+  const ctx = await tracker.getSessionContext(sessionId);
+  const summary = await tracker.getFullSessionSummary(sessionId);
   json(res, 200, { ...ctx, summary });
 }
 
@@ -1029,8 +1030,7 @@ async function handleCompact(req: IncomingMessage, res: ServerResponse) {
 
   // Don't pivot — the intent hasn't changed, just the model's memory.
   // But record it in metrics so we know when it happened.
-  const session = tracker.getSessionContext(session_id);
-  tracker.recordTurnMetrics(
+  await tracker.recordTurnMetrics(
     session_id,
     null, // no drift measurement at compaction
     null,
@@ -1086,7 +1086,7 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname.startsWith("/session/")) {
       const id = url.pathname.split("/session/")[1];
-      return handleSessionGet(res, id);
+      return await handleSessionGet(res, id);
     }
 
     if (req.method === "POST" && url.pathname === "/intent") {
