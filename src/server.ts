@@ -193,6 +193,38 @@ function extractImagesFromContentBlocks(blocks: any[]): ImageBlock[] {
   return images;
 }
 
+// Claude Code writes plain user prompts as `content: "string"`, but multimodal
+// / tool-result turns use the Anthropic-API-shaped `content: [{type, ...}]`
+// array. Normalise both so transcript-backfill sees every user prompt.
+function extractTextAndImages(content: unknown): { text: string; images: ImageBlock[] } {
+  if (typeof content === "string") {
+    return { text: content, images: [] };
+  }
+  if (Array.isArray(content)) {
+    const text = content
+      .filter((b: any) => b && b.type === "text" && typeof b.text === "string")
+      .map((b: any) => b.text)
+      .join("\n");
+    return { text, images: extractImagesFromContentBlocks(content) };
+  }
+  return { text: "", images: [] };
+}
+
+// Transcript entries marked `isMeta: true` or wrapping slash-commands /
+// local-command stdio are harness chatter, not real user intent — skip them
+// so backfill doesn't register "<command-name>/clear</command-name>" as a goal.
+function isSyntheticUserEntry(msg: any, text: string): boolean {
+  if (msg?.isMeta === true) return true;
+  const t = text.trim();
+  if (!t) return false;
+  return (
+    t.startsWith("<command-name>") ||
+    t.startsWith("<local-command-") ||
+    t.startsWith("<command-message>") ||
+    t.startsWith("<command-args>")
+  );
+}
+
 function extractLastUserAndPriorAssistant(
   transcriptPathOrContent: string,
   isContent = false
@@ -223,22 +255,15 @@ function extractLastUserAndPriorAssistant(
       try {
         const msg = JSON.parse(line);
         if (msg.type === "assistant") {
-          const text = (msg.message?.content ?? [])
-            .filter((b: any) => b.type === "text")
-            .map((b: any) => b.text)
-            .join("\n")
-            .trim();
-          if (text) pendingAssistant = text;
+          const { text } = extractTextAndImages(msg.message?.content);
+          const trimmed = text.trim();
+          if (trimmed) pendingAssistant = trimmed;
         } else if (msg.type === "user") {
-          const contentBlocks = msg.message?.content ?? [];
-          const text = contentBlocks
-            .filter((b: any) => b.type === "text")
-            .map((b: any) => b.text)
-            .join("\n")
-            .trim();
-          const imgs = extractImagesFromContentBlocks(contentBlocks);
-          if (text || imgs.length) {
-            userTurns.push({ user: text, prior: pendingAssistant, images: imgs });
+          const { text, images: imgs } = extractTextAndImages(msg.message?.content);
+          const trimmed = text.trim();
+          if (isSyntheticUserEntry(msg, trimmed)) continue;
+          if (trimmed || imgs.length) {
+            userTurns.push({ user: trimmed, prior: pendingAssistant, images: imgs });
           }
         }
       } catch {}
@@ -310,21 +335,16 @@ async function backfillFromTranscript(
         // intent history into the tracker — important for `claude --continue`
         // and for Dredd restarts mid-session.
         if (msg.type === "user") {
-          const contentBlocks = msg.message?.content ?? [];
-          const textBlocks = contentBlocks
-            .filter((b: any) => b.type === "text")
-            .map((b: any) => b.text);
-          if (textBlocks.length > 0) {
-            userPrompts.push({
-              text: textBlocks.join("\n"),
-              images: extractImagesFromContentBlocks(contentBlocks),
-            });
+          const { text, images: imgs } = extractTextAndImages(msg.message?.content);
+          const trimmed = text.trim();
+          if (!isSyntheticUserEntry(msg, trimmed) && (trimmed || imgs.length)) {
+            userPrompts.push({ text: trimmed, images: imgs });
           }
         }
 
         // Extract tool calls from assistant messages
         if (msg.type === "assistant") {
-          const blocks = msg.message?.content ?? [];
+          const blocks = Array.isArray(msg.message?.content) ? msg.message.content : [];
           for (const block of blocks) {
             if (block.type === "tool_use") {
               const tool = block.name;
@@ -509,9 +529,13 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     // Only update the goal for substantive prompts.
     // Learn mode also updates intent so pipeline verdicts are evaluated
     // against the actual current goal, not a stale first prompt.
-    const isConfirmation =
-      /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|👍)\b/i.test(prompt)
-      && prompt.trim().length < 80;
+    // A prompt is a pure confirmation only if the whole trimmed prompt is
+    // a confirmation token (optionally with trailing punctuation/emoji).
+    // "yes fix it" / "ok and also rename X" carry new imperatives and
+    // should be treated as substantive prompts, not confirmations.
+    const confirmationOnly =
+      /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|👍)\s*[.!?👍]*\s*$/i;
+    const isConfirmation = confirmationOnly.test(prompt) && prompt.trim().length < 80;
 
     if (isConfirmation) {
       console.log(
