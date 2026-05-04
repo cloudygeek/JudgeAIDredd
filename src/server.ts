@@ -22,7 +22,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { parseArgs } from "node:util";
-import { writeFileSync, appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import { writeFileSync, appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import { SessionTracker, type ImageBlock } from "./session-tracker.js";
@@ -418,7 +418,7 @@ async function backfillFromTranscript(
     // original is computed (unless this is also the first prompt, in which
     // case it just becomes originalIntent).
     await tracker.registerIntent(sessionId, goalPrompt, false, goalImages);
-    await interceptor.registerGoal(contextualGoal, goalImages);
+    await interceptor.registerGoal(sessionId, contextualGoal, goalImages);
     registeredSessions.add(sessionId);
 
     // Replay file operations into the tracker
@@ -517,7 +517,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
 
   // Register goal with interceptor on first call per session
   if (result.isOriginal && !registeredSessions.has(session_id)) {
-    await interceptor.registerGoal(contextualGoal, transcriptImages);
+    await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
     registeredSessions.add(session_id);
   }
 
@@ -542,7 +542,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
         `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: "${prompt.trim()}" is a confirmation — keeping previous goal`
       );
     } else {
-      await interceptor.registerGoal(contextualGoal, transcriptImages);
+      await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
       console.log(
         `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: updated goal to "${prompt.substring(0, 60)}..." ` +
         `(prior assistant context: ${priorAssistant ? "yes" : "no"}, ` +
@@ -597,7 +597,7 @@ async function handleRegister(req: IncomingMessage, res: ServerResponse) {
   }
   const sessionId = `bench-${crypto.randomUUID()}`;
   await tracker.registerIntent(sessionId, task, CONFIG.mode === "interactive");
-  await interceptor.registerGoal(task);
+  await interceptor.registerGoal(sessionId, task);
   registeredSessions.add(sessionId);
   console.log(`  [${sessionId.substring(0, 8)}] [REGISTER] benchmark session: "${task.substring(0, 60)}..."`);
   json(res, 200, { session: sessionId });
@@ -729,10 +729,10 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   }
 
   const result = await interceptor.evaluate(
+    session_id,
     tool_name,
     tool_input ?? {},
     fullContext || undefined,
-    session_id,
     tracker.getProjectRoot(session_id)
   );
 
@@ -809,7 +809,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     } else {
       // Use the interceptor's *current* working goal (which interactive mode
       // updates each turn) rather than the session's stale very-first prompt.
-      const currentGoal = interceptor.getCurrentGoal()
+      const currentGoal = interceptor.getCurrentGoal(session_id)
         || tracker.getSessionContext(session_id).originalTask
         || "unknown";
       // Strip the contextual "PREVIOUS ASSISTANT RESPONSE: ..." prefix when
@@ -953,7 +953,7 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
     envVars: tracker.getEnvVars(session_id),
     driftHistory,
     turnMetrics: summary.turnMetrics,
-    interceptorLog: interceptor.getLog().map((r) => ({
+    interceptorLog: interceptor.getLog(session_id).map((r) => ({
       tool: r.tool,
       input: r.input,
       stage: r.stage,
@@ -975,6 +975,7 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
   // Cleanup
   registeredSessions.delete(session_id);
   tracker.endSession(session_id);
+  interceptor.reset(session_id);
 
   json(res, 200, { logFile, summary });
 }
@@ -1001,8 +1002,10 @@ async function handlePivot(req: IncomingMessage, res: ServerResponse) {
 
   await tracker.pivotSession(session_id, reason ?? "User changed direction");
 
-  // Reset the interceptor goal — next UserPromptSubmit will set the new one
-  interceptor.reset();
+  // Reset only this session's interceptor goal — next UserPromptSubmit
+  // will set the new one. Other concurrent sessions keep their goals.
+  interceptor.reset(session_id);
+  registeredSessions.delete(session_id);
 
   json(res, 200, { pivoted: true, reason: reason ?? "User changed direction" });
 }
@@ -1182,6 +1185,92 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/policies") {
       return json(res, 200, { ...exportPolicies(), domain: exportDomainPolicies() });
+    }
+
+    // API: report /data persistence state so we can tell whether the volume
+    // actually survives container restart. Matches the startup probe in
+    // fargate/docker-entrypoint-judge.sh.
+    if (req.method === "GET" && url.pathname === "/api/data-status") {
+      const sessionDir = CONFIG.logDir;
+      const consoleDir = CONFIG.consoleLogDir;
+      const dataDir =
+        sessionDir.endsWith("/sessions") ? sessionDir.slice(0, -"/sessions".length) : sessionDir;
+
+      // Parse /proc/mounts (Linux only; undefined on mac/dev).
+      let mounts: Array<{ source: string; target: string; fstype: string; options: string }> = [];
+      try {
+        mounts = readFileSync("/proc/mounts", "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const [source, target, fstype, options] = line.split(/\s+/);
+            return { source, target, fstype, options };
+          });
+      } catch {
+        // Not Linux, or /proc not mounted — leave empty.
+      }
+
+      const mountFor = (path: string) => {
+        const match = mounts
+          .filter((m) => path === m.target || path.startsWith(m.target + "/"))
+          .sort((a, b) => b.target.length - a.target.length)[0];
+        return match ?? null;
+      };
+
+      const describeDir = (dir: string) => {
+        if (!existsSync(dir)) {
+          return { path: dir, exists: false };
+        }
+        let files: string[] = [];
+        try {
+          files = readdirSync(dir);
+        } catch {
+          files = [];
+        }
+        let bytes = 0;
+        let newest: { name: string; mtime: string; size: number } | null = null;
+        for (const name of files) {
+          try {
+            const st = statSync(join(dir, name));
+            if (!st.isFile()) continue;
+            bytes += st.size;
+            if (!newest || st.mtimeMs > Date.parse(newest.mtime)) {
+              newest = { name, mtime: new Date(st.mtimeMs).toISOString(), size: st.size };
+            }
+          } catch {
+            // Skip unreadable entries.
+          }
+        }
+        return {
+          path: dir,
+          exists: true,
+          fileCount: files.length,
+          totalBytes: bytes,
+          newest,
+        };
+      };
+
+      const dataMount = mountFor(dataDir);
+      return json(res, 200, {
+        dataDir,
+        sessionDir,
+        consoleDir,
+        mount: dataMount
+          ? {
+              source: dataMount.source,
+              target: dataMount.target,
+              fstype: dataMount.fstype,
+              options: dataMount.options,
+              persistent:
+                dataMount.fstype === "nfs" ||
+                dataMount.fstype === "nfs4" ||
+                dataMount.fstype === "efs" ||
+                !["overlay", "overlay2", "tmpfs", "aufs"].includes(dataMount.fstype),
+            }
+          : { persistent: false, note: "not a mount point — ephemeral container layer" },
+        sessions: describeDir(sessionDir),
+        logs: describeDir(consoleDir),
+      });
     }
 
     // API: list daily console log files

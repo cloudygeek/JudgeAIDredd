@@ -82,23 +82,49 @@ export interface InterceptionResult {
   reason: string;
 }
 
-export class PreToolInterceptor {
-  private config: Required<InterceptorConfig>;
-  private driftDetector: DriftDetector;
-  private judge: IntentJudge;
-  private originalTask: string = "";
-  private intentImages: ImageBlock[] | undefined;
-  private toolLog: InterceptionResult[] = [];
+/**
+ * Per-session goal state. One instance per `session_id` so concurrent users
+ * of the same judge process do not stomp on each other's intent. Before
+ * this was introduced the interceptor held a single `originalTask` field —
+ * whichever session last called `registerGoal` would silently overwrite
+ * every other session's anchor, and tool calls from session B would be
+ * judged against session A's goal.
+ */
+interface SessionGoalState {
+  originalTask: string;
+  intentImages: ImageBlock[] | undefined;
+  driftDetector: DriftDetector;
+  toolLog: InterceptionResult[];
   /** Index into toolLog marking where the current goal started. Tool calls
    *  before this index belong to previous (completed) goals and must not
    *  be fed to the judge — otherwise stale actions from earlier turns get
    *  interpreted as "trajectory" for the current task. */
-  private goalStartIndex: number = 0;
+  goalStartIndex: number;
+}
+
+export class PreToolInterceptor {
+  private config: Required<InterceptorConfig>;
+  private judge: IntentJudge;
+  private sessions = new Map<string, SessionGoalState>();
 
   constructor(config?: InterceptorConfig) {
     this.config = { ...DEFAULTS, ...config };
-    this.driftDetector = new DriftDetector(this.config.embeddingModel);
     this.judge = new IntentJudge(this.config.judgeModel, this.config.judgeBackend, this.config.judgeEffort, this.config.hardened);
+  }
+
+  private getSession(sessionId: string): SessionGoalState {
+    let s = this.sessions.get(sessionId);
+    if (!s) {
+      s = {
+        originalTask: "",
+        intentImages: undefined,
+        driftDetector: new DriftDetector(this.config.embeddingModel),
+        toolLog: [],
+        goalStartIndex: 0,
+      };
+      this.sessions.set(sessionId, s);
+    }
+    return s;
   }
 
   async preflight(): Promise<void> {
@@ -168,18 +194,19 @@ export class PreToolInterceptor {
     }
   }
 
-  async registerGoal(task: string, images?: ImageBlock[]): Promise<void> {
-    this.originalTask = task;
-    this.intentImages = images?.length ? images : undefined;
+  async registerGoal(sessionId: string, task: string, images?: ImageBlock[]): Promise<void> {
+    const s = this.getSession(sessionId);
+    s.originalTask = task;
+    s.intentImages = images?.length ? images : undefined;
     // Anything in toolLog before this point belongs to a previous goal —
     // remember the boundary so recent-history for the judge is scoped to
     // just the current task.
-    this.goalStartIndex = this.toolLog.length;
-    await this.driftDetector.registerGoal(task);
+    s.goalStartIndex = s.toolLog.length;
+    await s.driftDetector.registerGoal(task);
   }
 
-  getCurrentGoal(): string {
-    return this.originalTask;
+  getCurrentGoal(sessionId: string): string {
+    return this.sessions.get(sessionId)?.originalTask ?? "";
   }
 
   /**
@@ -191,13 +218,14 @@ export class PreToolInterceptor {
    *   getFileContextForJudge() so the judge can see the assembled payload.
    */
   async evaluate(
+    sessionId: string,
     tool: string,
     input: Record<string, unknown>,
     fileContext?: string,
-    sessionId?: string,
     projectRoot?: string | null
   ): Promise<InterceptionResult> {
     const start = Date.now();
+    const s = this.getSession(sessionId);
 
     // --- Stage 1: Policy engine ---
     const policyResult = evaluateToolPolicy(tool, input, projectRoot);
@@ -214,7 +242,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: policyResult.reason,
       };
-      this.log(result, sessionId);
+      this.log(s, result, sessionId);
       return result;
     }
 
@@ -230,7 +258,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: policyResult.reason,
       };
-      this.log(result, sessionId);
+      this.log(s, result, sessionId);
       return result;
     }
 
@@ -239,13 +267,13 @@ export class PreToolInterceptor {
     // the prior tool calls in the current turn. Can short-circuit with
     // "allow" (clearly legitimate, skip the judge) or "deny" (clearly
     // malicious composition). "review" falls through to drift + judge.
-    const priorTurnCalls = this.toolLog.slice(this.goalStartIndex).map((r) => ({
+    const priorTurnCalls = s.toolLog.slice(s.goalStartIndex).map((r) => ({
       tool: r.tool,
       input: r.input,
       allowed: r.allowed,
     }));
     const domainResult = evaluateDomainPolicy(tool, input, {
-      originalTask: this.originalTask,
+      originalTask: s.originalTask,
       priorTurnCalls,
     });
 
@@ -261,7 +289,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `${domainResult.matchedRule}: ${domainResult.reason}`,
       };
-      this.log(result, sessionId);
+      this.log(s, result, sessionId);
       return result;
     }
 
@@ -277,14 +305,14 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `${domainResult.matchedRule}: ${domainResult.reason}`,
       };
-      this.log(result, sessionId);
+      this.log(s, result, sessionId);
       return result;
     }
     // "review" (or no match) → continue to drift + judge.
 
     // --- Stage 2: Embedding drift check ---
     const toolDescription = this.describeToolCall(tool, input);
-    const drift = await this.driftDetector.evaluate(toolDescription);
+    const drift = await s.driftDetector.evaluate(toolDescription);
 
     if (drift.similarity >= this.config.reviewThreshold) {
       // High similarity to original task — allow
@@ -299,7 +327,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `Similarity ${drift.similarity.toFixed(3)} >= threshold ${this.config.reviewThreshold}`,
       };
-      this.log(result, sessionId);
+      this.log(s, result, sessionId);
       return result;
     }
 
@@ -316,7 +344,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `Similarity ${drift.similarity.toFixed(3)} < deny threshold ${this.config.denyThreshold}`,
       };
-      this.log(result, sessionId);
+      this.log(s, result, sessionId);
       return result;
     }
 
@@ -334,14 +362,14 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `Similarity ${drift.similarity.toFixed(3)} in review zone, judge disabled`,
       };
-      this.log(result, sessionId);
+      this.log(s, result, sessionId);
       return result;
     }
 
     // Only consider tool calls taken since the current goal was registered.
     // Earlier calls belong to a previous (completed) user task and would
     // mislead the judge into thinking the agent has drifted.
-    const currentGoalTools = this.toolLog.slice(this.goalStartIndex);
+    const currentGoalTools = s.toolLog.slice(s.goalStartIndex);
     const recentTools = currentGoalTools.slice(-5).map(
       (r) => `${r.tool}(${this.describeToolCall(r.tool, r.input).substring(0, 80)})`
     );
@@ -353,10 +381,10 @@ export class PreToolInterceptor {
     }
 
     const judgeVerdict = await this.judge.evaluate(
-      this.originalTask,
+      s.originalTask,
       recentTools,
       currentAction,
-      this.intentImages
+      s.intentImages
     );
 
     // Only "hijacked" is denied. "consistent" and "drifting" are allowed.
@@ -374,7 +402,7 @@ export class PreToolInterceptor {
       evaluationMs: Date.now() - start,
       reason: `Judge: ${judgeVerdict.verdict} (${judgeVerdict.reasoning})`,
     };
-    this.log(result);
+    this.log(s, result, sessionId);
     return result;
   }
 
@@ -403,8 +431,8 @@ export class PreToolInterceptor {
     }
   }
 
-  private log(result: InterceptionResult, sessionId?: string): void {
-    this.toolLog.push(result);
+  private log(s: SessionGoalState, result: InterceptionResult, sessionId: string): void {
+    s.toolLog.push(result);
 
     const icon =
       result.stage.endsWith("-allow") ? "✓" :
@@ -415,22 +443,21 @@ export class PreToolInterceptor {
     const judgeStr = result.judgeVerdict
       ? ` judge=${result.judgeVerdict.verdict}(${result.judgeVerdict.durationMs}ms)`
       : "";
-    const sessionStr = sessionId ? ` [${sessionId.substring(0, 8)}]` : "";
+    const sessionStr = ` [${sessionId.substring(0, 8)}]`;
 
     console.log(
       `   ${sessionStr} [${icon} ${result.stage}]${simStr}${judgeStr} ${result.tool}: ${result.reason} (${result.evaluationMs}ms)`
     );
   }
 
-  getLog(): InterceptionResult[] {
-    return this.toolLog;
+  getLog(sessionId: string): InterceptionResult[] {
+    return this.sessions.get(sessionId)?.toolLog ?? [];
   }
 
-  reset(): void {
-    this.toolLog = [];
-    this.originalTask = "";
-    this.intentImages = undefined;
-    this.goalStartIndex = 0;
-    this.driftDetector.reset();
+  /** Clear per-session goal + log. Called on /end (session finished) and
+   *  /pivot (user changed direction — next registerGoal will set fresh
+   *  state). Does NOT affect other sessions. */
+  reset(sessionId: string): void {
+    this.sessions.delete(sessionId);
   }
 }

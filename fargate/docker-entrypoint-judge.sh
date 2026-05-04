@@ -46,6 +46,23 @@ echo "  Sessions:       $SESSION_DIR"
 echo "  Logs:           $LOG_DIR"
 echo "═══════════════════════════════════════════════════════"
 
+# Dump $DATA_DIR state at startup so we can tell whether the volume is
+# persistent across restarts (expect non-zero counts on redeploy if EFS
+# is mounted).
+mount_line="$(awk -v d="$DATA_DIR" '$2==d {print $1" type "$3" ("$4")"}' /proc/mounts 2>/dev/null | head -1)"
+session_count=$(find "$SESSION_DIR" -maxdepth 1 -type f -name 'session-*.json' 2>/dev/null | wc -l | tr -d ' ')
+log_count=$(find "$LOG_DIR" -maxdepth 1 -type f -name '*.log' 2>/dev/null | wc -l | tr -d ' ')
+data_bytes=$(du -sb "$DATA_DIR" 2>/dev/null | awk '{print $1}')
+echo "  $DATA_DIR mount:   ${mount_line:-<not a mount point — ephemeral container layer>}"
+echo "  $DATA_DIR bytes:   ${data_bytes:-unknown}"
+echo "  Existing sessions: $session_count"
+echo "  Existing logs:     $log_count"
+if [ "$session_count" -gt 0 ]; then
+  echo "  Newest 3 sessions:"
+  ls -1t "$SESSION_DIR"/session-*.json 2>/dev/null | head -3 | sed 's/^/    /'
+fi
+echo "═══════════════════════════════════════════════════════"
+
 ARGS=(
   --port "$PORT"
   --mode "$MODE"

@@ -82,10 +82,10 @@ rm -f judge-ai-dredd-sandbox.zip
 cd /tmp && rm -rf dredd-rezip && mkdir dredd-rezip && cd dredd-rezip
 
 # App source (no node_modules — Dockerfile handles deps).
-# Drop src/tests/ — test runners/executors aren't needed by the judge server.
+# Test runners/executors now live under archive/tests/ and are excluded from
+# the zip by default — nothing to delete here.
 cp -r <project>/src <project>/hooks \
       <project>/package.json <project>/package-lock.json <project>/tsconfig.json .
-rm -rf src/tests
 
 # Judge entrypoint + flat-layout Dockerfile (zip root, no fargate/ prefix)
 cp <project>/fargate/docker-entrypoint-judge.sh ./
@@ -146,6 +146,17 @@ docker run -p 3000:3000 \
 | `AWS_REGION` | `eu-west-2` | AWS region for Bedrock |
 
 Session logs go to `$DATA_DIR/sessions/`, console logs to `$DATA_DIR/logs/`. Both are viewable via the dashboard (Logs tab).
+
+### Checking `/data` persistence
+
+Session logs only survive container restart if `$DATA_DIR` is backed by a real volume (EFS on Fargate). Two ways to verify:
+
+1. **At startup** — `fargate/docker-entrypoint-judge.sh` prints the `/proc/mounts` line for `$DATA_DIR`, total bytes, existing session/log file counts, and the newest 3 session filenames. Check the container's stdout on boot.
+2. **On a running container** — `GET /api/data-status` returns the same info as JSON:
+   ```bash
+   curl -sk https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal/api/data-status | jq
+   ```
+   Look for `mount.fstype` (`nfs4`/`efs` = persistent) and `sessions.fileCount`. If `mount` shows `"note": "not a mount point — ephemeral container layer"`, the task definition is missing a volume and logs will not survive restart.
 
 ### Key fargate files
 
