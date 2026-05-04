@@ -29,6 +29,12 @@ import { InMemorySessionStore } from "./session-tracker.js";
 import { DynamoSessionStore } from "./dynamo-session-store.js";
 import { CachedSessionStore } from "./cached-session-store.js";
 import type { SessionStore, ImageBlock } from "./session-store.js";
+import {
+  type ApiKeyStore,
+  InMemoryApiKeyStore,
+} from "./api-key-store.js";
+import { DynamoApiKeyStore } from "./dynamo-api-key-store.js";
+import { CachedApiKeyStore } from "./cached-api-key-store.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
 import type { PromptVariant } from "./intent-judge.js";
 import { exportPolicies } from "./tool-policy.js";
@@ -146,6 +152,30 @@ console.log(
       ? ` (table=${DYNAMO_TABLE_NAME}, region=${DYNAMO_REGION})`
       : ""),
 );
+
+// API-key store. Hook authentication (not yet wired to any endpoint — the
+// store is instantiated here so a misconfigured Dynamo binding fails at
+// startup rather than on first auth attempt). The table is separate from
+// jaid-sessions because keys and session state have different lifetimes
+// and access patterns (see CLAUDE.md — "Session storage" and "API key
+// storage" sections).
+const DYNAMO_API_KEYS_TABLE_NAME = process.env.DYNAMO_API_KEYS_TABLE_NAME ?? "jaid-api-keys";
+const apiKeys: ApiKeyStore = STORE_BACKEND === "dynamo"
+  ? new CachedApiKeyStore({
+      backend: new DynamoApiKeyStore({
+        tableName: DYNAMO_API_KEYS_TABLE_NAME,
+        region: DYNAMO_REGION,
+      }),
+    })
+  : new InMemoryApiKeyStore();
+
+console.log(
+  `  [AUTH]  API-key store: ${STORE_BACKEND}` +
+    (STORE_BACKEND === "dynamo"
+      ? ` (table=${DYNAMO_API_KEYS_TABLE_NAME}, region=${DYNAMO_REGION})`
+      : ""),
+);
+
 const interceptor = new PreToolInterceptor({
   judgeModel: CONFIG.judgeModel,
   judgeBackend: CONFIG.judgeBackend,
