@@ -208,7 +208,8 @@ Session logs only survive container restart if `$DATA_DIR` is backed by a real v
 | `fargate/tests/docker-entrypoint-test25.sh` | Test 25: AgentLAB Long-Horizon Cross-Vendor Smoke |
 | `fargate/api-server.cjs` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
 | `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-west-2.amazonaws.com`) |
-| `fargate/infra/` | Terraform for the Fargate task definition and supporting resources |
+
+The sandbox server's **IAM task role and Fargate task definition live in the CKO AI Sandbox platform's IaC**, not in this repo. The legacy Test 7 benchmark's IAM + deploy bash has been archived to `archive/legacy-infra/` — see its README before copying anything from there.
 
 ## Drift thresholds
 
