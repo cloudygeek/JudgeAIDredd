@@ -147,6 +147,32 @@ export class InMemorySessionStore implements SessionStore {
   }
 
   /**
+   * Return a snapshot of session state. Used by `CachedSessionStore` to
+   * warm its cache in one go rather than per-method. Returns null for
+   * sessions we've never seen (to match the Dynamo implementation).
+   */
+  async loadSession(sessionId: string): Promise<SessionState | null> {
+    return this.sessions.get(sessionId) ?? null;
+  }
+
+  async listSessions(limit = 50): Promise<import("./session-store.js").SessionSummary[]> {
+    const out: import("./session-store.js").SessionSummary[] = [];
+    for (const s of this.sessions.values()) {
+      out.push({
+        sessionId: s.sessionId,
+        startedAt: s.originalIntent?.timestamp ?? null,
+        originalTask: s.originalIntent?.prompt ?? null,
+        currentTurn: s.currentTurn,
+        hijackStrikes: s.hijackStrikes,
+        lockedHijacked: s.lockedHijacked,
+      });
+    }
+    // Newest-first by startedAt
+    out.sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""));
+    return out.slice(0, limit);
+  }
+
+  /**
    * Get or create session state.
    */
   private getSession(sessionId: string): SessionState {

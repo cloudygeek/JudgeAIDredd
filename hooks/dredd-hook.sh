@@ -49,12 +49,39 @@ DREDD_URL="${DREDD_URL:-http://localhost:3001}"
 # Accepts: interactive | autonomous | learn
 DREDD_MODE="${DREDD_MODE:-}"
 
+# Per-session ALB cookie jar. The Dredd backend is stateful: each container
+# holds an in-memory cache of the session's state. Pinning a session to a
+# container via the AWSALB cookie turns every request after the first into
+# a cache hit and saves a DynamoDB round-trip. If the sticky target dies,
+# ALB reroutes and the new container reconstructs state from DynamoDB —
+# transparent to the hook.
+DREDD_COOKIE_DIR="${DREDD_COOKIE_DIR:-$HOME/.claude/dredd/cookies}"
+mkdir -p "$DREDD_COOKIE_DIR" 2>/dev/null || true
+
 # Read hook input from stdin
 INPUT=$(cat)
 
 # Extract common fields
 HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
+
+# Cookie jar path — only safe to set when we have a SESSION_ID so concurrent
+# sessions don't clobber each other. No jar for an empty session id.
+COOKIE_JAR=""
+if [ -n "$SESSION_ID" ]; then
+  # Sanitise just in case — session ids are already uuid-ish.
+  safe_sid=$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9._-' '_')
+  COOKIE_JAR="$DREDD_COOKIE_DIR/$safe_sid.jar"
+fi
+
+# Wrapper: curl flags for this session's sticky cookie jar. Using both
+# --cookie and --cookie-jar on the same file means curl reads, updates, and
+# writes the jar in one go.
+dredd_curl_cookie_args() {
+  if [ -n "$COOKIE_JAR" ]; then
+    printf -- "--cookie %s --cookie-jar %s" "$COOKIE_JAR" "$COOKIE_JAR"
+  fi
+}
 
 # If server is down, fall back to user prompt
 if ! curl -s --connect-timeout 1 "$DREDD_URL/health" > /dev/null 2>&1; then
@@ -120,6 +147,7 @@ case "$HOOK_EVENT" in
     CLAUDEMD_CONTENT=$(read_claudemd_content "$CWD")
 
     RESPONSE=$(curl -s -X POST "$DREDD_URL/intent" \
+      $(dredd_curl_cookie_args) \
       -H "Content-Type: application/json" \
       -d "$(jq -n \
         --arg sid "$SESSION_ID" \
@@ -164,6 +192,7 @@ case "$HOOK_EVENT" in
     TRANSCRIPT_CONTENT=$(read_transcript_content "$TRANSCRIPT_PATH" 500)
 
     RESPONSE=$(curl -s -X POST "$DREDD_URL/evaluate" \
+      $(dredd_curl_cookie_args) \
       -H "Content-Type: application/json" \
       -d "$(jq -n \
         --arg sid "$SESSION_ID" \
@@ -192,6 +221,7 @@ case "$HOOK_EVENT" in
 
     # Async — fire and forget, don't block the agent
     curl -s -X POST "$DREDD_URL/track" \
+      $(dredd_curl_cookie_args) \
       -H "Content-Type: application/json" \
       -d "$(jq -n \
         --arg sid "$SESSION_ID" \
@@ -219,9 +249,15 @@ case "$HOOK_EVENT" in
 
   "SessionEnd")
     curl -s -X POST "$DREDD_URL/end" \
+      $(dredd_curl_cookie_args) \
       -H "Content-Type: application/json" \
       -d "$(jq -n --arg sid "$SESSION_ID" '{session_id: $sid}')" \
       --connect-timeout 2 --max-time 10 > /dev/null 2>&1 &
+
+    # Clean up the sticky cookie jar — the session is over.
+    if [ -n "$COOKIE_JAR" ] && [ -f "$COOKIE_JAR" ]; then
+      rm -f "$COOKIE_JAR" 2>/dev/null || true
+    fi
 
     echo '{}'
     ;;
@@ -229,6 +265,7 @@ case "$HOOK_EVENT" in
   "PreCompact")
     # Context is being compacted — notify Dredd so it can record the boundary
     curl -s -X POST "$DREDD_URL/compact" \
+      $(dredd_curl_cookie_args) \
       -H "Content-Type: application/json" \
       -d "$(jq -n --arg sid "$SESSION_ID" '{session_id: $sid}')" \
       --connect-timeout 2 --max-time 5 > /dev/null 2>&1 &

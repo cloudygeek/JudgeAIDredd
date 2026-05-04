@@ -42,7 +42,34 @@ export type {
 
 export type DriftClassification = "on-task" | "scope-creep" | "drifting" | "hijacked";
 
+/** Minimal per-session metadata returned by the list endpoint. */
+export interface SessionSummary {
+  sessionId: string;
+  startedAt: string | null;
+  endedAt?: string | null;
+  originalTask: string | null;
+  currentTurn: number;
+  hijackStrikes: number;
+  lockedHijacked: boolean;
+}
+
 export interface SessionStore {
+  // ---- bulk snapshot ------------------------------------------------------
+  /**
+   * Return a full in-memory snapshot of the session, or `null` if unknown.
+   * Used by `CachedSessionStore` to warm its in-memory replica from a remote
+   * backend without a per-method roundtrip per access.
+   */
+  loadSession(sessionId: string): Promise<SessionState | null>;
+
+  /**
+   * List recent sessions, newest first. Powers the dashboard /api/sessions.
+   * Implementations should cap at `limit` (default 50) to keep responses
+   * small. The Dynamo implementation queries GSI1; in-memory reads from
+   * the live map.
+   */
+  listSessions(limit?: number): Promise<SessionSummary[]>;
+
   // ---- session lifecycle --------------------------------------------------
   setProjectRoot(sessionId: string, cwd: string): Promise<void>;
   getProjectRoot(sessionId: string): Promise<string | null>;

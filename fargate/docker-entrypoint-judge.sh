@@ -14,6 +14,9 @@ set -euo pipefail
 #   DATA_DIR          base data directory           (default: /data)
 #   AWS_REGION        AWS region for Bedrock        (default: eu-west-2)
 #   HIJACK_THRESHOLD  strikes before autonomous lock (default: 2)
+#   STORE_BACKEND     memory|dynamo                 (default: dynamo in sandbox)
+#   DYNAMO_TABLE_NAME DynamoDB table for session state (default: jaid-sessions)
+#   DYNAMO_REGION     Region of the Dynamo table    (default: eu-west-1)
 
 MODE="${MODE:-interactive}"
 BACKEND="${BACKEND:-bedrock}"
@@ -26,6 +29,16 @@ DATA_DIR="${DATA_DIR:-/data}"
 HIJACK_THRESHOLD="${HIJACK_THRESHOLD:-2}"
 
 export AWS_REGION="${AWS_REGION:-eu-west-2}"
+
+# Session-state backend. Sandbox containers default to Dynamo so sessions
+# survive task replacement and can be shared across containers behind an
+# ALB (with sticky cookies keeping the hot path in-container).
+export STORE_BACKEND="${STORE_BACKEND:-dynamo}"
+export DYNAMO_TABLE_NAME="${DYNAMO_TABLE_NAME:-jaid-sessions}"
+# The Dynamo table lives in eu-west-1; Bedrock is often eu-west-2. The
+# DynamoSessionStore reads AWS_REGION, so pass the table's region via a
+# dedicated env and swap just before invoking the SDK client.
+export DYNAMO_REGION="${DYNAMO_REGION:-eu-west-1}"
 
 SESSION_DIR="${DATA_DIR}/sessions"
 LOG_DIR="${DATA_DIR}/logs"
@@ -44,6 +57,10 @@ echo "  Hijack lock:    $HIJACK_THRESHOLD strike(s)"
 echo "  Port:           $PORT"
 echo "  Sessions:       $SESSION_DIR"
 echo "  Logs:           $LOG_DIR"
+echo "  Store backend:  $STORE_BACKEND"
+if [ "$STORE_BACKEND" = "dynamo" ]; then
+  echo "  Dynamo table:   $DYNAMO_TABLE_NAME (${DYNAMO_REGION})"
+fi
 echo "═══════════════════════════════════════════════════════"
 
 # Dump $DATA_DIR state at startup so we can tell whether the volume is

@@ -26,6 +26,8 @@ import { writeFileSync, appendFileSync, mkdirSync, readFileSync, readdirSync, ex
 import { join } from "node:path";
 import { inspect } from "node:util";
 import { InMemorySessionStore } from "./session-tracker.js";
+import { DynamoSessionStore } from "./dynamo-session-store.js";
+import { CachedSessionStore } from "./cached-session-store.js";
 import type { SessionStore, ImageBlock } from "./session-store.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
 import type { PromptVariant } from "./intent-judge.js";
@@ -113,7 +115,37 @@ function addFeed(entry: typeof feed[0]) {
   if (feed.length > MAX_FEED) feed.splice(0, feed.length - MAX_FEED);
 }
 
-const tracker: SessionStore = new InMemorySessionStore(CONFIG.embeddingModel);
+// Store backend selection.
+//   STORE_BACKEND=memory (default) — process-local Map; no persistence.
+//   STORE_BACKEND=dynamo           — Dynamo-backed with in-process LRU cache.
+// Requires DYNAMO_TABLE_NAME (defaults to "jaid-sessions") and AWS_REGION
+// (defaults to "eu-west-1", which is where the shared jaid-sessions table
+// lives). ALB sticky sessions keep hot sessions on the same container so
+// the cache carries the hot path; task replacement surfaces as a cache
+// miss + loadSession round-trip.
+const STORE_BACKEND = (process.env.STORE_BACKEND ?? "memory") as "memory" | "dynamo";
+const DYNAMO_TABLE_NAME = process.env.DYNAMO_TABLE_NAME ?? "jaid-sessions";
+// The Dynamo table can live in a different region from Bedrock (which uses
+// AWS_REGION). Use DYNAMO_REGION when set, fall back to AWS_REGION, then
+// to eu-west-1 where the shared jaid-sessions table is provisioned.
+const DYNAMO_REGION = process.env.DYNAMO_REGION ?? process.env.AWS_REGION ?? "eu-west-1";
+const tracker: SessionStore = STORE_BACKEND === "dynamo"
+  ? new CachedSessionStore({
+      backend: new DynamoSessionStore({
+        tableName: DYNAMO_TABLE_NAME,
+        region: DYNAMO_REGION,
+        embeddingModel: CONFIG.embeddingModel,
+      }),
+      embeddingModel: CONFIG.embeddingModel,
+    })
+  : new InMemorySessionStore(CONFIG.embeddingModel);
+
+console.log(
+  `  [STORE] Backend: ${STORE_BACKEND}` +
+    (STORE_BACKEND === "dynamo"
+      ? ` (table=${DYNAMO_TABLE_NAME}, region=${DYNAMO_REGION})`
+      : ""),
+);
 const interceptor = new PreToolInterceptor({
   judgeModel: CONFIG.judgeModel,
   judgeBackend: CONFIG.judgeBackend,
@@ -914,6 +946,46 @@ async function handleTrack(req: IncomingMessage, res: ServerResponse) {
   json(res, 200, {});
 }
 
+/**
+ * Assemble the full session-log JSON shape the dashboard consumes.
+ * Works for both live sessions (in-memory tracker) and persisted sessions
+ * in Dynamo. Returns null when the session is completely unknown.
+ */
+async function buildSessionLogShape(sessionId: string): Promise<Record<string, unknown> | null> {
+  const ctx = await tracker.getSessionContext(sessionId);
+  if (!ctx.originalTask && ctx.currentTurn === 0 && ctx.turnIntents.length === 0) {
+    return null;
+  }
+  const summary = await tracker.getFullSessionSummary(sessionId);
+  const driftHistory = tracker.getDriftDetector(sessionId).getHistory();
+  return {
+    sessionId,
+    timestamp: new Date().toISOString(),
+    originalTask: ctx.originalTask,
+    summary,
+    hijackStrikes: await tracker.getHijackStrikes(sessionId),
+    lockedHijacked: await tracker.isLocked(sessionId),
+    toolHistory: ctx.recentTools,
+    filesWritten: (await tracker.getWrittenFiles(sessionId)).map((f) => ({
+      path: f.path,
+      writeCount: f.writeCount,
+      containsCanary: f.containsCanary,
+    })),
+    envVars: await tracker.getEnvVars(sessionId),
+    driftHistory,
+    turnMetrics: summary.turnMetrics,
+    interceptorLog: interceptor.getLog(sessionId).map((r) => ({
+      tool: r.tool,
+      input: r.input,
+      stage: r.stage,
+      allowed: r.allowed,
+      similarity: r.similarity,
+      reason: r.reason,
+      evaluationMs: r.evaluationMs,
+    })),
+  };
+}
+
 // =========================================================================
 // POST /end — Stop
 // =========================================================================
@@ -925,52 +997,18 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
     return json(res, 400, { error: "Missing session_id" });
   }
 
-  const summary = await tracker.getFullSessionSummary(session_id);
-  const ctx = await tracker.getSessionContext(session_id);
-  const driftHistory = tracker.getDriftDetector(session_id).getHistory();
+  const sessionLog = await buildSessionLogShape(session_id);
+  const summary = (sessionLog?.summary as any) ?? { turns: 0, toolCalls: 0, denied: 0 };
 
-  // Write log
-  const logDir = CONFIG.logDir;
-  try { mkdirSync(logDir, { recursive: true }); } catch {}
-
-  const logFile = join(
-    logDir,
-    `session-${session_id.substring(0, 12)}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`
-  );
-
-  const sessionLog = {
-    sessionId: session_id,
-    timestamp: new Date().toISOString(),
-    originalTask: ctx.originalTask,
-    summary,
-    hijackStrikes: await tracker.getHijackStrikes(session_id),
-    lockedHijacked: await tracker.isLocked(session_id),
-    toolHistory: ctx.recentTools,
-    filesWritten: (await tracker.getWrittenFiles(session_id)).map((f) => ({
-      path: f.path,
-      writeCount: f.writeCount,
-      containsCanary: f.containsCanary,
-    })),
-    envVars: await tracker.getEnvVars(session_id),
-    driftHistory,
-    turnMetrics: summary.turnMetrics,
-    interceptorLog: interceptor.getLog(session_id).map((r) => ({
-      tool: r.tool,
-      input: r.input,
-      stage: r.stage,
-      allowed: r.allowed,
-      similarity: r.similarity,
-      reason: r.reason,
-      evaluationMs: r.evaluationMs,
-    })),
-  };
-
-  writeFileSync(logFile, JSON.stringify(sessionLog, null, 2));
+  // Session state already lives in the SessionStore (in-memory or Dynamo).
+  // We no longer write a session-*.json file on disk — the dashboard reads
+  // from the store, and for sandbox deployments DynamoDB is the durable
+  // source of truth. See TODO(#7) for shutdown-flush considerations.
 
   console.log(
     `[END] Session ${session_id.substring(0, 8)}: ` +
     `${summary.turns} turns, ${summary.toolCalls} tools, ` +
-    `${summary.denied} denied → ${logFile}`
+    `${summary.denied} denied`
   );
 
   // Cleanup
@@ -978,7 +1016,7 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
   await tracker.endSession(session_id);
   interceptor.reset(session_id);
 
-  json(res, 200, { logFile, summary });
+  json(res, 200, { summary });
 }
 
 // =========================================================================
@@ -1139,43 +1177,56 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // API: list session logs
+    // API: list session logs.
+    //   Primary source: the session store (in-memory map or DynamoDB).
+    //   Fallback: any session-*.json left on disk from before the store
+    //   migration, so we don't lose sight of historical runs.
     if (req.method === "GET" && url.pathname === "/api/sessions") {
+      const live = await tracker.listSessions(50);
+      const liveLogs = (await Promise.all(
+        live.map((s) => buildSessionLogShape(s.sessionId)),
+      )).filter((x): x is Record<string, unknown> => x !== null);
+      const liveIds = new Set(liveLogs.map((s) => s.sessionId as string));
+
       const logDir = CONFIG.logDir;
-      if (!existsSync(logDir)) return json(res, 200, []);
-
-      const files = readdirSync(logDir)
-        .filter((f) => f.startsWith("session-") && f.endsWith(".json"))
-        .sort()
-        .reverse()
-        .slice(0, 50);
-
-      const sessions = files.map((f) => {
-        try {
-          return JSON.parse(readFileSync(join(logDir, f), "utf8"));
-        } catch {
-          return null;
+      const diskLogs: Record<string, unknown>[] = [];
+      if (existsSync(logDir)) {
+        const files = readdirSync(logDir)
+          .filter((f) => f.startsWith("session-") && f.endsWith(".json"))
+          .sort()
+          .reverse()
+          .slice(0, 50);
+        for (const f of files) {
+          try {
+            const parsed = JSON.parse(readFileSync(join(logDir, f), "utf8"));
+            if (!liveIds.has(parsed.sessionId)) diskLogs.push(parsed);
+          } catch { /* skip unreadable */ }
         }
-      }).filter(Boolean);
+      }
 
-      return json(res, 200, sessions);
+      const combined = [...liveLogs, ...diskLogs].slice(0, 50);
+      return json(res, 200, combined);
     }
 
-    // API: get session log by ID
+    // API: get session log by ID.
+    //   Store first, disk fallback as above.
     if (req.method === "GET" && url.pathname.startsWith("/api/session-log/")) {
       const id = url.pathname.split("/api/session-log/")[1];
+      const live = await buildSessionLogShape(id);
+      if (live) return json(res, 200, live);
+
       const logDir = CONFIG.logDir;
-      if (!existsSync(logDir)) return json(res, 404, { error: "No logs" });
-
-      const file = readdirSync(logDir)
-        .filter((f) => f.includes(id.substring(0, 12)))
-        .sort()
-        .reverse()[0];
-
-      if (!file) return json(res, 404, { error: "Session not found" });
-
-      const data = JSON.parse(readFileSync(join(logDir, file), "utf8"));
-      return json(res, 200, data);
+      if (existsSync(logDir)) {
+        const file = readdirSync(logDir)
+          .filter((f) => f.includes(id.substring(0, 12)))
+          .sort()
+          .reverse()[0];
+        if (file) {
+          const data = JSON.parse(readFileSync(join(logDir, file), "utf8"));
+          return json(res, 200, data);
+        }
+      }
+      return json(res, 404, { error: "Session not found" });
     }
 
     // API: live feed

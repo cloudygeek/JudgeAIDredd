@@ -118,6 +118,32 @@ export class DynamoSessionStore implements SessionStore {
 
   // ---- helpers ----------------------------------------------------------
 
+  /**
+   * Build an empty SessionState for sessions that don't yet exist in
+   * Dynamo. Keeps getter semantics consistent with InMemorySessionStore,
+   * which implicitly creates an empty session on any read.
+   */
+  private emptyState(sessionId: string): SessionState {
+    const eph = this.eph(sessionId);
+    return {
+      sessionId,
+      originalIntent: null,
+      turnIntents: [],
+      toolHistory: [],
+      currentTurn: 0,
+      driftDetector: eph.driftDetector,
+      originalEmbedding: null,
+      filesWritten: new Map(),
+      filesRead: [],
+      envVars: new Map(),
+      turnMetrics: [],
+      projectRoot: null,
+      claudeMdScan: null,
+      hijackStrikes: 0,
+      lockedHijacked: false,
+    };
+  }
+
   private eph(sessionId: string) {
     let e = this.ephemeral.get(sessionId);
     if (!e) {
@@ -188,7 +214,31 @@ export class DynamoSessionStore implements SessionStore {
    * registerGoal with the original prompt, so downstream code that calls
    * `.getHistory()` etc. keeps working.
    */
-  private async loadSession(sessionId: string): Promise<SessionState> {
+  async listSessions(limit = 50): Promise<import("./session-store.js").SessionSummary[]> {
+    // Use GSI1: gsi1pk = "SESSION", gsi1sk = startedAt, newest first
+    // (ScanIndexForward = false sorts by sk descending).
+    const r = await this.client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        IndexName: GSI_NAME,
+        KeyConditionExpression: "gsi1pk = :pk",
+        ExpressionAttributeValues: { ":pk": GSI_PK },
+        ScanIndexForward: false,
+        Limit: limit,
+      }),
+    );
+    return (r.Items ?? []).map((m) => ({
+      sessionId: m.sessionId,
+      startedAt: m.startedAt ?? null,
+      endedAt: m.endedAt ?? null,
+      originalTask: (m.originalIntent as any)?.prompt ?? null,
+      currentTurn: m.currentTurn ?? 0,
+      hijackStrikes: m.hijackStrikes ?? 0,
+      lockedHijacked: m.lockedHijacked ?? false,
+    }));
+  }
+
+  async loadSession(sessionId: string): Promise<SessionState | null> {
     const items: Record<string, any>[] = [];
     let cursor: Record<string, any> | undefined;
     do {
@@ -203,6 +253,8 @@ export class DynamoSessionStore implements SessionStore {
       if (r.Items) items.push(...r.Items);
       cursor = r.LastEvaluatedKey;
     } while (cursor);
+
+    if (items.length === 0) return null;
 
     const meta = items.find((i) => i.sk === "META");
     const turns = items
@@ -566,7 +618,7 @@ export class DynamoSessionStore implements SessionStore {
     originalEmbedding: number[] | null;
     intentImages: ImageBlock[] | undefined;
   }> {
-    const state = await this.loadSession(sessionId);
+    const state = (await this.loadSession(sessionId)) ?? this.emptyState(sessionId);
     const latestIntent =
       state.turnIntents.length > 0
         ? state.turnIntents[state.turnIntents.length - 1]
@@ -796,7 +848,7 @@ export class DynamoSessionStore implements SessionStore {
   }
 
   async getWrittenFiles(sessionId: string): Promise<FileRecord[]> {
-    const state = await this.loadSession(sessionId);
+    const state = (await this.loadSession(sessionId)) ?? this.emptyState(sessionId);
     return Array.from(state.filesWritten.values());
   }
 
@@ -809,7 +861,7 @@ export class DynamoSessionStore implements SessionStore {
   }
 
   async getFileContextForJudge(sessionId: string): Promise<string> {
-    const state = await this.loadSession(sessionId);
+    const state = (await this.loadSession(sessionId)) ?? this.emptyState(sessionId);
     const files = Array.from(state.filesWritten.values());
     if (files.length === 0) return "No files written this session.";
 
@@ -888,7 +940,7 @@ export class DynamoSessionStore implements SessionStore {
   }
 
   async getEnvVars(sessionId: string): Promise<EnvVarRecord[]> {
-    const state = await this.loadSession(sessionId);
+    const state = (await this.loadSession(sessionId)) ?? this.emptyState(sessionId);
     return Array.from(state.envVars.values());
   }
 
@@ -948,7 +1000,7 @@ export class DynamoSessionStore implements SessionStore {
   }
 
   async getTurnMetrics(sessionId: string): Promise<TurnMetrics[]> {
-    const state = await this.loadSession(sessionId);
+    const state = (await this.loadSession(sessionId)) ?? this.emptyState(sessionId);
     return state.turnMetrics;
   }
 
@@ -958,7 +1010,7 @@ export class DynamoSessionStore implements SessionStore {
     denied: number;
     intents: string[];
   }> {
-    const state = await this.loadSession(sessionId);
+    const state = (await this.loadSession(sessionId)) ?? this.emptyState(sessionId);
     return {
       turns: state.currentTurn,
       toolCalls: state.toolHistory.length,
@@ -982,7 +1034,7 @@ export class DynamoSessionStore implements SessionStore {
     sensitiveEnvVars: number;
     turnMetrics: TurnMetrics[];
   }> {
-    const state = await this.loadSession(sessionId);
+    const state = (await this.loadSession(sessionId)) ?? this.emptyState(sessionId);
     const basic = {
       turns: state.currentTurn,
       toolCalls: state.toolHistory.length,
