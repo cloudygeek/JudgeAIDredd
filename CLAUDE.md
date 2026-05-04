@@ -147,8 +147,37 @@ docker run -p 3000:3000 \
 | `STORE_BACKEND` | `dynamo` (sandbox) / `memory` (local) | Session state backend |
 | `DYNAMO_TABLE_NAME` | `jaid-sessions` | DynamoDB table for session state |
 | `DYNAMO_REGION` | `eu-west-1` | Region of the Dynamo table (distinct from Bedrock region) |
+| `DYNAMO_API_KEYS_TABLE_NAME` | `jaid-api-keys` | DynamoDB table for hook API keys |
+| `DREDD_ROLE` | `hook` | Container role: `hook` (hot path + feed + mode) or `dashboard` (UI + session listing) |
+| `DREDD_HOOK_URL` | (unset) | On the dashboard container, the URL the browser will POST /api/feed + /api/mode to |
+| `DREDD_DASHBOARD_ORIGIN` | (unset) | On the hook container, the CORS Origin the dashboard is served from |
+| `DREDD_AUTH_MODE` | `optional` | `off` / `optional` / `required` — hook Bearer-key enforcement |
 
 Session logs: see the **Session storage** note below — Dynamo-backed for the shared sandbox deployment. Console logs (`dredd-YYYY-MM-DD.log`) still live on disk in `$DATA_DIR/logs/` and are viewable via the dashboard (Logs tab).
+
+## Two-container architecture
+
+The sandbox runs **two Fargate services** that share the same image. `DREDD_ROLE` picks which role boots.
+
+| Role | URL | What it does |
+|---|---|---|
+| `hook` (default) | `https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal/` | Hot path: `POST /intent`, `/evaluate`, `/track`, `/end`, `/pivot`, `/compact`, `/register`. Plus status: `/health`, `/api/health`, `/api/data-status`, `/api/whoami`. Plus runtime toggle: `POST /api/mode`. Plus the in-memory feed ring: `GET /api/feed`. Runs the Bedrock/Ollama preflight. Authenticates hook Bearer tokens. |
+| `dashboard` | `https://judge-ai-dredd.aisandbox.dev.ckotech.internal/` | UI: `GET /` (dashboard HTML), `/api/sessions`, `/api/session-log/:id`, `/api/policies`, `/api/logs*`, `/api/integration-bundle`, `/api/whoami`. Behind OIDC. No judge preflight. |
+
+Cross-container calls go **from the browser**:
+- Dashboard HTML → `$DREDD_HOOK_URL/api/feed` (live events)
+- Dashboard HTML → `$DREDD_HOOK_URL/api/mode` (trust mode toggle)
+- Dashboard HTML → `$DREDD_HOOK_URL/api/health` (version + active session count)
+
+The hook container serves CORS headers scoped to `$DREDD_DASHBOARD_ORIGIN` on `/api/feed`, `/api/mode`, and `/api/health`.
+
+Why split: the dashboard's slow DynamoDB reads shouldn't share an event loop with the hook's hot path. Splitting also lets the dashboard live behind OIDC while hooks keep using Bearer keys. Single image; the entrypoint just sets `DREDD_ROLE`.
+
+**Source files:**
+- `src/server.ts` — thin dispatcher, reads `DREDD_ROLE`
+- `src/server-core.ts` — shared plumbing (CONFIG, stores, auth, body caps, path validation, backfill, `buildSessionLogShape`)
+- `src/server-hook.ts` — hook endpoints + feed + mode + health + CORS
+- `src/server-dashboard.ts` — dashboard HTML + sessions + logs + integration bundle. Injects `window.DREDD_HOOK_URL` into the served HTML so the page knows where cross-origin calls go.
 
 ## Session storage
 

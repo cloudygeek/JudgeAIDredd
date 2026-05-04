@@ -17,6 +17,12 @@ set -euo pipefail
 #   STORE_BACKEND     memory|dynamo                 (default: dynamo in sandbox)
 #   DYNAMO_TABLE_NAME DynamoDB table for session state (default: jaid-sessions)
 #   DYNAMO_REGION     Region of the Dynamo table    (default: eu-west-1)
+#   DREDD_ROLE        hook|dashboard                (default: hook)
+#   DREDD_HOOK_URL    URL the dashboard container reaches the hook container on
+#                     (only used when DREDD_ROLE=dashboard)
+#   DREDD_DASHBOARD_ORIGIN  Origin the hook container accepts CORS from
+#                     (only used when DREDD_ROLE=hook)
+#   DREDD_AUTH_MODE   off|optional|required         (default: optional)
 
 MODE="${MODE:-interactive}"
 BACKEND="${BACKEND:-bedrock}"
@@ -40,6 +46,25 @@ export DYNAMO_TABLE_NAME="${DYNAMO_TABLE_NAME:-jaid-sessions}"
 # dedicated env and swap just before invoking the SDK client.
 export DYNAMO_REGION="${DYNAMO_REGION:-eu-west-1}"
 
+# Role: the same image boots as either the hook hot-path server or the
+# dashboard UI, picked at runtime by DREDD_ROLE. Default is "hook" so
+# existing deployments (which didn't set DREDD_ROLE before the split)
+# keep their previous behaviour. The dashboard task definition sets
+# DREDD_ROLE=dashboard explicitly.
+export DREDD_ROLE="${DREDD_ROLE:-hook}"
+# Cross-container URLs. The dashboard needs to know the hook URL to
+# call /api/feed + /api/mode from the browser. The hook needs to
+# know the dashboard origin to return the right Access-Control-Allow-
+# Origin. Both default to empty — same-origin single-process dev works
+# without either.
+export DREDD_HOOK_URL="${DREDD_HOOK_URL:-}"
+export DREDD_DASHBOARD_ORIGIN="${DREDD_DASHBOARD_ORIGIN:-}"
+
+# Auth mode for hook-facing endpoints. Default is "optional" (pass-through
+# with telemetry) while we gather telemetry about who's still sending
+# hooks without a key. Set to "required" to 401 missing keys.
+export DREDD_AUTH_MODE="${DREDD_AUTH_MODE:-optional}"
+
 SESSION_DIR="${DATA_DIR}/sessions"
 LOG_DIR="${DATA_DIR}/logs"
 
@@ -61,6 +86,14 @@ echo "  Store backend:  $STORE_BACKEND"
 if [ "$STORE_BACKEND" = "dynamo" ]; then
   echo "  Dynamo table:   $DYNAMO_TABLE_NAME (${DYNAMO_REGION})"
 fi
+echo "  Role:           $DREDD_ROLE"
+if [ "$DREDD_ROLE" = "dashboard" ] && [ -n "$DREDD_HOOK_URL" ]; then
+  echo "  Hook URL:       $DREDD_HOOK_URL"
+fi
+if [ "$DREDD_ROLE" = "hook" ] && [ -n "$DREDD_DASHBOARD_ORIGIN" ]; then
+  echo "  Dashboard CORS: $DREDD_DASHBOARD_ORIGIN"
+fi
+echo "  Auth mode:      $DREDD_AUTH_MODE"
 echo "═══════════════════════════════════════════════════════"
 
 # Dump $DATA_DIR state at startup so we can tell whether the volume is
