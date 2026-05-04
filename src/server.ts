@@ -543,7 +543,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   addFeed({
     timestamp: new Date().toISOString(),
     type: "intent",
-    prompt: prompt.substring(0, 100),
+    prompt: prompt.substring(0, 500),
     sessionId: session_id,
     reason: `Turn ${result.turnNumber}: ${classification}${result.driftFromOriginal !== null ? ` (drift: ${result.driftFromOriginal.toFixed(3)})` : ""}`,
   });
@@ -755,7 +755,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     tool: tool_name,
     stage: isLearn ? `${result.stage} (learn-shadow)` : result.stage,
     allowed: result.allowed,
-    reason: result.reason.substring(0, 100),
+    reason: result.reason.substring(0, 500),
     sessionId: session_id,
   });
 

@@ -69,6 +69,8 @@ The AI Sandbox container runs the standalone judge server for user testing. It p
 
 **IMPORTANT:** Always commit before building the zip so the pre-commit hook bumps the version. The version prints on the sandbox status page — without a bump you can't tell old and new deployments apart. Do NOT include `node_modules/` in the zip — the Dockerfile runs `npm install` during the Docker build. Always delete the old zip before rebuilding (zip appends, it doesn't replace).
 
+**Deploying changes:** Code changes (server, dashboard, hooks, policy, etc.) are NOT picked up by running sandbox containers until a new zip is built AND redeployed through the CodeBuild pipeline. If you edit `src/`, `hooks/`, or any file that gets packaged, you must rebuild the zip (see below) and push it so CodeBuild produces a new image — otherwise sandbox containers keep serving the previous version.
+
 ### Building the zip
 
 ```bash
