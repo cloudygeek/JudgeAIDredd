@@ -44,6 +44,14 @@
     }
     .mode-interactive { background: var(--amber); color: #000; }
     .mode-autonomous { background: var(--red); color: #fff; }
+    .mode-learn { background: var(--blue); color: #fff; }
+    .mode-select {
+      background: var(--card); color: var(--text);
+      border: 1px solid var(--border); border-radius: 12px;
+      padding: 4px 10px; font-size: 12px; font-weight: 600;
+      text-transform: uppercase; cursor: pointer; font-family: inherit;
+    }
+    .mode-select:hover { border-color: var(--muted); }
 
     .stats {
       display: grid;
@@ -145,7 +153,7 @@
     .tip-item.denied { color: var(--red); }
     .tip-item.allowed { color: var(--green); }
 
-    #live-feed {
+    #live-feed, #detail-feed {
       background: var(--card); border: 1px solid var(--border);
       border-radius: 8px; padding: 16px; max-height: 400px;
       overflow-y: auto; font-family: 'SF Mono', 'Fira Code', monospace;
@@ -266,7 +274,11 @@
         <span class="version" id="version">loading...</span>
       </div>
       <div style="display:flex;gap:12px;align-items:center">
-        <span class="mode-badge" id="mode-badge">...</span>
+        <select class="mode-select" id="mode-select" onchange="switchMode(this.value)" title="Switch the judge's trust mode — shared across all connected clients, does not persist across server restarts">
+          <option value="interactive">interactive</option>
+          <option value="autonomous">autonomous</option>
+          <option value="learn">learn</option>
+        </select>
         <button class="refresh-btn" onclick="refresh()">Refresh</button>
       </div>
     </header>
@@ -296,6 +308,7 @@
       <thead>
         <tr>
           <th style="width:80px">Time</th>
+          <th style="width:90px">Session</th>
           <th>Task</th>
           <th style="width:60px;text-align:center">Turns</th>
           <th style="width:60px;text-align:center">Tools</th>
@@ -305,7 +318,7 @@
         </tr>
       </thead>
       <tbody id="sessions-body">
-        <tr><td colspan="7" class="empty">No sessions yet</td></tr>
+        <tr><td colspan="8" class="empty">No sessions yet</td></tr>
       </tbody>
     </table>
     </div><!-- /tab-overview -->
@@ -352,15 +365,20 @@ chmod +x ~/.claude/dredd/dredd-hook.sh</code></pre>
 
         <div class="scope-panel active" data-scope="global">
           <p class="muted" style="margin:0 0 8px;font-size:13px">
-            Applies to every Claude Code session you start. If you have no
-            hooks yet, copy the bundled settings file. Otherwise merge the
-            <code>hooks</code> and <code>env</code> sections into your existing
-            <code>~/.claude/settings.json</code>.
+            Applies to every Claude Code session you start. The snippet below
+            only copies the bundled settings file if
+            <code>~/.claude/settings.json</code> doesn't already exist;
+            otherwise it tells you to merge the <code>hooks</code> and
+            <code>env</code> sections manually.
           </p>
           <div class="code-block" style="margin-bottom:8px">
             <button class="copy-btn" onclick="copyCode(this)">Copy</button>
             <pre><code>mkdir -p ~/.claude
-cp /tmp/dredd/settings.json ~/.claude/settings.json</code></pre>
+if [ -e ~/.claude/settings.json ]; then
+  echo "~/.claude/settings.json already exists — merge the hooks and env sections from /tmp/dredd/settings.json manually"
+else
+  cp /tmp/dredd/settings.json ~/.claude/settings.json
+fi</code></pre>
           </div>
         </div>
 
@@ -377,13 +395,17 @@ cp /tmp/dredd/settings.json ~/.claude/settings.json</code></pre>
             <button class="copy-btn" onclick="copyCode(this)">Copy</button>
             <pre><code>cd /path/to/your/project
 mkdir -p .claude
-cp /tmp/dredd/settings.json .claude/settings.json</code></pre>
+if [ -e .claude/settings.json ]; then
+  echo ".claude/settings.json already exists — merge the hooks and env sections from /tmp/dredd/settings.json manually"
+else
+  cp /tmp/dredd/settings.json .claude/settings.json
+fi</code></pre>
           </div>
           <p class="muted" style="margin:8px 0 0;font-size:13px">
-            If <code>.claude/settings.json</code> already exists, merge the
+            The check above stops the copy from clobbering an existing file;
+            if it prints the warning, open both files and merge the
             <code>hooks</code> and <code>env</code> sections from
-            <code>/tmp/dredd/settings.json</code> into it instead of
-            overwriting.
+            <code>/tmp/dredd/settings.json</code> into your existing one.
           </p>
         </div>
 
@@ -500,6 +522,11 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     <div class="stats" id="detail-stats"></div>
 
     <div class="detail-section">
+      <h3>Live Feed <span class="count" id="detail-feed-count">0</span></h3>
+      <div id="detail-feed"><div class="empty">No feed events for this session yet</div></div>
+    </div>
+
+    <div class="detail-section">
       <h3>Tool Calls</h3>
       <table>
         <thead><tr><th>Turn</th><th>Tool</th><th>Decision</th><th>Similarity</th><th>Input</th></tr></thead>
@@ -534,6 +561,22 @@ mv .claude/settings.json .claude/settings.json.dredd-off
   <script>
     const API = window.location.origin;
     let sessionsData = [];
+    let currentDetailSessionId = null;
+
+    function renderFeedRow(f, opts) {
+      const time = new Date(f.timestamp).toLocaleTimeString();
+      const cls = f.allowed === false ? 'feed-deny' : f.type === 'intent' ? 'feed-intent' : 'feed-allow';
+      const icon = f.allowed === false ? '✗' : f.type === 'intent' ? '◆' : '✓';
+      const msg = (f.reason ?? f.prompt ?? '');
+      const msgEsc = msg.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      const sid = f.sessionId ?? '';
+      const sidShort = sid ? (sid.length > 8 ? sid.substring(0, 8) : sid) : '';
+      const showSid = opts && opts.showSessionId !== false;
+      const sidHtml = showSid && sid
+        ? `<span class="feed-sid cell-link muted" title="${sid}" onclick="showDetail('${sid}')">${sidShort}</span> `
+        : '';
+      return `<div class="feed-entry"><span class="feed-time">${time}</span> ${sidHtml}<span class="${cls}">${icon}</span> <span class="feed-tool">${f.tool ?? f.type ?? ''}</span> ${f.stage ? `<span class="muted">[${f.stage}]</span>` : ''} <span class="muted" title="${msgEsc}">${msgEsc}</span></div>`;
+    }
 
     // Populate the "Integrate" tab URL hints so users can see which judge
     // they're about to connect to before downloading.
@@ -543,6 +586,26 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       const verifyUrl = document.getElementById('verify-url');
       if (verifyUrl) verifyUrl.textContent = API;
     });
+
+    async function switchMode(next) {
+      // Flips the judge's trust mode in-process. Shared state across clients,
+      // does not survive server restarts — if you need permanence, pass
+      // --mode to the server on launch instead.
+      const select = document.getElementById('mode-select');
+      const prev = select.className.match(/mode-(\w+)/)?.[1] ?? '';
+      try {
+        const resp = await fetch(`${API}/api/mode`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: next }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        select.className = `mode-select mode-${next}`;
+      } catch (err) {
+        alert(`Failed to switch mode: ${err.message}`);
+        if (prev) select.value = prev;
+      }
+    }
 
     function downloadIntegrationBundle() {
       // Triggers a file download via Content-Disposition. The server bakes
@@ -639,8 +702,9 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       try {
         const health = await (await fetch(`${API}/api/health`)).json();
         document.getElementById('version').textContent = `v${health.version}`;
-        document.getElementById('mode-badge').textContent = health.config.mode;
-        document.getElementById('mode-badge').className = `mode-badge mode-${health.config.mode}`;
+        const modeSelect = document.getElementById('mode-select');
+        modeSelect.value = health.config.mode;
+        modeSelect.className = `mode-select mode-${health.config.mode}`;
         document.getElementById('s-active').textContent = health.activeSessions;
 
         sessionsData = await (await fetch(`${API}/api/sessions`)).json();
@@ -651,7 +715,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
 
         const tbody = document.getElementById('sessions-body');
         if (sessionsData.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="7" class="empty">No sessions yet</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" class="empty">No sessions yet</td></tr>';
         } else {
           tbody.innerHTML = sessionsData.map((s, idx) => {
             const tools = s.summary?.toolCalls ?? 0;
@@ -671,8 +735,10 @@ mv .claude/settings.json .claude/settings.json.dredd-off
             const deniedTip = buildDeniedTip(s);
             const fileTip = buildFileTip(s.filesWritten);
 
+            const sidShort = sid ? (sid.length > 8 ? sid.substring(0, 8) : sid) : '';
             return `<tr>
               <td class="mono muted">${time}</td>
+              <td class="mono muted cell-link" title="${sid}" onclick="showDetail('${sid}')">${sidShort}</td>
               <td class="task-text cell-link" title="${(s.originalTask??'').replace(/"/g,'&quot;')}" onclick="showDetail('${sid}')">${task}</td>
               <td style="text-align:center">${s.summary?.turns ?? 0}</td>
               <td style="text-align:center" class="tooltip"><span class="cell-link" onclick="showDetail('${sid}','tools')">${tools}</span><div class="tip">${toolTip || 'No tools'}</div></td>
@@ -692,12 +758,17 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         document.getElementById('s-judged').textContent = feedData.filter(f => f.stage?.includes('judge')).length;
 
         if (feedData.length > 0) {
-          document.getElementById('live-feed').innerHTML = feedData.map(f => {
-            const time = new Date(f.timestamp).toLocaleTimeString();
-            const cls = f.allowed === false ? 'feed-deny' : f.type === 'intent' ? 'feed-intent' : 'feed-allow';
-            const icon = f.allowed === false ? '✗' : f.type === 'intent' ? '◆' : '✓';
-            return `<div class="feed-entry"><span class="feed-time">${time}</span> <span class="${cls}">${icon}</span> <span class="feed-tool">${f.tool ?? f.type ?? ''}</span> ${f.stage ? `<span class="muted">[${f.stage}]</span>` : ''} <span class="muted">${(f.reason ?? f.prompt ?? '').substring(0, 80)}</span></div>`;
-          }).reverse().join('');
+          document.getElementById('live-feed').innerHTML =
+            feedData.map(f => renderFeedRow(f, { showSessionId: true })).reverse().join('');
+        }
+
+        // If detail page is open, refresh the per-session feed from the same data.
+        if (currentDetailSessionId) {
+          const filtered = feedData.filter(f => f.sessionId === currentDetailSessionId);
+          document.getElementById('detail-feed-count').textContent = filtered.length;
+          document.getElementById('detail-feed').innerHTML = filtered.length === 0
+            ? '<div class="empty">No feed events for this session yet</div>'
+            : filtered.map(f => renderFeedRow(f, { showSessionId: false })).reverse().join('');
         }
       } catch (err) {
         console.error('Refresh failed:', err);
@@ -708,11 +779,22 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       try {
         const data = await (await fetch(`${API}/api/session-log/${sessionId}`)).json();
 
+        currentDetailSessionId = sessionId;
         document.getElementById('main-page').style.display = 'none';
         document.getElementById('detail-page').classList.add('active');
 
         document.getElementById('detail-title').textContent = `Session ${sessionId.substring(0, 8)}`;
         document.getElementById('detail-task').textContent = data.originalTask ?? '';
+
+        // Prime the per-session feed from current global feed state.
+        try {
+          const feedData = await (await fetch(`${API}/api/feed`)).json();
+          const filtered = feedData.filter(f => f.sessionId === sessionId);
+          document.getElementById('detail-feed-count').textContent = filtered.length;
+          document.getElementById('detail-feed').innerHTML = filtered.length === 0
+            ? '<div class="empty">No feed events for this session yet</div>'
+            : filtered.map(f => renderFeedRow(f, { showSessionId: false })).reverse().join('');
+        } catch {}
 
         // Stats
         const s = data.summary ?? {};
@@ -777,6 +859,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     }
 
     function showMain() {
+      currentDetailSessionId = null;
       document.getElementById('detail-page').classList.remove('active');
       document.getElementById('main-page').style.display = 'block';
     }

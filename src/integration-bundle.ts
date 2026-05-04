@@ -25,6 +25,11 @@ function dosDateTime(d: Date): { date: number; time: number } {
   return { date, time };
 }
 
+export type { ZipEntry };
+export function buildZipArchive(entries: ZipEntry[]): Buffer {
+  return buildZip(entries);
+}
+
 function buildZip(entries: ZipEntry[]): Buffer {
   const now = new Date();
   const { date, time } = dosDateTime(now);
@@ -154,24 +159,28 @@ Pick one scope:
 
 \`\`\`bash
 mkdir -p ~/.claude
-cp settings.json ~/.claude/settings.json
+if [ -e ~/.claude/settings.json ]; then
+  echo "~/.claude/settings.json already exists — merge the hooks and env sections from settings.json manually"
+else
+  cp settings.json ~/.claude/settings.json
+fi
 \`\`\`
-
-Merge the \`hooks\` and \`env\` sections manually if \`~/.claude/settings.json\`
-already exists.
 
 ### Per-project — only inside one codebase
 
 \`\`\`bash
 cd /path/to/your/project
 mkdir -p .claude
-cp /tmp/dredd/settings.json .claude/settings.json
+if [ -e .claude/settings.json ]; then
+  echo ".claude/settings.json already exists — merge the hooks and env sections from /tmp/dredd/settings.json manually"
+else
+  cp /tmp/dredd/settings.json .claude/settings.json
+fi
 \`\`\`
 
 Commit \`.claude/settings.json\` to share the integration with your team,
 or rename to \`.claude/settings.local.json\` (git-ignored by default) to
-keep it to yourself. If the file already exists, merge the \`hooks\` and
-\`env\` sections instead of overwriting.
+keep it to yourself.
 
 The script defaults to the URL above but respects \`$DREDD_URL\` if set.
 

@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { inspect } from "node:util";
 import { SessionTracker, type ImageBlock } from "./session-tracker.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
+import type { PromptVariant } from "./intent-judge.js";
 import { exportPolicies } from "./tool-policy.js";
 import { exportDomainPolicies } from "./domain-policy.js";
 import { scanClaudeMd, scanClaudeMdContent, type ClaudeMdScanResult } from "./claudemd-scanner.js";
@@ -88,10 +89,10 @@ const CONFIG = {
   judgeBackend: (values.backend as "ollama" | "bedrock")!,
   embeddingModel: values["embedding-model"]!,
   // --prompt wins over --hardened. Accepts "B7", "B7.1", "B7.1-office", "standard".
-  hardened: (() => {
+  hardened: ((): PromptVariant | false => {
     const p = (values.prompt as string).trim();
     if (p === "B7" || p === "B7.1" || p === "B7.1-office") return p;
-    if (p === "standard" || p === "") return values.hardened ? "B7.1" as const : false;
+    if (p === "standard" || p === "") return values.hardened ? "B7.1" : false;
     throw new Error(`Unknown --prompt variant "${p}" (want: standard, B7, B7.1, B7.1-office)`);
   })(),
   judgeEffort: (values["judge-effort"] as string).trim() || undefined,
@@ -1039,6 +1040,23 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    // API: runtime mode switch — flips CONFIG.mode in-process so the dashboard
+    // can toggle interactive/autonomous/learn without a restart. Shared state;
+    // anyone on the dashboard flips it for every client.
+    if (req.method === "POST" && url.pathname === "/api/mode") {
+      const body = JSON.parse(await readBody(req));
+      const next = body.mode;
+      if (next !== "interactive" && next !== "autonomous" && next !== "learn") {
+        return json(res, 400, {
+          error: "mode must be one of: interactive, autonomous, learn",
+        });
+      }
+      const prev = CONFIG.mode;
+      CONFIG.mode = next as TrustMode;
+      console.log(`  [MODE] runtime switch: ${prev} → ${next}`);
+      return json(res, 200, { mode: CONFIG.mode, previous: prev });
+    }
+
     if (req.method === "GET" && url.pathname.startsWith("/session/")) {
       const id = url.pathname.split("/session/")[1];
       return handleSessionGet(res, id);
@@ -1168,6 +1186,62 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // API: bulk download of session + console logs, grouped by day.
+    //   /api/logs/download                 → everything
+    //   /api/logs/download?kind=sessions   → session JSON only
+    //   /api/logs/download?kind=console    → console logs only
+    //   /api/logs/download?date=2026-05-04 → single day
+    if (req.method === "GET" && url.pathname === "/api/logs/download") {
+      const { buildZipArchive } = await import("./integration-bundle.js");
+      const kind = url.searchParams.get("kind") ?? "all";
+      const dateFilter = url.searchParams.get("date");
+      const entries: Array<{ name: string; data: Buffer; mode: number }> = [];
+
+      // Session logs: session-<id>-<iso>.json → group by YYYY-MM-DD from the ISO stamp.
+      if ((kind === "all" || kind === "sessions") && existsSync(CONFIG.logDir)) {
+        for (const f of readdirSync(CONFIG.logDir)) {
+          if (!f.startsWith("session-") || !f.endsWith(".json")) continue;
+          const m = f.match(/(\d{4}-\d{2}-\d{2})/);
+          const day = m ? m[1] : "undated";
+          if (dateFilter && day !== dateFilter) continue;
+          try {
+            const data = readFileSync(join(CONFIG.logDir, f));
+            entries.push({ name: `${day}/sessions/${f}`, data, mode: 0o644 });
+          } catch {}
+        }
+      }
+
+      // Console logs: dredd-YYYY-MM-DD.log.
+      if ((kind === "all" || kind === "console") && existsSync(CONFIG.consoleLogDir)) {
+        for (const f of readdirSync(CONFIG.consoleLogDir)) {
+          if (!f.startsWith("dredd-") || !f.endsWith(".log")) continue;
+          const m = f.match(/dredd-(\d{4}-\d{2}-\d{2})\.log$/);
+          const day = m ? m[1] : "undated";
+          if (dateFilter && day !== dateFilter) continue;
+          try {
+            const data = readFileSync(join(CONFIG.consoleLogDir, f));
+            entries.push({ name: `${day}/console/${f}`, data, mode: 0o644 });
+          } catch {}
+        }
+      }
+
+      if (entries.length === 0) {
+        return json(res, 404, { error: "No logs matched" });
+      }
+
+      const zip = buildZipArchive(entries);
+      const stamp = new Date().toISOString().slice(0, 10);
+      const suffix = dateFilter ? dateFilter : stamp;
+      const kindTag = kind === "all" ? "logs" : kind;
+      res.writeHead(200, {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="dredd-${kindTag}-${suffix}.zip"`,
+        "Content-Length": zip.length,
+      });
+      res.end(zip);
+      return;
+    }
+
     // API: get daily console log content
     if (req.method === "GET" && url.pathname.startsWith("/api/logs/")) {
       const filename = url.pathname.split("/api/logs/")[1];
@@ -1249,6 +1323,7 @@ async function main() {
     console.log(`    GET  /health    — health check + version`);
     console.log(`    GET  /api/sessions  — session log listing`);
     console.log(`    GET  /api/logs      — daily console log listing`);
+    console.log(`    GET  /api/logs/download — zip of logs grouped by day`);
     console.log(`    GET  /api/feed      — live event feed`);
     console.log("█".repeat(50));
   });
