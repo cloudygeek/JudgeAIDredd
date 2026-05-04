@@ -74,14 +74,35 @@ if [ -n "$SESSION_ID" ]; then
   COOKIE_JAR="$DREDD_COOKIE_DIR/$safe_sid.jar"
 fi
 
-# Wrapper: curl flags for this session's sticky cookie jar. Using both
-# --cookie and --cookie-jar on the same file means curl reads, updates, and
-# writes the jar in one go.
-dredd_curl_cookie_args() {
-  if [ -n "$COOKIE_JAR" ]; then
-    printf -- "--cookie %s --cookie-jar %s" "$COOKIE_JAR" "$COOKIE_JAR"
-  fi
-}
+# ---------------------------------------------------------------------------
+# API key (optional during the rollout grace period).
+#
+# Looks for a key at $HOME/.claude/dredd/api-key (or $DREDD_API_KEY_FILE) —
+# one key per file, no trailing newline significance. If the file doesn't
+# exist, requests go out without an Authorization header and the server's
+# DREDD_AUTH_MODE decides whether that's allowed.
+#
+# Perms are NOT enforced by this script but the dashboard's "Generate key"
+# flow instructs the user to chmod 600 and set strict parent dir perms.
+# ---------------------------------------------------------------------------
+DREDD_API_KEY_FILE="${DREDD_API_KEY_FILE:-$HOME/.claude/dredd/api-key}"
+DREDD_API_KEY=""
+if [ -r "$DREDD_API_KEY_FILE" ]; then
+  # tr strips whitespace / newlines that creep in via copy-paste or editors.
+  DREDD_API_KEY=$(tr -d '[:space:]' < "$DREDD_API_KEY_FILE")
+fi
+
+# Curl flags array for each request. Using an array (not a function that
+# prints flags) because the Authorization value contains a space ("Bearer
+# <key>") and printf+word-splitting mangles it — an array expansion with
+# "${DREDD_CURL_ARGS[@]}" preserves the value as a single argv entry.
+DREDD_CURL_ARGS=()
+if [ -n "$COOKIE_JAR" ]; then
+  DREDD_CURL_ARGS+=(--cookie "$COOKIE_JAR" --cookie-jar "$COOKIE_JAR")
+fi
+if [ -n "$DREDD_API_KEY" ]; then
+  DREDD_CURL_ARGS+=(-H "Authorization: Bearer $DREDD_API_KEY")
+fi
 
 # If server is down, fall back to user prompt
 if ! curl -s --connect-timeout 1 "$DREDD_URL/health" > /dev/null 2>&1; then
@@ -147,7 +168,7 @@ case "$HOOK_EVENT" in
     CLAUDEMD_CONTENT=$(read_claudemd_content "$CWD")
 
     RESPONSE=$(curl -s -X POST "$DREDD_URL/intent" \
-      $(dredd_curl_cookie_args) \
+      "${DREDD_CURL_ARGS[@]}" \
       -H "Content-Type: application/json" \
       -d "$(jq -n \
         --arg sid "$SESSION_ID" \
@@ -192,7 +213,7 @@ case "$HOOK_EVENT" in
     TRANSCRIPT_CONTENT=$(read_transcript_content "$TRANSCRIPT_PATH" 500)
 
     RESPONSE=$(curl -s -X POST "$DREDD_URL/evaluate" \
-      $(dredd_curl_cookie_args) \
+      "${DREDD_CURL_ARGS[@]}" \
       -H "Content-Type: application/json" \
       -d "$(jq -n \
         --arg sid "$SESSION_ID" \
@@ -221,7 +242,7 @@ case "$HOOK_EVENT" in
 
     # Async — fire and forget, don't block the agent
     curl -s -X POST "$DREDD_URL/track" \
-      $(dredd_curl_cookie_args) \
+      "${DREDD_CURL_ARGS[@]}" \
       -H "Content-Type: application/json" \
       -d "$(jq -n \
         --arg sid "$SESSION_ID" \
@@ -249,7 +270,7 @@ case "$HOOK_EVENT" in
 
   "SessionEnd")
     curl -s -X POST "$DREDD_URL/end" \
-      $(dredd_curl_cookie_args) \
+      "${DREDD_CURL_ARGS[@]}" \
       -H "Content-Type: application/json" \
       -d "$(jq -n --arg sid "$SESSION_ID" '{session_id: $sid}')" \
       --connect-timeout 2 --max-time 10 > /dev/null 2>&1 &
@@ -265,7 +286,7 @@ case "$HOOK_EVENT" in
   "PreCompact")
     # Context is being compacted — notify Dredd so it can record the boundary
     curl -s -X POST "$DREDD_URL/compact" \
-      $(dredd_curl_cookie_args) \
+      "${DREDD_CURL_ARGS[@]}" \
       -H "Content-Type: application/json" \
       -d "$(jq -n --arg sid "$SESSION_ID" '{session_id: $sid}')" \
       --connect-timeout 2 --max-time 5 > /dev/null 2>&1 &

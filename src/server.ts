@@ -113,7 +113,21 @@ const CONFIG = {
 };
 
 // Shared state
-const feed: { timestamp: string; type: string; tool?: string; stage?: string; allowed?: boolean; reason?: string; prompt?: string; sessionId?: string }[] = [];
+const feed: {
+  timestamp: string;
+  type: string;
+  tool?: string;
+  stage?: string;
+  allowed?: boolean;
+  reason?: string;
+  prompt?: string;
+  sessionId?: string;
+  /** Null = caller did not present a key (pre-auth or auth off). */
+  ownerSub?: string | null;
+  /** When the caller's auth state matters for dashboard colouring:
+   *  "unauthenticated" (no key) / "bad-key" (present but invalid). */
+  authStage?: string | null;
+}[] = [];
 const MAX_FEED = 200;
 
 function addFeed(entry: typeof feed[0]) {
@@ -342,6 +356,132 @@ function isSafeServerReadablePath(p: unknown): p is string {
  */
 function safeServerReadablePath(p: unknown): string | null {
   return isSafeServerReadablePath(p) ? p : null;
+}
+
+// ============================================================================
+// Hook authentication
+// ============================================================================
+//
+// Bearer-token extraction + validation for hook-facing endpoints.
+// Rollout is staged via DREDD_AUTH_MODE:
+//
+//   - "optional" (default during rollout): unauth requests pass through,
+//     but their identity is recorded as `null` so the dashboard/feed can
+//     surface "who is still using pre-auth hooks". Switch to "required"
+//     once telemetry shows 100% of clients are authing.
+//   - "required": missing/malformed/unknown/revoked key → 401.
+//
+// Auth is DISABLED entirely by setting DREDD_AUTH_MODE=off — only for
+// single-tenant local dev where the server isn't exposed. The sandbox
+// entrypoint never sets this.
+//
+// "Off" vs "optional" distinction matters: off skips validation completely
+// (no Dynamo reads). "Optional" still validates if a key is sent, so a
+// misbehaving client with a revoked key is rejected immediately.
+type AuthMode = "off" | "optional" | "required";
+const AUTH_MODE: AuthMode = ((process.env.DREDD_AUTH_MODE ?? "optional") as AuthMode);
+if (AUTH_MODE !== "off" && AUTH_MODE !== "optional" && AUTH_MODE !== "required") {
+  throw new Error(
+    `Invalid DREDD_AUTH_MODE=${process.env.DREDD_AUTH_MODE} — expected off|optional|required`,
+  );
+}
+console.log(`  [AUTH]  Mode: ${AUTH_MODE}`);
+
+/** Identity attached to the request after middleware runs. */
+interface RequestIdentity {
+  /** OIDC sub when a key resolves to a valid owner; null if unauthenticated
+   *  (only possible in off/optional mode). */
+  ownerSub: string | null;
+  /** Null when no key was presented. */
+  keyType: "user" | "service" | "benchmark" | null;
+  /** True if a bearer token was present on the request. */
+  keyPresented: boolean;
+  /** True only in "optional" mode when a valid key was presented. */
+  keyValid: boolean;
+}
+
+const ANON: RequestIdentity = { ownerSub: null, keyType: null, keyPresented: false, keyValid: false };
+
+/**
+ * Pull a Bearer token out of `Authorization`. Returns null if absent or
+ * not Bearer. Doesn't validate the token shape — that's the store's job.
+ */
+function extractBearer(req: IncomingMessage): string | null {
+  const h = req.headers.authorization;
+  if (typeof h !== "string") return null;
+  const m = /^\s*Bearer\s+(\S+)\s*$/i.exec(h);
+  return m ? m[1] : null;
+}
+
+/**
+ * Middleware: validate the request's Authorization header against the
+ * configured auth mode. Returns a RequestIdentity on success. On failure
+ * in "required" mode, sends a 401 and returns null — the handler should
+ * early-return.
+ *
+ * Call from every hook-facing handler (/intent, /evaluate, /track, etc.).
+ * Dashboard endpoints use OIDC instead (not wired yet).
+ */
+async function authenticateHookRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<RequestIdentity | null> {
+  if (AUTH_MODE === "off") return ANON;
+
+  const token = extractBearer(req);
+  if (!token) {
+    if (AUTH_MODE === "required") {
+      json(res, 401, {
+        error: "Missing API key",
+        detail: "Send Authorization: Bearer <jaid_live_...>. " +
+                "Generate one from the dashboard Settings → API Keys.",
+      });
+      return null;
+    }
+    // Optional mode: permit, record as anonymous so the feed shows it.
+    return { ...ANON };
+  }
+
+  const validated = await apiKeys.validateKey(token).catch((err) => {
+    // On Dynamo/availability errors, fail OPEN in optional mode and
+    // CLOSED in required mode. Optional mode's purpose is transparency,
+    // not enforcement, so we don't want a Dynamo hiccup to block hooks.
+    console.error(`[AUTH] validateKey error: ${err instanceof Error ? err.message : err}`);
+    return null;
+  });
+
+  if (!validated) {
+    if (AUTH_MODE === "required") {
+      json(res, 401, {
+        error: "Invalid or revoked API key",
+        detail: "Key does not match the expected format or has been revoked. " +
+                "Generate a new one from the dashboard.",
+      });
+      return null;
+    }
+    // Optional mode: key presented but didn't resolve. Treat as anon
+    // for telemetry, but DO record that a key was presented so we can
+    // see if anyone's sending bogus tokens.
+    return { ownerSub: null, keyType: null, keyPresented: true, keyValid: false };
+  }
+
+  return {
+    ownerSub: validated.ownerSub,
+    keyType: validated.keyType,
+    keyPresented: true,
+    keyValid: true,
+  };
+}
+
+/**
+ * Derive the feed's auth-stage tag for display. The dashboard reads this
+ * and colours entries accordingly. Keeps the semantics explicit so we
+ * know exactly what "unauthenticated" means in the feed.
+ */
+function authStageForFeed(identity: RequestIdentity): string | null {
+  if (!identity.keyPresented) return "unauthenticated";
+  if (!identity.keyValid) return "bad-key";
+  return null; // authed — no special tag
 }
 
 /**
@@ -656,6 +796,9 @@ async function backfillFromTranscript(
 // POST /intent — UserPromptSubmit
 // =========================================================================
 async function handleIntent(req: IncomingMessage, res: ServerResponse) {
+  const identity = await authenticateHookRequest(req, res);
+  if (!identity) return; // 401 already sent in required mode
+
   const body = JSON.parse(await readBody(req, BODY_LIMIT_TRANSCRIPT));
   const { session_id, prompt, transcript_path, cwd } = body;
   // Remote-compatible fields: inline content sent by the hook
@@ -787,6 +930,8 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     prompt: prompt.substring(0, 500),
     sessionId: session_id,
     reason: `Turn ${result.turnNumber}: ${classification}${result.driftFromOriginal !== null ? ` (drift: ${result.driftFromOriginal.toFixed(3)})` : ""}`,
+    ownerSub: identity.ownerSub,
+    authStage: authStageForFeed(identity),
   });
 
   json(res, 200, {
@@ -828,6 +973,9 @@ const LOCKED_MESSAGE =
   "this session has been classified as hijacked and further tool calls will not be allowed.";
 
 async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
+  const identity = await authenticateHookRequest(req, res);
+  if (!identity) return;
+
   const body = JSON.parse(await readBody(req, BODY_LIMIT_TRANSCRIPT));
 
   // Support benchmark format: { session, proposed_action: { tool, parameters } }
@@ -900,6 +1048,8 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       allowed: false,
       reason: LOCKED_MESSAGE,
       sessionId: session_id,
+      ownerSub: identity.ownerSub,
+      authStage: authStageForFeed(identity),
     });
     if (isBenchmarkFormat) {
       return json(res, 200, {
@@ -1000,6 +1150,8 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     allowed: result.allowed,
     reason: result.reason.substring(0, 500),
     sessionId: session_id,
+    ownerSub: identity.ownerSub,
+    authStage: authStageForFeed(identity),
   });
 
   if (isLearn && !result.allowed) {
@@ -1088,6 +1240,9 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
 // POST /track — PostToolUse
 // =========================================================================
 async function handleTrack(req: IncomingMessage, res: ServerResponse) {
+  const identity = await authenticateHookRequest(req, res);
+  if (!identity) return;
+
   const body = JSON.parse(await readBody(req));
   const { session_id, tool_name, tool_input, tool_output } = body;
 
@@ -1177,6 +1332,9 @@ async function buildSessionLogShape(sessionId: string): Promise<Record<string, u
 // POST /end — Stop
 // =========================================================================
 async function handleEnd(req: IncomingMessage, res: ServerResponse) {
+  const identity = await authenticateHookRequest(req, res);
+  if (!identity) return;
+
   const body = JSON.parse(await readBody(req));
   const { session_id } = body;
 
@@ -1218,6 +1376,9 @@ async function handleSessionGet(res: ServerResponse, sessionId: string) {
 // POST /pivot — Explicit direction change (interactive mode)
 // =========================================================================
 async function handlePivot(req: IncomingMessage, res: ServerResponse) {
+  const identity = await authenticateHookRequest(req, res);
+  if (!identity) return;
+
   const body = JSON.parse(await readBody(req));
   const { session_id, reason } = body;
 
@@ -1237,6 +1398,9 @@ async function handlePivot(req: IncomingMessage, res: ServerResponse) {
 // POST /compact — Context compaction notification (PreCompact hook)
 // =========================================================================
 async function handleCompact(req: IncomingMessage, res: ServerResponse) {
+  const identity = await authenticateHookRequest(req, res);
+  if (!identity) return;
+
   const body = JSON.parse(await readBody(req));
   const { session_id } = body;
 
