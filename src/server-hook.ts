@@ -666,8 +666,24 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // Health checks never get CORS or auth — the ALB hits them directly.
-    if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/api/health")) {
+    // /health (ALB target-group health check) — never CORSed, never auth'd.
+    if (req.method === "GET" && url.pathname === "/health") {
+      const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+      return json(res, 200, {
+        status: "ok",
+        version: pkg.version,
+        role: "hook",
+        config: CONFIG,
+        activeSessions: registeredSessions.size,
+      });
+    }
+
+    // /api/health — same payload, but the dashboard browser polls this
+    // cross-origin to render the version + mode badge in its top bar.
+    // Apply CORS (and respond to OPTIONS preflight) so it works.
+    if (url.pathname === "/api/health") {
+      if (applyCors(req, res)) return;
+      if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
       const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
       return json(res, 200, {
         status: "ok",
