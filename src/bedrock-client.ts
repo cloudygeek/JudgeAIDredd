@@ -93,9 +93,29 @@ export async function bedrockChat(
         : { thinking: { type: "enabled", budget_tokens: budgetTokens } })
     : undefined;
 
+  // Prompt caching: mark the system prompt as a cache point so the
+  // 6500-token B7.1 hardened prompt is billed at 10% of the input rate
+  // for the next 5 minutes (cache TTL). The cache key is "everything
+  // before this marker"; the per-call user message after it is billed
+  // normally.
+  //
+  // Only effective when the cached portion is >= ~1024 tokens (Bedrock
+  // minimum). The standard SYSTEM_PROMPT may fall under that threshold
+  // and Bedrock will silently skip caching — that's fine, the marker
+  // costs nothing on a no-op.
+  //
+  // We do NOT mark a cache point inside the user content because that
+  // changes per call (tool input, file context, agent reasoning) — caching
+  // it would invalidate every time. The system prompt is the static
+  // 90%+ of every judge request.
+  const systemBlocks: any[] = [
+    { text: systemPrompt },
+    { cachePoint: { type: "default" } },
+  ];
+
   const command = new ConverseCommand({
     modelId,
-    system: [{ text: systemPrompt }],
+    system: systemBlocks,
     messages: [{ role: "user", content: userContent }],
     inferenceConfig,
     ...(additionalModelRequestFields ? { additionalModelRequestFields } : {}),
@@ -128,8 +148,8 @@ export async function bedrockChat(
     inputTokens,
     outputTokens,
     totalTokens: usage.totalTokens ?? (inputTokens + outputTokens),
-    cacheReadInputTokens: usage.cacheReadInputTokenCount ?? undefined,
-    cacheWriteInputTokens: usage.cacheWriteInputTokenCount ?? undefined,
+    cacheReadInputTokens: usage.cacheReadInputTokens ?? undefined,
+    cacheWriteInputTokens: usage.cacheWriteInputTokens ?? undefined,
     hasThinkingBlock,
     estimatedThinkingTokens: thinking ? Math.ceil(thinking.length / 4) : 0,
   };
