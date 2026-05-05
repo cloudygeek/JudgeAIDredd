@@ -74,16 +74,20 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/whoami") {
       // Identity probe. Returns Clerk identity if the bearer is valid,
-      // otherwise reports authWired=false. Never 401s — the dashboard
-      // calls this before sign-in to decide which UI to show.
-      const principal = await tryVerifyClerk(req);
+      // otherwise reports authWired=false plus the verifier's failure
+      // reason so the dashboard can show a useful error rather than a
+      // generic "401". Never 401s itself.
+      const result = await tryVerifyClerk(req);
+      const ok = result.ok;
       return json(res, 200, {
         role: "dashboard",
-        authWired: !!principal,
-        identity: principal?.userId ?? null,
-        email: principal?.email ?? null,
-        isAdmin: principal?.isAdmin ?? false,
+        authWired: ok,
+        identity: ok ? result.principal.userId : null,
+        email: ok ? result.principal.email : null,
+        isAdmin: ok ? result.principal.isAdmin : false,
         clerkConfigured: !!CLERK_PUBLISHABLE_KEY,
+        authFailureReason: ok ? null : result.reason,
+        authFailureError: ok ? null : (result.error ?? null),
       });
     }
 

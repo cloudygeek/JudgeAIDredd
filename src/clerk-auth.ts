@@ -85,25 +85,40 @@ function extractEmail(claims: Record<string, unknown>): string {
 /**
  * Verify the Clerk token on `req` without writing to `res`. Used by
  * /api/whoami where we want to surface "no auth yet" rather than 401.
- * Returns null on any verification failure (including missing token).
+ * Returns the principal on success, or a structured failure reason on
+ * failure — the dashboard surfaces the reason in the sign-in overlay
+ * so a misconfigured Clerk origin doesn't look like a generic "401".
  */
-export async function tryVerifyClerk(req: IncomingMessage): Promise<ClerkPrincipal | null> {
-  if (!CLERK_SECRET_KEY) return null;
+export type ClerkVerifyResult =
+  | { ok: true; principal: ClerkPrincipal }
+  | { ok: false; reason: "no-secret" | "no-token" | "no-sub" | "verify-failed"; error?: string };
+
+export async function tryVerifyClerk(req: IncomingMessage): Promise<ClerkVerifyResult> {
+  if (!CLERK_SECRET_KEY) return { ok: false, reason: "no-secret" };
   const token = extractBearer(req);
-  if (!token) return null;
+  if (!token) return { ok: false, reason: "no-token" };
   try {
     const claims = await verifyToken(token, { secretKey: CLERK_SECRET_KEY });
     const userId = (claims as any).sub;
-    if (typeof userId !== "string" || !userId) return null;
+    if (typeof userId !== "string" || !userId) {
+      return { ok: false, reason: "no-sub" };
+    }
     const email = extractEmail(claims as Record<string, unknown>);
     return {
-      userId,
-      email,
-      isAdmin: isAdminEmail(email),
-      claims: claims as Record<string, unknown>,
+      ok: true,
+      principal: {
+        userId,
+        email,
+        isAdmin: isAdminEmail(email),
+        claims: claims as Record<string, unknown>,
+      },
     };
-  } catch {
-    return null;
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    // Log so the operator can grep the daily log for verification
+    // failures (mismatched origin, bad signature, expired token...).
+    console.warn(`[clerk] verifyToken failed: ${error}`);
+    return { ok: false, reason: "verify-failed", error };
   }
 }
 

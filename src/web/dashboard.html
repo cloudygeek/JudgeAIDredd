@@ -759,13 +759,35 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       // Resolve identity through the dashboard so admin status comes
       // from the server (the canonical allow-list lives in
       // src/clerk-auth.ts), not from a client-side guess.
-      const r = await dreddFetch(`${API}/api/whoami`);
-      if (!r.ok) {
-        document.getElementById('signin-msg').textContent =
-          'Failed to verify identity (' + r.status + '). Try again.';
+      let who;
+      try {
+        const r = await dreddFetch(`${API}/api/whoami`);
+        if (!r.ok) {
+          showAuthError(`Failed to verify identity (HTTP ${r.status}).`);
+          return;
+        }
+        who = await r.json();
+      } catch (err) {
+        showAuthError('Network error contacting /api/whoami: ' + (err && err.message ? err.message : err));
         return;
       }
-      const who = await r.json();
+      // /api/whoami returns 200 even on failure — check authWired and
+      // surface the structured reason so misconfiguration is debuggable.
+      if (!who.authWired) {
+        const reason = who.authFailureReason || 'unknown';
+        const detail = who.authFailureError ? ` (${who.authFailureError})` : '';
+        showAuthError(
+          `Server rejected your Clerk session: ${reason}${detail}. ` +
+          (reason === 'verify-failed'
+            ? 'Most common cause: the dashboard origin is not in the Clerk app\'s allowed origins list. Add this URL in Clerk → Settings → Domains, then sign out and back in.'
+            : reason === 'no-token'
+              ? 'The browser did not send a Clerk session token — try signing out and back in.'
+              : reason === 'no-secret'
+                ? 'CLERK_SECRET_KEY is not set on the dashboard container.'
+                : '')
+        );
+        return;
+      }
       dreddPrincipal = {
         userId: who.identity,
         email: who.email,
@@ -781,6 +803,19 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       refresh();
       if (refreshTimer) clearInterval(refreshTimer);
       refreshTimer = setInterval(refresh, 5000);
+    }
+
+    function showAuthError(msg) {
+      // Keep the sign-in overlay up but replace the message with the
+      // structured failure reason so we can debug Clerk misconfiguration
+      // in production without shipping new code.
+      const overlay = document.getElementById('signin-overlay');
+      overlay.style.display = 'flex';
+      document.getElementById('main-page').style.display = 'none';
+      document.getElementById('signin-msg').textContent = msg;
+      const btn = document.getElementById('signin-btn');
+      btn.disabled = false;
+      btn.textContent = 'Try sign in again';
     }
 
     function dreddSignIn() {
@@ -869,7 +904,9 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         const data = await r.json();
         const summary = document.getElementById('settings-identity-summary');
         if (!data.authWired) {
-          summary.innerHTML = '<span style="color:var(--amber)">Not signed in.</span> ' +
+          const reason = data.authFailureReason || 'unknown';
+          const detail = data.authFailureError ? ` (${esc(data.authFailureError)})` : '';
+          summary.innerHTML = `<span style="color:var(--amber)">Not signed in (${esc(reason)})${detail}.</span> ` +
             'Sign in via the Clerk dialog to access the dashboard.';
         } else {
           const sub = data.identity ?? '(unknown)';
