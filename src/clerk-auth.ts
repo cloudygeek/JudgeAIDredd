@@ -30,6 +30,7 @@
  */
 
 import { type IncomingMessage, type ServerResponse } from "node:http";
+import { createPublicKey } from "node:crypto";
 import { verifyToken } from "@clerk/backend";
 import { json } from "./server-core.js";
 
@@ -38,6 +39,41 @@ export const CLERK_PUBLISHABLE_KEY =
   process.env.CLERK_PUBLISHABLE_KEY ??
   process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ??
   "";
+
+// Static JWKS public key. When set, verifyToken uses it directly and
+// makes ZERO outbound network calls — sidesteps the egress allowlist
+// problem entirely. The cost is that key rotation requires a redeploy
+// (Clerk rotates ~yearly for instances, much rarer in practice).
+//
+// Two acceptable formats:
+//   - PEM string: starts with "-----BEGIN PUBLIC KEY-----"
+//   - JWK string: a single JSON object {"kty":"RSA","n":"…","e":"…",…}
+// Either is fed to verifyToken({ jwtKey: <PEM> }) — verifyToken accepts
+// PEM directly, and we convert JWK→PEM in code so operators can paste
+// either shape into the env var.
+//
+// If unset, the SDK falls back to network JWKS discovery (the path that
+// has been timing out from this Fargate task).
+const CLERK_JWT_PUBLIC_KEY_RAW = process.env.CLERK_JWT_PUBLIC_KEY ?? "";
+
+const CLERK_JWT_PUBLIC_KEY_PEM: string | null = (() => {
+  const raw = CLERK_JWT_PUBLIC_KEY_RAW.trim();
+  if (!raw) return null;
+  if (raw.startsWith("-----BEGIN")) return raw;
+  // Treat as JWK — try to parse and convert to PEM via Node's crypto.
+  try {
+    const jwk = JSON.parse(raw);
+    const key = createPublicKey({ key: jwk, format: "jwk" });
+    return key.export({ type: "spki", format: "pem" }) as string;
+  } catch (err) {
+    console.warn(
+      `[clerk] CLERK_JWT_PUBLIC_KEY is set but not a valid PEM or JWK: ${
+        err instanceof Error ? err.message : err
+      }`,
+    );
+    return null;
+  }
+})();
 
 /** Hard-coded admin allow-list. Changing this requires a code commit. */
 const ADMIN_EMAILS = new Set<string>([
@@ -98,7 +134,13 @@ export async function tryVerifyClerk(req: IncomingMessage): Promise<ClerkVerifyR
   const token = extractBearer(req);
   if (!token) return { ok: false, reason: "no-token" };
   try {
-    const claims = await verifyToken(token, { secretKey: CLERK_SECRET_KEY });
+    // Prefer the static public key when it's been provisioned — that
+    // path is offline and never goes near the egress allowlist. Falls
+    // back to the network JWKS discovery flow when the env var is unset.
+    const verifyOpts: any = CLERK_JWT_PUBLIC_KEY_PEM
+      ? { jwtKey: CLERK_JWT_PUBLIC_KEY_PEM }
+      : { secretKey: CLERK_SECRET_KEY };
+    const claims = await verifyToken(token, verifyOpts);
     const userId = (claims as any).sub;
     if (typeof userId !== "string" || !userId) {
       return { ok: false, reason: "no-sub" };
@@ -264,7 +306,13 @@ export async function requireClerkAuth(
     return null;
   }
   try {
-    const claims = await verifyToken(token, { secretKey: CLERK_SECRET_KEY });
+    // Prefer the static public key when it's been provisioned — that
+    // path is offline and never goes near the egress allowlist. Falls
+    // back to the network JWKS discovery flow when the env var is unset.
+    const verifyOpts: any = CLERK_JWT_PUBLIC_KEY_PEM
+      ? { jwtKey: CLERK_JWT_PUBLIC_KEY_PEM }
+      : { secretKey: CLERK_SECRET_KEY };
+    const claims = await verifyToken(token, verifyOpts);
     const userId = (claims as any).sub;
     if (typeof userId !== "string" || !userId) {
       json(res, 401, { error: "Clerk token missing sub claim" });

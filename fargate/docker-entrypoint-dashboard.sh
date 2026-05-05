@@ -36,6 +36,15 @@ set -euo pipefail
 #   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY  browser to bootstrap @clerk/clerk-js.
 #                                   Either name works; the server reads
 #                                   whichever is set.
+#   CLERK_JWT_PUBLIC_KEY            (Recommended in egress-restricted nets.)
+#                                   Static PEM or JWK for Clerk's signing
+#                                   key. When set, verifyToken makes ZERO
+#                                   outbound network calls — sidesteps
+#                                   firewall/CDN issues. Find the JWKS at
+#                                   https://<your-frontend-api>/.well-known/jwks.json
+#                                   and paste either the PEM (export with
+#                                   openssl from the JWK) or the raw JWK
+#                                   JSON object.
 
 MODE="${MODE:-interactive}"
 BACKEND="${BACKEND:-bedrock}"

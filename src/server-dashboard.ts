@@ -463,9 +463,14 @@ export async function main() {
   console.log(`  Hook URL:        ${HOOK_URL || "(unset — dashboard will try same-origin)"}`);
   console.log(`  Session logs:    ${CONFIG.logDir}`);
   console.log(`  Console logs:    ${CONFIG.consoleLogDir}`);
-  console.log(
-    `  Clerk auth:      ${CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY ? "configured" : "NOT CONFIGURED — /api/* will 503"}`,
-  );
+  if (CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY) {
+    const offline = !!process.env.CLERK_JWT_PUBLIC_KEY;
+    console.log(
+      `  Clerk auth:      configured (${offline ? "offline JWKS — no egress" : "network JWKS via api.clerk.com"})`,
+    );
+  } else {
+    console.log("  Clerk auth:      NOT CONFIGURED — /api/* will 503");
+  }
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`\n  Listening on http://0.0.0.0:${PORT}`);

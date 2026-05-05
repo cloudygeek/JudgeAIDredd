@@ -167,6 +167,7 @@ docker run -p 3000:3000 \
 | `DREDD_AUTH_MODE` | `optional` | `off` / `optional` / `required` — hook Bearer-key enforcement |
 | `CLERK_SECRET_KEY` | (unset) | **Dashboard role only.** Clerk secret used by `verifyToken` to validate session JWTs on every `/api/*` request. Without it the dashboard returns 503 on `/api/*` |
 | `CLERK_PUBLISHABLE_KEY` | (unset) | **Dashboard role only.** Clerk publishable key (`pk_test_…` / `pk_live_…`) injected into the dashboard HTML so the browser can bootstrap `@clerk/clerk-js`. `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is read as a fallback |
+| `CLERK_JWT_PUBLIC_KEY` | (unset) | **Dashboard role only.** Static PEM (or JWK JSON) for Clerk's session-token signing key. When set, `verifyToken` skips the network JWKS fetch entirely — required when the container can't reach `api.clerk.com` / `*.clerk.dev` due to firewall rules. Get the JWKS from `https://<frontend-api>/.well-known/jwks.json`; paste either the JWK or its PEM export |
 
 Session logs: see the **Session storage** note below — Dynamo-backed for the shared sandbox deployment. Console logs (`dredd-YYYY-MM-DD.log`) still live on disk in `$DATA_DIR/logs/` and are viewable via the dashboard (Logs tab).
 
