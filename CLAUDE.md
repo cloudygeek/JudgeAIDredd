@@ -71,30 +71,48 @@ The AI Sandbox container runs the standalone judge server for user testing. It p
 
 **Deploying changes:** Code changes (server, dashboard, hooks, policy, etc.) are NOT picked up by running sandbox containers until a new zip is built AND redeployed through the CodeBuild pipeline. If you edit `src/`, `hooks/`, or any file that gets packaged, you must rebuild the zip (see below) and push it so CodeBuild produces a new image — otherwise sandbox containers keep serving the previous version.
 
-### Building the zip
+### Building the zips
+
+There are **two role-specific zips** that share most of their content but
+ship different entrypoints/Dockerfiles. Each zip's entrypoint defaults
+`DREDD_ROLE` to its role so a Fargate task definition doesn't have to
+set the env var. Both zips package the same `src/` — the role only
+selects which server entry point boots.
+
+| Zip | Default `DREDD_ROLE` | Used by |
+|---|---|---|
+| `judge-ai-dredd-hook.zip` | `hook` | the hook hot-path Fargate service |
+| `judge-ai-dredd-dashboard.zip` | `dashboard` | the dashboard Fargate service |
+
+Neither image installs the AWS CLI — both Bedrock and DynamoDB calls go
+through the AWS SDK (`@aws-sdk/client-bedrock-runtime`,
+`@aws-sdk/client-dynamodb`) directly.
 
 ```bash
 # 1. Commit your changes first (bumps version via pre-commit hook)
 git add -A && git commit -m "your message"
 
-# 2. Build the zip — always delete old zip first
-rm -f judge-ai-dredd-sandbox.zip
-cd /tmp && rm -rf dredd-rezip && mkdir dredd-rezip && cd dredd-rezip
-
-# App source (no node_modules — Dockerfile handles deps).
-# Test runners/executors now live under archive/tests/ and are excluded from
-# the zip by default — nothing to delete here.
+# 2. Build hook zip
+mkdir /tmp/dredd-rezip-hook
 cp -r <project>/src <project>/hooks \
-      <project>/package.json <project>/package-lock.json <project>/tsconfig.json .
+      <project>/package.json <project>/package-lock.json <project>/tsconfig.json /tmp/dredd-rezip-hook/
+cp <project>/fargate/docker-entrypoint-hook.sh /tmp/dredd-rezip-hook/docker-entrypoint.sh
+cp <project>/fargate/Dockerfile.hook-zip /tmp/dredd-rezip-hook/Dockerfile
+(cd /tmp/dredd-rezip-hook && zip -qr <project>/judge-ai-dredd-hook.zip .)
 
-# Judge entrypoint + flat-layout Dockerfile (zip root, no fargate/ prefix)
-cp <project>/fargate/docker-entrypoint-judge.sh ./
-cp <project>/fargate/Dockerfile.judge-zip ./Dockerfile
-
-zip -qr <project>/judge-ai-dredd-sandbox.zip .
+# 3. Build dashboard zip
+mkdir /tmp/dredd-rezip-dash
+cp -r <project>/src <project>/hooks \
+      <project>/package.json <project>/package-lock.json <project>/tsconfig.json /tmp/dredd-rezip-dash/
+cp <project>/fargate/docker-entrypoint-dashboard.sh /tmp/dredd-rezip-dash/docker-entrypoint.sh
+cp <project>/fargate/Dockerfile.dashboard-zip /tmp/dredd-rezip-dash/Dockerfile
+(cd /tmp/dredd-rezip-dash && zip -qr <project>/judge-ai-dredd-dashboard.zip .)
 ```
 
-The zip layout is **flat** — `Dockerfile`, `docker-entrypoint-judge.sh`, `package.json`, and `src/` all sit at the zip root (not under `fargate/`).
+The zip layout is **flat** — `Dockerfile`, `docker-entrypoint.sh`,
+`package.json`, and `src/` all sit at the zip root (not under `fargate/`).
+Filename inside the zip is always `docker-entrypoint.sh` regardless of
+role; the role-specific source lives at `fargate/docker-entrypoint-{hook,dashboard}.sh`.
 
 ### Building the Docker image locally
 
@@ -211,7 +229,12 @@ Session logs only survive container restart if `$DATA_DIR` is backed by a real v
 |---|---|
 | `fargate/Dockerfile` | Test runner image — node:22-slim + AWS CLI v2 + Python + Playwright |
 | `fargate/Dockerfile.judge` | Standalone judge image (local builds from project root) |
-| `fargate/Dockerfile.judge-zip` | Standalone judge image for the AI Sandbox zip — flat layout, COPY paths without `fargate/` |
+| `fargate/Dockerfile.judge-zip` | DEPRECATED — single-role image; use Dockerfile.hook-zip or Dockerfile.dashboard-zip |
+| `fargate/Dockerfile.hook-zip` | Hook-role image for the AI Sandbox zip — flat layout, no awscli, defaults DREDD_ROLE=hook |
+| `fargate/Dockerfile.dashboard-zip` | Dashboard-role image for the AI Sandbox zip — flat layout, no awscli, defaults DREDD_ROLE=dashboard |
+| `fargate/docker-entrypoint-hook.sh` | Hook entrypoint baked into the hook zip (DREDD_ROLE default: hook) |
+| `fargate/docker-entrypoint-dashboard.sh` | Dashboard entrypoint baked into the dashboard zip (DREDD_ROLE default: dashboard) |
+| `fargate/docker-entrypoint-judge.sh` | DEPRECATED — single-role entrypoint; kept for the legacy combined zip if anyone still uses it |
 | `fargate/docker-entrypoint-judge.sh` | Judge entrypoint — reads env vars, starts server with /data paths |
 | `fargate/tests/docker-entrypoint.sh` | Test 7: Cross-Model Agent Testing |
 | `fargate/tests/docker-entrypoint-test1.sh` | Test 1: Combined Pipeline E2E (effort sweep) |
