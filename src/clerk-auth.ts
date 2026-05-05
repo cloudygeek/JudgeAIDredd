@@ -135,35 +135,90 @@ export async function tryVerifyClerk(req: IncomingMessage): Promise<ClerkVerifyR
 
 /**
  * Explicit egress probe. The dashboard's settings modal pings this so
- * an operator can tell whether Clerk's frontend API is reachable from
- * the container without fishing through CloudWatch logs. Returns the
- * resolved address + status code, or the underlying network error.
+ * an operator can tell whether Clerk's APIs are reachable from the
+ * container without fishing through CloudWatch logs.
  *
- * Derives the frontend API host from the publishable key (Clerk encodes
- * it as `pk_test_<base64(host$)>`), so this works without an extra
- * env var.
+ * Returns one entry per host the runtime actually contacts:
+ *  - frontend-api: <slug>.clerk.accounts.dev — derived from the
+ *    publishable key, used by the browser SDK + by some discovery
+ *    paths in @clerk/backend.
+ *  - backend-api: api.clerk.com — used by @clerk/backend.verifyToken
+ *    to fetch the JWKS for signature verification. THIS is the host
+ *    the firewall most often forgets.
+ *
+ * The result is an array so a partial allowlist (one host reachable,
+ * one not) is visible at a glance.
  */
 export async function probeClerkConnectivity(): Promise<{
-  host: string | null;
+  hosts: Array<{
+    label: string;
+    host: string;
+    url: string;
+    ok: boolean;
+    status?: number;
+    error?: string;
+  }>;
+}> {
+  const hosts: Array<{
+    label: string;
+    host: string;
+    url: string;
+    ok: boolean;
+    status?: number;
+    error?: string;
+  }> = [];
+
+  // 1. Frontend API — derived from publishable key.
+  const partsB64 = CLERK_PUBLISHABLE_KEY ? CLERK_PUBLISHABLE_KEY.split("_")[2] ?? "" : "";
+  let frontendHost = "";
+  if (partsB64) {
+    try {
+      frontendHost = Buffer.from(partsB64, "base64").toString("utf8").replace(/\$$/, "");
+    } catch {
+      /* leave empty */
+    }
+  }
+  if (frontendHost) {
+    hosts.push(
+      await probeOne(
+        "frontend-api",
+        frontendHost,
+        `https://${frontendHost}/.well-known/jwks.json`,
+      ),
+    );
+  } else {
+    hosts.push({
+      label: "frontend-api",
+      host: "(unknown)",
+      url: "",
+      ok: false,
+      error: "Could not derive frontend-api host (publishable key missing or malformed)",
+    });
+  }
+
+  // 2. Backend API — what @clerk/backend.verifyToken actually fetches
+  // when it needs the JWKS. Always api.clerk.com regardless of dev/prod
+  // for keys minted from the standard Clerk hosting plane.
+  hosts.push(await probeOne("backend-api", "api.clerk.com", "https://api.clerk.com/v1/jwks"));
+
+  return { hosts };
+}
+
+async function probeOne(
+  label: string,
+  host: string,
+  url: string,
+): Promise<{
+  label: string;
+  host: string;
+  url: string;
   ok: boolean;
   status?: number;
   error?: string;
 }> {
-  if (!CLERK_PUBLISHABLE_KEY) {
-    return { host: null, ok: false, error: "CLERK_PUBLISHABLE_KEY unset" };
-  }
-  const partsB64 = CLERK_PUBLISHABLE_KEY.split("_")[2] ?? "";
-  let host = "";
-  try {
-    host = Buffer.from(partsB64, "base64").toString("utf8").replace(/\$$/, "");
-  } catch {
-    return { host: null, ok: false, error: "Could not decode publishable key" };
-  }
-  if (!host) return { host: null, ok: false, error: "Empty host from publishable key" };
-  const url = `https://${host}/.well-known/jwks.json`;
   try {
     const r = await fetch(url, { method: "GET", signal: AbortSignal.timeout(5_000) });
-    return { host, ok: r.ok, status: r.status };
+    return { label, host, url, ok: r.ok, status: r.status };
   } catch (err) {
     const top = err instanceof Error ? err.message : String(err);
     const cause = (err as any)?.cause;
@@ -175,7 +230,9 @@ export async function probeClerkConnectivity(): Promise<{
           ? String(cause)
           : "";
     return {
+      label,
       host,
+      url,
       ok: false,
       error: causeMsg ? `${top} — cause: ${causeMsg}` : top,
     };
