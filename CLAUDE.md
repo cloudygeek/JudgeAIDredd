@@ -14,23 +14,18 @@ npm run server                  # default: autonomous mode, llama3.2 judge
 npm run server:interactive      # interactive mode
 npm run server:learn            # learn mode
 npm run server:autonomous       # autonomous mode (re-evaluates intent every turn)
-npm run server:bedrock          # use AWS Bedrock nemotron-super-3-120b instead of Ollama
+npm run server:bedrock          # use AWS Bedrock claude-sonnet-4-6 instead of Ollama
 npm run server:bedrock:interactive  # Bedrock + interactive mode
 npm run server:bedrock:learn    # Bedrock + learn mode
 
-# Test harness (replays P14 attack scenarios)
-npm test                        # default scenarios
-npm run test:baseline           # no defence
-npm run test:defend             # full intent-tracker pipeline
-npm run test:compare            # baseline vs defended, 5 reps each
-
-# Policy auto-curation — reads session logs, asks LLM to recommend allow/deny rules
-npm run review                  # uses Ollama
-npm run review:bedrock          # uses Bedrock
-
-# Pull required Ollama models
+# Pull required Ollama models (only needed for ollama backend)
 npm run ollama:pull             # nomic-embed-text + llama3.2
 ```
+
+The research scaffolding (P14 / AgentDojo / MT-AgentRisk benchmark
+harnesses, scenario fixtures, canary detection, policy-auto-curation)
+was removed from `main` after tag `research-v1`. Restore from that tag
+if you need to re-run any of those experiments.
 
 Bedrock mode uses `eu-west-2` and shells out to `aws bedrock-runtime converse` — needs AWS creds. Ollama mode needs `ollama serve` running locally.
 
@@ -65,7 +60,7 @@ Single bash script handling all hook events. Reads JSON from stdin, calls the ri
 
 ## Container image (AI Sandbox / Fargate)
 
-The AI Sandbox container runs the standalone judge server for user testing. It packages the app into a zip that the platform's CodeBuild pipeline turns into a Docker image. Test harnesses (AgentDojo, MT-AgentRisk, Playwright etc.) are NOT in the sandbox zip — they still live under `fargate/tests/` and `fargate/Dockerfile` for local/automated runs.
+The AI Sandbox containers run the hook + dashboard servers in Fargate. The app is packaged into a zip that the platform's CodeBuild pipeline turns into a Docker image. Two zips, two services — see "Building the zips" below.
 
 **IMPORTANT:** Always commit before building the zip so the pre-commit hook bumps the version. The version prints on the sandbox status page — without a bump you can't tell old and new deployments apart. Do NOT include `node_modules/` in the zip — the Dockerfile runs `npm install` during the Docker build. Always delete the old zip before rebuilding (zip appends, it doesn't replace).
 
@@ -234,34 +229,11 @@ Session logs only survive container restart if `$DATA_DIR` is backed by a real v
 | `fargate/Dockerfile.dashboard-zip` | Dashboard-role image for the AI Sandbox zip — flat layout, no awscli, defaults DREDD_ROLE=dashboard |
 | `fargate/docker-entrypoint-hook.sh` | Hook entrypoint baked into the hook zip (DREDD_ROLE default: hook) |
 | `fargate/docker-entrypoint-dashboard.sh` | Dashboard entrypoint baked into the dashboard zip (DREDD_ROLE default: dashboard) |
-| `fargate/docker-entrypoint-judge.sh` | DEPRECATED — single-role entrypoint; kept for the legacy combined zip if anyone still uses it |
-| `fargate/docker-entrypoint-judge.sh` | Judge entrypoint — reads env vars, starts server with /data paths |
-| `fargate/tests/docker-entrypoint.sh` | Test 7: Cross-Model Agent Testing |
-| `fargate/tests/docker-entrypoint-test1.sh` | Test 1: Combined Pipeline E2E (effort sweep) |
-| `fargate/tests/docker-entrypoint-test3.sh` | Test 3: Statistical Robustness |
-| `fargate/tests/docker-entrypoint-test3a.sh` | Test 3a: Statistical Robustness — Opus 4.7 + effort |
-| `fargate/tests/docker-entrypoint-test4.sh` | Test 4: Goal Anchoring Effectiveness |
-| `fargate/tests/docker-entrypoint-test8.sh` | Test 8: Adversarial Judge Robustness (effort sweep) |
-| `fargate/tests/docker-entrypoint-test9.sh` | Test 9: Latency Impact |
-| `fargate/tests/docker-entrypoint-test9a.sh` | Test 9a: Latency Impact — effort dimension |
-| `fargate/tests/docker-entrypoint-test12.sh` | Test 12: AgentDojo External Benchmark |
-| `fargate/tests/docker-entrypoint-test12a.sh` | Test 12a: AgentDojo B7.1-office rerun (token-expiry fix) |
-| `fargate/tests/docker-entrypoint-test13.sh` | Test 13: Prompt-Reduction Benchmark (single trace) |
-| `fargate/tests/docker-entrypoint-test14.sh` | Test 14: Prompt-Reduction Corpus Benchmark |
-| `fargate/tests/docker-entrypoint-test15.sh` | Test 15: FPR under Prompt v2 (B7.1) |
-| `fargate/tests/docker-entrypoint-test16.sh` | Test 16: Cross-Model Recommended Pipeline (Cohere v4 + B7.1) |
-| `fargate/tests/docker-entrypoint-test17.sh` | Test 17: AgentDojo GPT-4o Tier-Match (flexible defence) |
-| `fargate/tests/docker-entrypoint-test18.sh` | Test 18: T3e Exfiltration Under Recommended Pipeline |
-| `fargate/tests/docker-entrypoint-test20.sh` | Test 20: AgentDojo Cross-Vendor with Qwen3 (Bedrock) |
-| `fargate/tests/docker-entrypoint-test21.sh` | Test 21: AgentDojo with Anthropic Claude as Defended Agent |
-| `fargate/tests/docker-entrypoint-test22.sh` | Test 22: P14 Cross-Technique Generalisation (T4 + T5) |
-| `fargate/tests/docker-entrypoint-test23.sh` | Test 23: T3e Cross-Vendor with Qwen3 (Bedrock Converse) |
-| `fargate/tests/docker-entrypoint-test24.sh` | Test 24: MT-AgentRisk Multi-Turn Tool-Grounded Safety Benchmark |
-| `fargate/tests/docker-entrypoint-test25.sh` | Test 25: AgentLAB Long-Horizon Cross-Vendor Smoke |
+| `fargate/docker-entrypoint-judge.sh` | DEPRECATED — single-role entrypoint; kept as a fallback for any legacy task def that boots the combined image |
 | `fargate/api-server.cjs` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
 | `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-west-2.amazonaws.com`) |
 
-The sandbox server's **IAM task role and Fargate task definition live in the CKO AI Sandbox platform's IaC**, not in this repo. The legacy Test 7 benchmark's IAM + deploy bash has been archived to `archive/legacy-infra/` — see its README before copying anything from there.
+The sandbox server's **IAM task role and Fargate task definition live in the CKO AI Sandbox platform's IaC**, not in this repo.
 
 ## Drift thresholds
 
@@ -282,8 +254,6 @@ Configurable in tracker: `<0.2` on-task, `0.2–0.3` scope-creep (inject reminde
 | `src/intent-judge.ts` | LLM judge with partial-JSON fallback |
 | `src/drift-detector.ts` | Embedding similarity via Ollama |
 | `src/ollama-client.ts` / `src/bedrock-client.ts` | Backend clients |
-| `src/policy-review.ts` | Auto-curation: groups session logs by normalised pattern, LLM recommends allow/deny |
+| `src/sensitive-env.ts` | Sensitive env-var detection (name + value heuristics) for log redaction |
 | `src/web/dashboard.html` | Dark dashboard with live feed, sessions table, policies tab, logs tab |
 | `hooks/dredd-hook.sh` | Single drop-in CLI hook for all events |
-| `scenarios/t3-goal-hijacking.ts` | T3.x escalation scenarios from P14 |
-| `src/test-p14-replay.ts` | Replay P14 failing scenarios + legitimate scenarios for FP testing |

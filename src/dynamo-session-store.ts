@@ -56,7 +56,6 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { DriftDetector } from "./drift-detector.js";
 import { embedAny, cosineSimilarity } from "./ollama-client.js";
-import { CANARY_PREFIXES } from "./types.js";
 import type { ClaudeMdScanResult } from "./claudemd-scanner.js";
 import type {
   SessionStore,
@@ -71,6 +70,7 @@ import type {
   ImageBlock,
 } from "./session-store.js";
 import { createHash } from "node:crypto";
+import { isSensitiveEnvVar } from "./sensitive-env.js";
 
 // ---- constants --------------------------------------------------------------
 
@@ -993,7 +993,6 @@ export class DynamoSessionStore implements SessionStore {
   ): Promise<void> {
     const meta = await this.getMeta(sessionId);
     const turnNumber = meta?.currentTurn ?? 0;
-    const containsCanary = CANARY_PREFIXES.some((p) => content.includes(p));
     const sk = `FILE#W#${hashPath(filePath)}`;
 
     const existing = await this.client.send(
@@ -1006,7 +1005,6 @@ export class DynamoSessionStore implements SessionStore {
         : content;
       const newWriteCount = (existing.Item.writeCount ?? 1) + 1;
       const newTurns = [...(existing.Item.modifiedAtTurns ?? []), turnNumber];
-      const newCanary = (existing.Item.containsCanary ?? false) || containsCanary;
 
       await this.client.send(
         new PutCommand({
@@ -1019,7 +1017,9 @@ export class DynamoSessionStore implements SessionStore {
             content: newContent.substring(0, 10000),
             modifiedAtTurns: newTurns,
             wasReadFirst: existing.Item.wasReadFirst ?? false,
-            containsCanary: newCanary,
+            // containsCanary stays false in production. Field preserved
+            // for backwards compatibility with old session logs.
+            containsCanary: false,
             ttl: ttl(),
           },
         }),
@@ -1057,15 +1057,11 @@ export class DynamoSessionStore implements SessionStore {
             content: content.substring(0, 10000),
             modifiedAtTurns: [turnNumber],
             wasReadFirst,
-            containsCanary,
+            containsCanary: false,
             ttl: ttl(),
           },
         }),
       );
-    }
-
-    if (containsCanary) {
-      console.log(`  [FILE] *** CANARY detected in write to ${filePath}`);
     }
   }
 
@@ -1126,7 +1122,7 @@ export class DynamoSessionStore implements SessionStore {
     const turnNumber = meta?.currentTurn ?? 0;
 
     const addOne = async (name: string, value: string, source: string) => {
-      const isSensitive = /KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|API/i.test(name);
+      const isSensitive = isSensitiveEnvVar(name, value);
       const storedValue = isSensitive ? value.substring(0, 4) + "****" : value;
       await this.client.send(
         new PutCommand({

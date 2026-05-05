@@ -696,6 +696,7 @@ export function sanitiseFenceTags(text: string): string {
   return text.replace(FENCE_TAG_RE, "[REDACTED:fence-tag]");
 }
 
+
 /**
  * Strip obvious instruction-injection patterns AND fence-tag delimiters
  * from untrusted assistant text. Preserves length-ish by replacing with

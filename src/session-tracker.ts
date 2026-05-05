@@ -20,8 +20,8 @@
 
 import { DriftDetector } from "./drift-detector.js";
 import { embedAny, cosineSimilarity } from "./ollama-client.js";
-import { CANARY_PREFIXES } from "./types.js";
 import type { SessionStore, DriftClassification } from "./session-store.js";
+import { isSensitiveEnvVar } from "./sensitive-env.js";
 
 export interface ImageBlock {
   /** Base64-encoded image data */
@@ -501,16 +501,14 @@ export class InMemorySessionStore implements SessionStore {
     const session = this.getSession(sessionId);
     const existing = session.filesWritten.get(filePath);
 
-    // Check if content contains canary patterns
-    const containsCanary = CANARY_PREFIXES.some((p) => content.includes(p));
-
-    // Check if content contains data from any sensitive file reads
+    // Detect content originating from a previously-read sensitive file —
+    // the real exfil signal. Returns true when written content contains
+    // values from .env / credentials files the agent read earlier.
     const containsReadData = this.checkContentFromReads(session, content);
 
     if (existing) {
       existing.writeCount++;
       existing.modifiedAtTurns.push(session.currentTurn);
-      existing.containsCanary = existing.containsCanary || containsCanary;
 
       if (isEdit) {
         // For edits, append to accumulated content
@@ -529,7 +527,10 @@ export class InMemorySessionStore implements SessionStore {
         content: content.substring(0, 10000),
         modifiedAtTurns: [session.currentTurn],
         wasReadFirst,
-        containsCanary,
+        // containsCanary stays false in production. The field is preserved
+        // for backwards compatibility with old session logs and the
+        // dashboard's flag rendering.
+        containsCanary: false,
       });
     }
 
@@ -538,11 +539,6 @@ export class InMemorySessionStore implements SessionStore {
     if (record.writeCount > 1) {
       console.log(
         `  [FILE] ${filePath} written ${record.writeCount} times (turns: ${record.modifiedAtTurns.join(",")})`
-      );
-    }
-    if (containsCanary) {
-      console.log(
-        `  [FILE] *** CANARY detected in write to ${filePath}`
       );
     }
     if (containsReadData) {
@@ -686,7 +682,7 @@ export class InMemorySessionStore implements SessionStore {
     value: string,
     source: string
   ): void {
-    const isSensitive = /KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|API/i.test(name);
+    const isSensitive = isSensitiveEnvVar(name, value);
 
     session.envVars.set(name, {
       name,
