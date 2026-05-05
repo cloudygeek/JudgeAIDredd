@@ -41,7 +41,10 @@
  *           PutItem/UpdateItem; that's fine for correctness, not for cost.
  */
 
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  DynamoDBClient,
+  ConditionalCheckFailedException,
+} from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -214,44 +217,105 @@ export class DynamoSessionStore implements SessionStore {
   }
 
   private async putMeta(sessionId: string, meta: Record<string, any>): Promise<void> {
-    await this.client.send(
-      new PutCommand({
-        TableName: this.tableName,
-        Item: {
-          pk: pk(sessionId),
-          sk: "META",
-          gsi1pk: GSI_PK,
-          gsi1sk: meta.startedAt ?? new Date().toISOString(),
-          ttl: ttl(),
-          ...meta,
-        },
-      }),
-    );
+    // Initial put. Seeds version=1 so subsequent updateMeta calls have
+    // a baseline to compare against. Conditional check prevents
+    // overwriting an existing META that another container created
+    // concurrently — on conflict, the caller's putMeta becomes a no-op
+    // and they should fall through to updateMeta semantics.
+    try {
+      await this.client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: {
+            pk: pk(sessionId),
+            sk: "META",
+            gsi1pk: GSI_PK,
+            gsi1sk: meta.startedAt ?? new Date().toISOString(),
+            ttl: ttl(),
+            version: 1,
+            ...meta,
+          },
+          ConditionExpression: "attribute_not_exists(pk)",
+        }),
+      );
+    } catch (err) {
+      if (err instanceof ConditionalCheckFailedException) {
+        // Another writer created META between our getMeta and putMeta.
+        // Apply the same fields via the OCC update path so this writer's
+        // intent isn't silently dropped.
+        await this.updateMeta(sessionId, meta);
+        return;
+      }
+      throw err;
+    }
   }
 
+  /**
+   * Update META with optimistic concurrency. Each successful update
+   * increments a `version` attribute; the next update conditions on
+   * the version it observed when it computed the new values. On
+   * version mismatch, retry with the current state.
+   *
+   * Retry cap: 5. With sticky cookies in steady state, two concurrent
+   * META writers on the same session is rare (it requires failover);
+   * 5 retries handles bursts without unbounded looping.
+   */
   private async updateMeta(
     sessionId: string,
     update: Record<string, any>,
   ): Promise<void> {
-    const names: Record<string, string> = { "#ttl": "ttl" };
-    const values: Record<string, any> = { ":ttl": ttl() };
-    const sets: string[] = ["#ttl = :ttl"];
-    for (const [k, v] of Object.entries(update)) {
-      const nk = `#${k}`;
-      const nv = `:${k}`;
-      names[nk] = k;
-      values[nv] = v;
-      sets.push(`${nk} = ${nv}`);
+    const MAX_RETRIES = 5;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const current = await this.getMeta(sessionId);
+      const expectedVersion = (current?.version as number | undefined) ?? 0;
+
+      const names: Record<string, string> = { "#ttl": "ttl", "#version": "version" };
+      const values: Record<string, any> = {
+        ":ttl": ttl(),
+        ":expectedVersion": expectedVersion,
+        ":one": 1,
+      };
+      const sets: string[] = [
+        "#ttl = :ttl",
+        "#version = if_not_exists(#version, :zero) + :one",
+      ];
+      values[":zero"] = 0;
+      for (const [k, v] of Object.entries(update)) {
+        const nk = `#${k}`;
+        const nv = `:${k}`;
+        names[nk] = k;
+        values[nv] = v;
+        sets.push(`${nk} = ${nv}`);
+      }
+
+      try {
+        await this.client.send(
+          new UpdateCommand({
+            TableName: this.tableName,
+            Key: { pk: pk(sessionId), sk: "META" },
+            UpdateExpression: `SET ${sets.join(", ")}`,
+            ConditionExpression:
+              "attribute_not_exists(#version) OR #version = :expectedVersion",
+            ExpressionAttributeNames: names,
+            ExpressionAttributeValues: values,
+          }),
+        );
+        return;
+      } catch (err) {
+        if (err instanceof ConditionalCheckFailedException) {
+          if (attempt === MAX_RETRIES) {
+            console.error(
+              `[dynamo] updateMeta: ${MAX_RETRIES + 1} consecutive version conflicts on ` +
+              `session=${sessionId.substring(0, 8)} — giving up`,
+            );
+            throw err;
+          }
+          // Loop: re-read META and retry against the new version.
+          continue;
+        }
+        throw err;
+      }
     }
-    await this.client.send(
-      new UpdateCommand({
-        TableName: this.tableName,
-        Key: { pk: pk(sessionId), sk: "META" },
-        UpdateExpression: `SET ${sets.join(", ")}`,
-        ExpressionAttributeNames: names,
-        ExpressionAttributeValues: values,
-      }),
-    );
   }
 
   /**
@@ -741,38 +805,146 @@ export class DynamoSessionStore implements SessionStore {
   ): Promise<void> {
     const meta = await this.getMeta(sessionId);
     const turnNumber = meta?.currentTurn ?? 0;
-    const seq = this.nextToolSeq(sessionId, turnNumber);
-    await this.client.send(
-      new PutCommand({
-        TableName: this.tableName,
-        Item: {
-          pk: pk(sessionId),
-          sk: `TOOL#${pad(turnNumber)}#${pad(seq)}`,
-          turnNumber,
-          tool,
-          input: truncToolInput(input),
-          decision,
-          similarity,
-          timestamp: new Date().toISOString(),
-          ttl: ttl(),
-        },
-      }),
-    );
+    const truncated = truncToolInput(input);
+    const timestamp = new Date().toISOString();
+
+    // Conditional put with retry on collision. The toolSeq counter is
+    // per-container; during ALB sticky failover two containers can both
+    // mint the same seq for a session. Without ConditionExpression the
+    // second PutItem silently overwrites the first and one tool decision
+    // is lost from the audit trail.
+    //
+    // Retry semantics: on ConditionalCheckFailed, increment seq locally
+    // (so the in-process counter advances past the collision) and try
+    // again. Cap at 5 retries — beyond that something else is wrong.
+    const MAX_RETRIES = 5;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const seq = this.nextToolSeq(sessionId, turnNumber);
+      try {
+        await this.client.send(
+          new PutCommand({
+            TableName: this.tableName,
+            Item: {
+              pk: pk(sessionId),
+              sk: `TOOL#${pad(turnNumber)}#${pad(seq)}`,
+              turnNumber,
+              tool,
+              input: truncated,
+              decision,
+              similarity,
+              timestamp,
+              ttl: ttl(),
+            },
+            ConditionExpression: "attribute_not_exists(sk)",
+          }),
+        );
+        return;
+      } catch (err) {
+        if (err instanceof ConditionalCheckFailedException) {
+          // Sort key already taken — another container wrote first.
+          // Bump our counter past their seq by querying the max for
+          // this turn, then retry with the next seq.
+          if (attempt === MAX_RETRIES) {
+            console.error(
+              `[dynamo] recordToolCall: ${MAX_RETRIES + 1} consecutive seq collisions on ` +
+              `session=${sessionId.substring(0, 8)} turn=${turnNumber} — giving up`,
+            );
+            throw err;
+          }
+          // Reload max seq from Dynamo to skip past whatever's there.
+          const r = await this.client.send(
+            new QueryCommand({
+              TableName: this.tableName,
+              KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+              ExpressionAttributeValues: {
+                ":pk": pk(sessionId),
+                ":prefix": `TOOL#${pad(turnNumber)}#`,
+              },
+              ProjectionExpression: "sk",
+              ScanIndexForward: false,
+              Limit: 1,
+            }),
+          );
+          const latest = r.Items?.[0]?.sk as string | undefined;
+          if (latest) {
+            const m = /TOOL#\d+#(\d+)/.exec(latest);
+            if (m) {
+              const observedSeq = parseInt(m[1], 10);
+              this.eph(sessionId).toolSeq.set(turnNumber, observedSeq);
+            }
+          }
+          continue;
+        }
+        throw err;
+      }
+    }
   }
 
   async recordHijackStrike(
     sessionId: string,
     threshold: number,
   ): Promise<{ strikes: number; locked: boolean; justLocked: boolean }> {
-    const meta = await this.getMeta(sessionId);
-    const wasLocked = meta?.lockedHijacked ?? false;
-    const strikes = (meta?.hijackStrikes ?? 0) + 1;
-    const locked = wasLocked || strikes >= threshold;
-    await this.updateMeta(sessionId, {
-      hijackStrikes: strikes,
-      lockedHijacked: locked,
-    });
-    return { strikes, locked, justLocked: !wasLocked && locked };
+    // Race-free strike accounting using a single atomic ADD. The previous
+    // read-modify-write (GetItem → strikes+1 → UpdateItem) lost strikes
+    // under concurrent writers because both readers see strikes=N and
+    // both write strikes=N+1, dropping one strike from the count.
+    //
+    // ADD on a numeric attribute is atomic in DynamoDB regardless of
+    // concurrent updaters. ReturnValues: ALL_NEW returns the post-update
+    // hijackStrikes (and the existing lockedHijacked) so we can decide
+    // whether this strike just crossed the threshold.
+    //
+    // Two-step pattern:
+    //   1. Atomic increment (always wins)
+    //   2. If we just crossed the threshold, set lockedHijacked=true
+    //      conditionally so we don't overwrite an existing lock.
+    const inc = await this.client.send(
+      new UpdateCommand({
+        TableName: this.tableName,
+        Key: { pk: pk(sessionId), sk: "META" },
+        UpdateExpression: "ADD hijackStrikes :one SET #ttl = :ttl",
+        ExpressionAttributeNames: { "#ttl": "ttl" },
+        ExpressionAttributeValues: { ":one": 1, ":ttl": ttl() },
+        ReturnValues: "ALL_NEW",
+      }),
+    );
+    const attrs: any = inc.Attributes ?? {};
+    const strikes = attrs.hijackStrikes ?? 1;
+    const wasLocked = attrs.lockedHijacked === true;
+    const shouldLock = !wasLocked && strikes >= threshold;
+
+    if (shouldLock) {
+      // Conditional flip: only set if not already locked. This still
+      // races with another writer who's about to flip it for a different
+      // reason, but the post-condition is the same (locked=true), so
+      // last-write-wins on this attribute is correct.
+      try {
+        await this.client.send(
+          new UpdateCommand({
+            TableName: this.tableName,
+            Key: { pk: pk(sessionId), sk: "META" },
+            UpdateExpression: "SET lockedHijacked = :true, #ttl = :ttl",
+            ConditionExpression: "attribute_not_exists(lockedHijacked) OR lockedHijacked = :false",
+            ExpressionAttributeNames: { "#ttl": "ttl" },
+            ExpressionAttributeValues: {
+              ":true": true,
+              ":false": false,
+              ":ttl": ttl(),
+            },
+          }),
+        );
+      } catch (err) {
+        // Already locked by a concurrent writer — that's fine, our
+        // strike still counted and the session is locked either way.
+        if (!(err instanceof ConditionalCheckFailedException)) throw err;
+      }
+    }
+
+    return {
+      strikes,
+      locked: wasLocked || shouldLock,
+      justLocked: shouldLock,
+    };
   }
 
   async isLocked(sessionId: string): Promise<boolean> {
