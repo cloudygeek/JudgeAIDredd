@@ -480,15 +480,95 @@ export function extractLastUserAndPriorAssistant(
   }
 }
 
+/**
+ * Patterns that, when found in untrusted assistant text, are nuked before
+ * reaching the judge prompt. Defence-in-depth alongside the system-prompt
+ * "treat as data" directive — even if the model misinterprets the
+ * directive, the obvious injection attempts never reach it.
+ *
+ * Each pattern matches a phrase commonly used in prompt-injection PoCs;
+ * the redaction marker preserves token count roughly so the surrounding
+ * context still reads naturally.
+ *
+ * NOT applied to user prompts (those are trusted input). Only used by
+ * sanitiseAssistantContent below.
+ */
+const INJECTION_PATTERNS: { re: RegExp; reason: string }[] = [
+  { re: /ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|rules?|prompts?|system|directives?)/gi, reason: "ignore-previous" },
+  { re: /disregard\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|rules?|prompts?|system|directives?)/gi, reason: "disregard-previous" },
+  { re: /(you\s+are\s+now|from\s+now\s+on,?\s+you\s+(are|will|must))\b/gi, reason: "role-override" },
+  { re: /<\s*\/?\s*(system|admin|root|sudo)\s*>/gi, reason: "fake-tag" },
+  { re: /\[\s*(system|admin|root|sudo)\s*\]/gi, reason: "fake-bracket" },
+  { re: /regardless\s+of\s+(any|all|other|previous|prior)\s+(instructions?|rules?|directives?|context)/gi, reason: "regardless-of" },
+  { re: /(respond|reply|answer|return|output)[\s:]+(only|exclusively|with)?\s*(the\s+)?(json|word|verdict|consistent|drifting|hijacked)/gi, reason: "force-output" },
+  { re: /(classify|judge|treat|mark|consider)\s+(all|every|any|the\s+following)\s+(subsequent|next|following|further)\s+(tool|action|call|request)/gi, reason: "classify-subsequent" },
+  { re: /important:\s*(regardless|ignore|disregard|always|never)/gi, reason: "important-override" },
+  { re: /(your\s+)?(only\s+)?(real\s+)?(true\s+)?(actual\s+)?(real\s+)?(task|job|goal|objective)\s+is\s+(to\s+)?(now\s+)?(actually\s+)?(really\s+)?(?=\w)/gi, reason: "task-override" },
+];
+
+/**
+ * Strip obvious instruction-injection patterns from untrusted assistant
+ * text. Preserves length-ish by replacing with `[REDACTED:reason]`. Does
+ * NOT attempt full sanitisation — the system-prompt directive carries
+ * the bulk of the defence; this is belt-and-braces for the obvious
+ * vectors.
+ */
+function sanitiseAssistantContent(text: string): string {
+  let out = text;
+  for (const { re, reason } of INJECTION_PATTERNS) {
+    out = out.replace(re, `[REDACTED:${reason}]`);
+  }
+  return out;
+}
+
+/**
+ * Combine a user prompt with prior assistant context into the judge's
+ * "intent" string. Two regimes:
+ *
+ *  - Substantive user prompt (≥200 chars or contains punctuation/imperatives):
+ *    drop the prior-assistant block entirely. The user has provided enough
+ *    context on their own; carrying assistant text just enlarges the
+ *    injection surface.
+ *
+ *  - Short user prompt ("yes", "do that", "option 2"): the assistant's
+ *    prior turn is needed for the judge to resolve references. Truncate
+ *    aggressively (last 500 chars — usually the question being asked)
+ *    and run injection-pattern sanitisation.
+ *
+ * The output uses explicit, separable tags so the judge prompt can fence
+ * trusted vs. untrusted content. See intent-judge.ts evaluate() — it
+ * places this whole string inside <user_intent>…</user_intent>.
+ */
+const PRIOR_ASSISTANT_MAX_CHARS = 500;
+
 export function buildContextualIntent(
   userPrompt: string,
   priorAssistant: string | null
 ): string {
   if (!priorAssistant) return userPrompt;
-  const trimmed = priorAssistant.length > 2000
-    ? priorAssistant.substring(priorAssistant.length - 2000)
+
+  // Substantive prompts don't need the prior context. Heuristic: long
+  // (≥200 chars) or wordy (≥8 words). At that scale the user has
+  // provided enough context that the prior assistant turn would only
+  // enlarge the injection surface without changing the judge's verdict.
+  const trimmed = userPrompt.trim();
+  const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+  const isSubstantive = trimmed.length >= 200 || wordCount >= 8;
+  if (isSubstantive) {
+    return userPrompt;
+  }
+
+  const tail = priorAssistant.length > PRIOR_ASSISTANT_MAX_CHARS
+    ? priorAssistant.substring(priorAssistant.length - PRIOR_ASSISTANT_MAX_CHARS)
     : priorAssistant;
-  return `PREVIOUS ASSISTANT RESPONSE:\n${trimmed}\n\nUSER PROMPT:\n${userPrompt}`;
+  const sanitised = sanitiseAssistantContent(tail);
+  return `<prior_assistant_response>
+${sanitised}
+</prior_assistant_response>
+
+<user_prompt>
+${userPrompt}
+</user_prompt>`;
 }
 
 export async function backfillFromTranscript(
