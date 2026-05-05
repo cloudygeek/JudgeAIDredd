@@ -586,6 +586,78 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
 
   try {
+    // GET / — tiny status landing page. The hook container has no
+    // dashboard UI (that lives on the dashboard container). This page
+    // is for operators / users who hit the URL directly to confirm
+    // which container is on the other end and link them onward.
+    if (req.method === "GET" && url.pathname === "/") {
+      const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+      const dashboardOrigin = process.env.DREDD_DASHBOARD_ORIGIN ?? "";
+      const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Judge AI Dredd — Hook API</title>
+<style>
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #0d1117; color: #c9d1d9; margin: 0; padding: 40px 24px; }
+  .card { max-width: 720px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 28px; }
+  h1 { font-size: 20px; margin: 0 0 4px; color: #f0f6fc; }
+  h1 span { color: #58a6ff; }
+  .sub { color: #8b949e; font-size: 13px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: 140px 1fr; gap: 8px 16px; font-size: 13px; margin: 20px 0; }
+  .k { color: #8b949e; }
+  .v { color: #c9d1d9; word-break: break-all; }
+  .v.green { color: #3fb950; }
+  .v.amber { color: #d29922; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; background: #1f6feb33; color: #58a6ff; border: 1px solid #1f6feb; }
+  ul { list-style: none; padding: 0; margin: 16px 0; }
+  li { padding: 4px 0; }
+  li code { color: #d29922; }
+  a { color: #58a6ff; }
+  .muted { color: #8b949e; font-size: 12px; margin-top: 24px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Judge AI <span>Dredd</span> — Hook API</h1>
+  <div class="sub">PreToolUse defence service for Claude Code hooks. <span class="pill">role: hook</span></div>
+
+  <div class="grid">
+    <div class="k">Version</div><div class="v">${pkg.version}</div>
+    <div class="k">Status</div><div class="v green">ok</div>
+    <div class="k">Mode</div><div class="v">${CONFIG.mode}</div>
+    <div class="k">Backend</div><div class="v">${CONFIG.judgeBackend}</div>
+    <div class="k">Judge model</div><div class="v">${CONFIG.judgeModel}</div>
+    <div class="k">Embedding</div><div class="v">${CONFIG.embeddingModel}</div>
+    <div class="k">Prompt variant</div><div class="v">${CONFIG.hardened || "standard"}</div>
+    <div class="k">Active sessions</div><div class="v">${registeredSessions.size}</div>
+    <div class="k">Auth mode</div><div class="v ${process.env.DREDD_AUTH_MODE === "required" ? "green" : "amber"}">${process.env.DREDD_AUTH_MODE ?? "optional"}</div>
+  </div>
+
+  <div style="font-size: 12px; color: #8b949e; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Hook endpoints</div>
+  <ul>
+    <li><code>POST /intent</code> — UserPromptSubmit</li>
+    <li><code>POST /evaluate</code> — PreToolUse (judge pipeline)</li>
+    <li><code>POST /track</code> — PostToolUse</li>
+    <li><code>POST /end</code> · <code>/pivot</code> · <code>/compact</code></li>
+    <li><code>GET /api/health</code> · <code>/api/whoami</code> · <code>/api/data-status</code></li>
+    <li><code>GET /api/feed</code> · <code>POST /api/mode</code> <span style="color:#8b949e">(cross-origin from dashboard)</span></li>
+  </ul>
+
+  <div class="muted">
+    The full operator dashboard lives on a separate container.
+    ${dashboardOrigin ? `<br>Dashboard: <a href="${dashboardOrigin}">${dashboardOrigin}</a>` : `<br>Dashboard origin not configured (DREDD_DASHBOARD_ORIGIN unset).`}
+    <br>To install the hook in your project, run <code>curl -O ${"https://" + (req.headers["x-forwarded-host"] || req.headers.host || "localhost")}/api/integration-bundle</code> from the dashboard.
+  </div>
+</div>
+</body>
+</html>`;
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(html);
+      return;
+    }
+
     // Health checks never get CORS or auth — the ALB hits them directly.
     if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/api/health")) {
       const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
