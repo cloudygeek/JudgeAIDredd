@@ -1,15 +1,23 @@
 /**
  * Bedrock Client
  *
- * Calls Nemotron-3-Super via Amazon Bedrock's Converse API.
- * Uses default AWS credentials from the environment.
- * Writes request to temp file to avoid shell escaping issues.
+ * Calls the judge LLM (Sonnet/Nemotron/etc.) via Bedrock's Converse API
+ * and embedding models via InvokeModel. Uses the AWS SDK directly so the
+ * call is async (non-blocking) and the credential chain is the standard
+ * Node SDK chain (env vars, shared config, IRSA / IMDSv2 on Fargate).
+ *
+ * History: this used to shell out to `aws bedrock-runtime ...` via
+ * `execSync` with temp-file payloads. That was 1-concurrency (the event
+ * loop blocked for ~1.5s per judge call) and added a 150–300 ms
+ * process-spawn cost on every invocation. Replacing with the SDK fixes
+ * both. See also task #12 / commit history.
  */
 
-import { execSync } from "node:child_process";
-import { writeFileSync, readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import {
+  BedrockRuntimeClient,
+  ConverseCommand,
+  InvokeModelCommand,
+} from "@aws-sdk/client-bedrock-runtime";
 
 const REGION = process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "eu-central-1";
 const MODEL_ID = process.env.BEDROCK_JUDGE_MODEL ?? "nvidia.nemotron-super-3-120b";
@@ -21,6 +29,19 @@ export interface BedrockImageBlock {
   data: string;
   /** MIME type, e.g. "image/png" */
   mediaType: string;
+}
+
+// Module-level client per region. Most calls use the same region, so this
+// is effectively a singleton with a fallback for cross-region embeddings
+// (e.g. judge in eu-west-2, embeddings in eu-west-1).
+const clients = new Map<string, BedrockRuntimeClient>();
+function clientFor(region: string): BedrockRuntimeClient {
+  let c = clients.get(region);
+  if (!c) {
+    c = new BedrockRuntimeClient({ region });
+    clients.set(region, c);
+  }
+  return c;
 }
 
 export async function bedrockChat(
@@ -44,106 +65,74 @@ export async function bedrockChat(
   const start = Date.now();
   if (effort === "none") effort = undefined;
 
-  // Write request components to temp files to avoid shell escaping
-  const tmpMessages = join(tmpdir(), `bedrock-msg-${Date.now()}.json`);
-  const tmpSystem = join(tmpdir(), `bedrock-sys-${Date.now()}.json`);
-  const tmpConfig = join(tmpdir(), `bedrock-cfg-${Date.now()}.json`);
-  let tmpThinking: string | null = null;
-
-  try {
-    const userContent: Record<string, unknown>[] = [{ text: userMessage }];
-    if (images?.length) {
-      for (const img of images) {
-        const format = img.mediaType.replace("image/", "");
-        userContent.push({
-          image: { format, source: { bytes: img.data } },
-        });
-      }
+  // Build user content (text + optional images).
+  const userContent: any[] = [{ text: userMessage }];
+  if (images?.length) {
+    for (const img of images) {
+      const format = img.mediaType.replace("image/", "");
+      // SDK requires `bytes` to be a Uint8Array, not a base64 string.
+      const bytes = Buffer.from(img.data, "base64");
+      userContent.push({ image: { format, source: { bytes } } });
     }
-    writeFileSync(tmpMessages, JSON.stringify([
-      {
-        role: "user",
-        content: userContent,
-      },
-    ]));
-
-    writeFileSync(tmpSystem, JSON.stringify([
-      { text: systemPrompt },
-    ]));
-
-    const budgetMap: Record<string, number> = { low: 1024, medium: 5000, high: 16000, max: 60000 };
-    const budgetTokens = budgetMap[effort!] ?? 5000;
-    const isOpus47 = modelId.includes("opus-4-7");
-    const inferenceConfig: Record<string, unknown> = {
-      maxTokens: effort ? (isOpus47 ? 16384 : Math.min(budgetTokens + 4096, 64000)) : 512,
-    };
-    if (!isOpus47) inferenceConfig.temperature = effort ? 1 : 0.1;
-    writeFileSync(tmpConfig, JSON.stringify(inferenceConfig));
-
-    const cmdParts = [
-      "aws", "bedrock-runtime", "converse",
-      "--region", REGION,
-      "--model-id", modelId,
-      "--messages", `file://${tmpMessages}`,
-      "--system", `file://${tmpSystem}`,
-      "--inference-config", `file://${tmpConfig}`,
-      "--output", "json",
-    ];
-
-    if (effort) {
-      tmpThinking = join(tmpdir(), `bedrock-think-${Date.now()}.json`);
-      const thinkingFields = isOpus47
-        ? { thinking: { type: "adaptive" }, output_config: { effort } }
-        : { thinking: { type: "enabled", budget_tokens: budgetTokens } };
-      writeFileSync(tmpThinking, JSON.stringify(thinkingFields));
-      cmdParts.push("--additional-model-request-fields", `file://${tmpThinking}`);
-    }
-
-    const cmd = cmdParts.join(" ");
-
-    const result = execSync(cmd, {
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024,
-      timeout: 120000,
-    });
-
-    const parsed = JSON.parse(result);
-    const blocks = parsed.output.message.content as Record<string, unknown>[];
-    const content = blocks
-      .filter((c) => c.text !== undefined)
-      .map((c) => c.text as string)
-      .join("");
-    const thinking = blocks
-      .filter((c) => c.reasoningContent !== undefined)
-      .map((c) => {
-        const rc = c.reasoningContent as Record<string, unknown>;
-        const rt = rc.reasoningText as Record<string, unknown> | undefined;
-        return ((rt?.text ?? rc.text ?? "") as string);
-      })
-      .join("");
-
-    const usage = parsed.usage ?? {};
-    const inputTokens = usage.inputTokens ?? 0;
-    const outputTokens = usage.outputTokens ?? 0;
-    const hasThinkingBlock = blocks.some((c) => c.reasoningContent !== undefined);
-    return {
-      content,
-      thinking,
-      durationMs: Date.now() - start,
-      inputTokens,
-      outputTokens,
-      totalTokens: usage.totalTokens ?? (inputTokens + outputTokens),
-      cacheReadInputTokens: usage.cacheReadInputTokens,
-      cacheWriteInputTokens: usage.cacheWriteInputTokens,
-      hasThinkingBlock,
-      estimatedThinkingTokens: thinking ? Math.ceil(thinking.length / 4) : 0,
-    };
-  } finally {
-    try { unlinkSync(tmpMessages); } catch {}
-    try { unlinkSync(tmpSystem); } catch {}
-    try { unlinkSync(tmpConfig); } catch {}
-    if (tmpThinking) try { unlinkSync(tmpThinking); } catch {}
   }
+
+  const budgetMap: Record<string, number> = { low: 1024, medium: 5000, high: 16000, max: 60000 };
+  const budgetTokens = budgetMap[effort!] ?? 5000;
+  const isOpus47 = modelId.includes("opus-4-7");
+  const inferenceConfig: Record<string, unknown> = {
+    maxTokens: effort ? (isOpus47 ? 16384 : Math.min(budgetTokens + 4096, 64000)) : 512,
+  };
+  if (!isOpus47) inferenceConfig.temperature = effort ? 1 : 0.1;
+
+  // SDK types `additionalModelRequestFields` as `DocumentType` which doesn't
+  // accept conditional shapes cleanly — cast to any. The wire format is
+  // model-runtime-defined (Anthropic vs Nova etc.), so the SDK leaves it open.
+  const additionalModelRequestFields: any = effort
+    ? (isOpus47
+        ? { thinking: { type: "adaptive" }, output_config: { effort } }
+        : { thinking: { type: "enabled", budget_tokens: budgetTokens } })
+    : undefined;
+
+  const command = new ConverseCommand({
+    modelId,
+    system: [{ text: systemPrompt }],
+    messages: [{ role: "user", content: userContent }],
+    inferenceConfig,
+    ...(additionalModelRequestFields ? { additionalModelRequestFields } : {}),
+  });
+
+  const response = await clientFor(REGION).send(command);
+
+  const blocks = (response.output?.message?.content ?? []) as any[];
+  const content = blocks
+    .filter((c) => c.text !== undefined)
+    .map((c) => c.text as string)
+    .join("");
+  const thinking = blocks
+    .filter((c) => c.reasoningContent !== undefined)
+    .map((c) => {
+      const rc = c.reasoningContent;
+      const rt = rc.reasoningText;
+      return (rt?.text ?? rc.text ?? "") as string;
+    })
+    .join("");
+
+  const usage: any = response.usage ?? {};
+  const inputTokens = usage.inputTokens ?? 0;
+  const outputTokens = usage.outputTokens ?? 0;
+  const hasThinkingBlock = blocks.some((c) => c.reasoningContent !== undefined);
+  return {
+    content,
+    thinking,
+    durationMs: Date.now() - start,
+    inputTokens,
+    outputTokens,
+    totalTokens: usage.totalTokens ?? (inputTokens + outputTokens),
+    cacheReadInputTokens: usage.cacheReadInputTokenCount ?? undefined,
+    cacheWriteInputTokens: usage.cacheWriteInputTokenCount ?? undefined,
+    hasThinkingBlock,
+    estimatedThinkingTokens: thinking ? Math.ceil(thinking.length / 4) : 0,
+  };
 }
 
 // ============================================================================
@@ -174,49 +163,41 @@ export async function bedrockEmbed(
   throw new Error(`Unknown Bedrock embedding model family: ${modelId}`);
 }
 
-function invokeModel(modelId: string, body: object, region: string): object {
-  const tmpIn  = join(tmpdir(), `bedrock-embed-in-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
-  const tmpOut = join(tmpdir(), `bedrock-embed-out-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
-  try {
-    writeFileSync(tmpIn, JSON.stringify(body));
-    const cmd = [
-      "aws", "bedrock-runtime", "invoke-model",
-      "--region", region,
-      "--model-id", modelId,
-      "--body", `file://${tmpIn}`,
-      "--cli-binary-format", "raw-in-base64-out",
-      tmpOut,
-    ].join(" ");
-    execSync(cmd, { encoding: "utf8", timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
-    return JSON.parse(readFileSync(tmpOut, "utf8"));
-  } finally {
-    try { unlinkSync(tmpIn); } catch {}
-    try { unlinkSync(tmpOut); } catch {}
-  }
+async function invokeModel(modelId: string, body: object, region: string): Promise<object> {
+  const command = new InvokeModelCommand({
+    modelId,
+    body: new TextEncoder().encode(JSON.stringify(body)),
+    contentType: "application/json",
+    accept: "application/json",
+  });
+  const response = await clientFor(region).send(command);
+  // SDK returns response.body as Uint8Array.
+  const bytes = response.body as Uint8Array;
+  return JSON.parse(new TextDecoder().decode(bytes));
 }
 
-function cohereEmbed(texts: string[], modelId: string, region: string): number[][] {
-  const resp = invokeModel(modelId, { texts, input_type: "search_query" }, region) as Record<string, unknown>;
+async function cohereEmbed(texts: string[], modelId: string, region: string): Promise<number[][]> {
+  const resp = (await invokeModel(modelId, { texts, input_type: "search_query" }, region)) as Record<string, unknown>;
   // v3: { embeddings: number[][] }
   // v4: { embeddings: { float: number[][] } }
   const emb = resp.embeddings as number[][] | { float: number[][] };
   return Array.isArray(emb) ? emb : emb.float;
 }
 
-function titanEmbed(text: string, modelId: string, region: string): number[] {
-  const resp = invokeModel(modelId, { inputText: text }, region) as { embedding: number[] };
+async function titanEmbed(text: string, modelId: string, region: string): Promise<number[]> {
+  const resp = (await invokeModel(modelId, { inputText: text }, region)) as { embedding: number[] };
   return resp.embedding;
 }
 
-function marengoEmbed(text: string, modelId: string, region: string): number[] {
+async function marengoEmbed(text: string, modelId: string, region: string): Promise<number[]> {
   // Marengo 3.0: { inputType: "text", text: { text: "..." } }
-  // Marengo 2.7: { inputText: "..." }  (Titan-compatible schema)
+  // Marengo 2.7: { inputType: "text", inputText: "..." }
   const bare = modelId.replace(/^(?:eu|us|global)\./, "");
   const body = bare.includes("marengo-embed-2-7")
     ? { inputType: "text", inputText: text }
     : { inputType: "text", text: { inputText: text } };
 
-  const resp = invokeModel(modelId, body, region) as Record<string, unknown>;
+  const resp = (await invokeModel(modelId, body, region)) as Record<string, unknown>;
   if (Array.isArray(resp.embedding)) return resp.embedding as number[];
   const data = resp.data as { embedding: number[] }[] | undefined;
   if (data?.[0]?.embedding) return data[0].embedding;
@@ -224,13 +205,15 @@ function marengoEmbed(text: string, modelId: string, region: string): number[] {
 }
 
 export async function checkBedrock(modelId = MODEL_ID): Promise<boolean> {
-  // Test with a real converse call — avoids needing metadata API permissions
+  // Test with a real Converse call — avoids needing metadata API permissions
   // (bedrock:ListInferenceProfiles, bedrock:GetFoundationModel).
   try {
-    execSync(
-      `aws bedrock-runtime converse --region ${REGION} --model-id "${modelId}" --messages '[{"role":"user","content":[{"text":"ok"}]}]' --inference-config '{"maxTokens":1}' --output text --query "output.message.content[0].text" 2>/dev/null`,
-      { encoding: "utf8", timeout: 15000 }
-    );
+    const command = new ConverseCommand({
+      modelId,
+      messages: [{ role: "user", content: [{ text: "ok" }] }],
+      inferenceConfig: { maxTokens: 1 },
+    });
+    await clientFor(REGION).send(command);
     return true;
   } catch {
     return false;
