@@ -113,7 +113,17 @@ const server = createServer(async (req, res) => {
         `window.CLERK_PUBLISHABLE_KEY=${JSON.stringify(CLERK_PUBLISHABLE_KEY)};` +
         `</script>`;
       html = html.replace(/<head>/, `<head>${inject}`);
-      res.writeHead(200, { "Content-Type": "text/html" });
+      // No-cache so a redeploy is picked up on the next page load. The
+      // page contains injected env (DREDD_HOOK_URL, CLERK_PUBLISHABLE_KEY)
+      // and changes on every release; without these headers a stale
+      // cached copy would keep using the old config and old auth flow,
+      // which is exactly the bug we hit on the v0.1.283→v0.1.286 cutover.
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+      });
       res.end(html);
       return;
     }
