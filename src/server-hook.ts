@@ -39,6 +39,7 @@ import {
   extractLastUserAndPriorAssistant,
   buildContextualIntent,
   buildSessionLogShape,
+  flushLogs,
   type TrustMode,
 } from "./server-core.js";
 import type { ImageBlock } from "./session-store.js";
@@ -904,7 +905,13 @@ export async function main() {
 
   process.on("SIGTERM", () => {
     console.log("SIGTERM received, shutting down gracefully");
-    server.close(() => process.exit(0));
+    server.close(async () => {
+      // Drain pending log lines to disk before exiting so the last
+      // few seconds of activity (the SIGTERM, the close events) make
+      // it into the daily file.
+      await flushLogs();
+      process.exit(0);
+    });
     setTimeout(() => process.exit(1), 10_000);
   });
 }

@@ -19,7 +19,15 @@
 
 import { type IncomingMessage, type ServerResponse } from "node:http";
 import { parseArgs } from "node:util";
-import { appendFileSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+} from "node:fs";
 import { join, sep } from "node:path";
 import { inspect } from "node:util";
 import { InMemorySessionStore } from "./session-tracker.js";
@@ -59,30 +67,169 @@ const { values } = parseArgs({
   },
 });
 
-// File logger — mirrors all console output to dredd-YYYY-MM-DD.log
+// File logger — mirrors all console output to dredd-YYYY-MM-DD.log.
+//
+// Why this isn't appendFileSync: every console.* call would block the
+// Node event loop while EFS round-trips the write (20-50ms p99 cold).
+// Hot paths log on every hook event, so the cumulative cost was real.
+//
+// Replaced with an in-process queue + a single fs.WriteStream-backed
+// drainer running on the next tick. Public API stays the same — the
+// console overrides below call enqueueLogLine() and return immediately;
+// the line eventually lands on disk asynchronously.
+//
+// Backpressure: drops newest writes once the queue exceeds the cap
+// (default 10k lines). Hitting that cap means EFS is so slow we'd
+// rather lose recent log lines than OOM the container. Drops are
+// counted and surfaced once per minute via stderr so operators can see.
+//
+// Rotation: rolls over when the date changes (UTC midnight) OR the
+// current file exceeds MAX_FILE_BYTES. The rolled file is renamed to
+// dredd-YYYY-MM-DD.<seq>.log so the active filename always sorts last
+// for the day.
+//
+// Shutdown: SIGTERM in main() awaits flushLogs() before exiting so
+// in-flight log lines reach disk.
 const LOG_DIR = values["console-log-dir"]!;
 try { mkdirSync(LOG_DIR, { recursive: true }); } catch {}
 
-function getLogFilePath(): string {
+const MAX_QUEUE_LINES = 10_000;
+const MAX_FILE_BYTES = 100 * 1024 * 1024; // 100 MB before forced rotation
+const DROP_REPORT_INTERVAL_MS = 60_000;
+
+let logQueue: string[] = [];
+let logStream: ReturnType<typeof createWriteStream> | null = null;
+let logStreamPath: string | null = null;
+let logStreamBytes = 0;
+let logDraining = false;
+let droppedLines = 0;
+let lastDropReport = 0;
+
+function currentLogPath(): string {
+  // Date in UTC so all containers in the fleet roll at the same instant.
   const date = new Date().toISOString().slice(0, 10);
   return join(LOG_DIR, `dredd-${date}.log`);
 }
 
-function appendToLogFile(line: string): void {
-  try {
-    appendFileSync(getLogFilePath(), line + "\n");
-  } catch {}
+function ensureStream(): void {
+  const desired = currentLogPath();
+  // Date changed (midnight UTC) — rotate by closing and reopening.
+  if (logStream && logStreamPath !== desired) {
+    try { logStream.end(); } catch {}
+    logStream = null;
+    logStreamPath = null;
+    logStreamBytes = 0;
+  }
+  // Size exceeded — rotate to dredd-YYYY-MM-DD.<n>.log so the active
+  // file remains dredd-YYYY-MM-DD.log.
+  if (logStream && logStreamBytes >= MAX_FILE_BYTES && logStreamPath) {
+    try { logStream.end(); } catch {}
+    let n = 1;
+    while (existsSync(`${logStreamPath}.${n}`)) n++;
+    try { renameSync(logStreamPath, `${logStreamPath}.${n}`); } catch {}
+    logStream = null;
+    logStreamBytes = 0;
+  }
+  if (!logStream) {
+    logStream = createWriteStream(desired, { flags: "a" });
+    logStream.on("error", () => {
+      // Silently abandon a broken stream so future writes can re-open
+      // on the next ensureStream tick. Crashing the logger must never
+      // crash the process.
+      logStream = null;
+      logStreamPath = null;
+      logStreamBytes = 0;
+    });
+    logStreamPath = desired;
+    // Best-effort starting size for rotation accounting.
+    try { logStreamBytes = statSync(desired).size; } catch { logStreamBytes = 0; }
+  }
+}
+
+function reportDropsIfNeeded(): void {
+  if (droppedLines === 0) return;
+  const now = Date.now();
+  if (now - lastDropReport < DROP_REPORT_INTERVAL_MS) return;
+  // Use process.stderr.write directly so we don't recurse through the
+  // console override.
+  process.stderr.write(`[logger] dropped ${droppedLines} log lines (queue full)\n`);
+  droppedLines = 0;
+  lastDropReport = now;
+}
+
+function drainLogs(): void {
+  if (logDraining || logQueue.length === 0) return;
+  logDraining = true;
+  // setImmediate so we don't recurse inside the console override and so
+  // multiple synchronous console calls coalesce into one drain.
+  setImmediate(() => {
+    try {
+      ensureStream();
+      if (!logStream) {
+        logQueue.length = 0;
+        return;
+      }
+      const batch = logQueue;
+      logQueue = [];
+      const payload = batch.join("");
+      logStreamBytes += Buffer.byteLength(payload, "utf8");
+      logStream.write(payload);
+    } finally {
+      logDraining = false;
+      reportDropsIfNeeded();
+      // If more arrived while we were draining, keep going.
+      if (logQueue.length > 0) drainLogs();
+    }
+  });
+}
+
+function enqueueLogLine(line: string): void {
+  if (logQueue.length >= MAX_QUEUE_LINES) {
+    droppedLines++;
+    return;
+  }
+  logQueue.push(line);
+  if (!logDraining) drainLogs();
+}
+
+/**
+ * Flush pending log lines and close the stream. Awaited on SIGTERM so
+ * in-flight logs reach disk before the process exits. Bounded by a 5s
+ * timeout — if the stream is wedged, exit anyway.
+ */
+export async function flushLogs(): Promise<void> {
+  if (logQueue.length === 0 && !logStream) return;
+  // Force one final drain.
+  drainLogs();
+  // Wait for the queue to empty.
+  const start = Date.now();
+  while (logQueue.length > 0 && Date.now() - start < 5_000) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  // Close the stream and wait for the close event.
+  if (logStream) {
+    const stream = logStream;
+    logStream = null;
+    await new Promise<void>((resolve) => {
+      const done = () => resolve();
+      stream.once("close", done);
+      stream.once("error", done);
+      stream.end();
+      // Hard cap in case end() never fires.
+      setTimeout(done, 2_000);
+    });
+  }
 }
 
 // Prepend ISO timestamp to every console line so server logs are grep/sortable,
-// and also write to the daily log file.
+// and also write to the daily log file (asynchronously, see above).
 for (const level of ["log", "info", "warn", "error"] as const) {
   const original = console[level].bind(console);
   console[level] = (...args: unknown[]) => {
     const timestamp = `[${new Date().toISOString()}]`;
     original(timestamp, ...args);
     const parts = args.map(a => typeof a === "string" ? a : inspect(a, { depth: 4, breakLength: Infinity }));
-    appendToLogFile(`${timestamp} ${parts.join(" ")}`);
+    enqueueLogLine(`${timestamp} ${parts.join(" ")}\n`);
   };
 }
 

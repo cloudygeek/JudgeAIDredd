@@ -31,6 +31,7 @@ import {
   BodyTooLargeError,
   resolvePublicOrigin,
   buildSessionLogShape,
+  flushLogs,
 } from "./server-core.js";
 import { exportPolicies } from "./tool-policy.js";
 import { exportDomainPolicies } from "./domain-policy.js";
@@ -297,7 +298,10 @@ export async function main() {
 
   process.on("SIGTERM", () => {
     console.log("SIGTERM received, shutting down gracefully");
-    server.close(() => process.exit(0));
+    server.close(async () => {
+      await flushLogs();
+      process.exit(0);
+    });
     setTimeout(() => process.exit(1), 10_000);
   });
 }
