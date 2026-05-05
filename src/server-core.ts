@@ -481,6 +481,35 @@ export function extractLastUserAndPriorAssistant(
 }
 
 /**
+ * Tag names we use to fence trusted vs untrusted content in the judge
+ * prompt. If any of these appear in caller-supplied text (assistant or
+ * user) they are stripped before reaching the prompt — otherwise an
+ * attacker could close the tag, inject directives in what the model
+ * sees as the system context, and reopen.
+ *
+ * Keep this list in sync with the tags actually used in
+ *   - this file's buildContextualIntent (<prior_assistant_response>, <user_prompt>)
+ *   - intent-judge.ts evaluate() (<user_intent>, <actions>, <action>)
+ */
+const FENCE_TAG_NAMES = [
+  "user_intent",
+  "user_prompt",
+  "prior_assistant_response",
+  "actions",
+  "action",
+] as const;
+
+/**
+ * Match any open or close tag matching one of the fence tag names,
+ * tolerating whitespace and case. Replaced with [REDACTED:fence-tag]
+ * to neutralise delimiter-injection attempts.
+ */
+const FENCE_TAG_RE = new RegExp(
+  `<\\s*/?\\s*(?:${FENCE_TAG_NAMES.join("|")})\\s*>`,
+  "gi",
+);
+
+/**
  * Patterns that, when found in untrusted assistant text, are nuked before
  * reaching the judge prompt. Defence-in-depth alongside the system-prompt
  * "treat as data" directive — even if the model misinterprets the
@@ -491,7 +520,8 @@ export function extractLastUserAndPriorAssistant(
  * context still reads naturally.
  *
  * NOT applied to user prompts (those are trusted input). Only used by
- * sanitiseAssistantContent below.
+ * sanitiseAssistantContent below. Fence-tag scrubbing IS applied to user
+ * prompts separately by sanitiseFenceTags.
  */
 const INJECTION_PATTERNS: { re: RegExp; reason: string }[] = [
   { re: /ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|rules?|prompts?|system|directives?)/gi, reason: "ignore-previous" },
@@ -507,14 +537,29 @@ const INJECTION_PATTERNS: { re: RegExp; reason: string }[] = [
 ];
 
 /**
- * Strip obvious instruction-injection patterns from untrusted assistant
- * text. Preserves length-ish by replacing with `[REDACTED:reason]`. Does
- * NOT attempt full sanitisation — the system-prompt directive carries
- * the bulk of the defence; this is belt-and-braces for the obvious
- * vectors.
+ * Strip any fence-tag (open or close) we use to delimit untrusted content
+ * in the judge prompt. Applied to BOTH user prompts and assistant text
+ * because the attacker doesn't need to be the LLM to inject delimiters —
+ * a user could paste text containing `</user_intent>` from a previous
+ * conversation log too.
+ *
+ * Exported so server-hook can scrub the user prompt before it's wrapped.
+ */
+export function sanitiseFenceTags(text: string): string {
+  return text.replace(FENCE_TAG_RE, "[REDACTED:fence-tag]");
+}
+
+/**
+ * Strip obvious instruction-injection patterns AND fence-tag delimiters
+ * from untrusted assistant text. Preserves length-ish by replacing with
+ * `[REDACTED:reason]`. The fence-tag scrubbing is critical — the
+ * judge prompt fences this content with `<prior_assistant_response>` /
+ * `<user_intent>` etc., and a malicious assistant that closes the tag
+ * could reopen as system context. The instruction-pattern scrubbing is
+ * belt-and-braces for the obvious injection vectors.
  */
 function sanitiseAssistantContent(text: string): string {
-  let out = text;
+  let out = sanitiseFenceTags(text);
   for (const { re, reason } of INJECTION_PATTERNS) {
     out = out.replace(re, `[REDACTED:${reason}]`);
   }
@@ -561,13 +606,18 @@ export function buildContextualIntent(
   const tail = priorAssistant.length > PRIOR_ASSISTANT_MAX_CHARS
     ? priorAssistant.substring(priorAssistant.length - PRIOR_ASSISTANT_MAX_CHARS)
     : priorAssistant;
-  const sanitised = sanitiseAssistantContent(tail);
+  const sanitisedAssistant = sanitiseAssistantContent(tail);
+  // User prompts only get fence-tag scrubbing, not the injection-pattern
+  // sanitisation — users are allowed to type "ignore previous" if they
+  // mean it. But they shouldn't be able to paste `</user_prompt>` and
+  // break the fence either, even by accident.
+  const sanitisedUser = sanitiseFenceTags(userPrompt);
   return `<prior_assistant_response>
-${sanitised}
+${sanitisedAssistant}
 </prior_assistant_response>
 
 <user_prompt>
-${userPrompt}
+${sanitisedUser}
 </user_prompt>`;
 }
 
