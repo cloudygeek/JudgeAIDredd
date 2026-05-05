@@ -344,9 +344,33 @@ const server = createServer(async (req, res) => {
       const principal = await requireClerkAuth(req, res);
       if (!principal) return;
       if (req.method === "GET") {
-        const all = principal.isAdmin
-          ? await apiKeys.listAll(200)
-          : await apiKeys.listByOwner(principal.userId);
+        // Admin view tries Scan; if the task role lacks dynamodb:Scan
+        // (deliberately, in least-privilege deployments) we fall back
+        // to listByOwner — admins still see their own keys, just not
+        // every user's. Logged once so the operator knows it's
+        // happening.
+        let all;
+        if (principal.isAdmin) {
+          try {
+            all = await apiKeys.listAll(200);
+          } catch (err) {
+            const code =
+              (err as any)?.name === "AccessDeniedException"
+                ? "AccessDeniedException"
+                : null;
+            if (code === "AccessDeniedException") {
+              console.warn(
+                "[admin-keys] listAll denied (dynamodb:Scan missing) — " +
+                  "falling back to admin's own keys",
+              );
+              all = await apiKeys.listByOwner(principal.userId);
+            } else {
+              throw err;
+            }
+          }
+        } else {
+          all = await apiKeys.listByOwner(principal.userId);
+        }
         return json(res, 200, all.map(redactKey));
       }
       if (req.method === "POST") {
