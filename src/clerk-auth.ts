@@ -114,11 +114,71 @@ export async function tryVerifyClerk(req: IncomingMessage): Promise<ClerkVerifyR
       },
     };
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    // Log so the operator can grep the daily log for verification
-    // failures (mismatched origin, bad signature, expired token...).
+    // Surface the real cause. undici's "fetch failed" hides the actual
+    // network error in err.cause (e.g. ENOTFOUND, ECONNREFUSED, TLS
+    // failures, 4xx from a proxy). Without unwrapping it, an operator
+    // sees "fetch failed" and can't tell DNS from egress firewall.
+    const top = err instanceof Error ? err.message : String(err);
+    const cause = (err as any)?.cause;
+    const causeMsg =
+      cause instanceof Error
+        ? `${cause.name}: ${cause.message}` +
+          ((cause as any).code ? ` (code=${(cause as any).code})` : "")
+        : cause
+          ? String(cause)
+          : "";
+    const error = causeMsg ? `${top} — cause: ${causeMsg}` : top;
     console.warn(`[clerk] verifyToken failed: ${error}`);
     return { ok: false, reason: "verify-failed", error };
+  }
+}
+
+/**
+ * Explicit egress probe. The dashboard's settings modal pings this so
+ * an operator can tell whether Clerk's frontend API is reachable from
+ * the container without fishing through CloudWatch logs. Returns the
+ * resolved address + status code, or the underlying network error.
+ *
+ * Derives the frontend API host from the publishable key (Clerk encodes
+ * it as `pk_test_<base64(host$)>`), so this works without an extra
+ * env var.
+ */
+export async function probeClerkConnectivity(): Promise<{
+  host: string | null;
+  ok: boolean;
+  status?: number;
+  error?: string;
+}> {
+  if (!CLERK_PUBLISHABLE_KEY) {
+    return { host: null, ok: false, error: "CLERK_PUBLISHABLE_KEY unset" };
+  }
+  const partsB64 = CLERK_PUBLISHABLE_KEY.split("_")[2] ?? "";
+  let host = "";
+  try {
+    host = Buffer.from(partsB64, "base64").toString("utf8").replace(/\$$/, "");
+  } catch {
+    return { host: null, ok: false, error: "Could not decode publishable key" };
+  }
+  if (!host) return { host: null, ok: false, error: "Empty host from publishable key" };
+  const url = `https://${host}/.well-known/jwks.json`;
+  try {
+    const r = await fetch(url, { method: "GET", signal: AbortSignal.timeout(5_000) });
+    return { host, ok: r.ok, status: r.status };
+  } catch (err) {
+    const top = err instanceof Error ? err.message : String(err);
+    const cause = (err as any)?.cause;
+    const causeMsg =
+      cause instanceof Error
+        ? `${cause.name}: ${cause.message}` +
+          ((cause as any).code ? ` (code=${(cause as any).code})` : "")
+        : cause
+          ? String(cause)
+          : "";
+    return {
+      host,
+      ok: false,
+      error: causeMsg ? `${top} — cause: ${causeMsg}` : top,
+    };
   }
 }
 

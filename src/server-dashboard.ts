@@ -45,6 +45,7 @@ import { exportDomainPolicies } from "./domain-policy.js";
 import {
   requireClerkAuth,
   tryVerifyClerk,
+  probeClerkConnectivity,
   CLERK_PUBLISHABLE_KEY,
 } from "./clerk-auth.js";
 
@@ -70,6 +71,15 @@ const server = createServer(async (req, res) => {
         hookUrl: HOOK_URL || null,
         clerkConfigured: !!CLERK_PUBLISHABLE_KEY,
       });
+    }
+
+    // Egress probe — diagnoses whether the container can reach Clerk's
+    // frontend API. Deliberately unauthenticated so an operator can hit
+    // it before anyone has signed in. Returns the resolved host so the
+    // network team can compare against the firewall allowlist.
+    if (req.method === "GET" && url.pathname === "/api/clerk-probe") {
+      const result = await probeClerkConnectivity();
+      return json(res, 200, result);
     }
 
     if (req.method === "GET" && url.pathname === "/api/whoami") {
