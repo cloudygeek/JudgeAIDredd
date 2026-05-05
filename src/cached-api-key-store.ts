@@ -146,6 +146,12 @@ export class CachedApiKeyStore implements ApiKeyStore {
     return this.backend.listByOwner(ownerSub, limit);
   }
 
+  async listAll(limit?: number): Promise<KeyRecord[]> {
+    // Same rationale as listByOwner — fresh-data > caching for the
+    // admin dashboard view.
+    return this.backend.listAll(limit);
+  }
+
   async revokeKey(hashedKey: string, revokedBy: string): Promise<boolean> {
     const ok = await this.backend.revokeKey(hashedKey, revokedBy);
     // Invalidate immediately on this container. Other containers will hit

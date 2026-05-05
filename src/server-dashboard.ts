@@ -345,7 +345,7 @@ const server = createServer(async (req, res) => {
       if (!principal) return;
       if (req.method === "GET") {
         const all = principal.isAdmin
-          ? await listAllKeysForAdmin()
+          ? await apiKeys.listAll(200)
           : await apiKeys.listByOwner(principal.userId);
         return json(res, 200, all.map(redactKey));
       }
@@ -425,33 +425,6 @@ function redactKey(record: any) {
     revokedAt: record.revokedAt,
     revokedBy: record.revokedBy,
   };
-}
-
-/**
- * Admin's "list every key" view. The ApiKeyStore interface only exposes
- * listByOwner; aggregating across owners requires walking the table or
- * an alternate index we haven't built. For now, an admin sees the keys
- * of any *currently-known* owner — i.e. every user who has at least one
- * session in memory or whose ownerSub appears in a Dynamo session item.
- *
- * This is good enough for the only admin (the project owner). A proper
- * GSI scan can replace this later if the user count grows.
- */
-async function listAllKeysForAdmin() {
-  const ownerSubs = new Set<string>();
-  const sessions = await tracker.listSessions(200);
-  for (const s of sessions) if (s.ownerSub) ownerSubs.add(s.ownerSub);
-
-  const all: any[] = [];
-  for (const sub of ownerSubs) {
-    try {
-      const records = await apiKeys.listByOwner(sub, 100);
-      all.push(...records);
-    } catch (err) {
-      console.warn(`[admin-keys] listByOwner failed for ${sub}: ${err}`);
-    }
-  }
-  return all;
 }
 
 export async function main() {

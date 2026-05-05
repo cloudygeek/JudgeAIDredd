@@ -84,6 +84,12 @@ export interface ApiKeyStore {
   /** List a user's active keys, newest first. Does not return revoked keys. */
   listByOwner(ownerSub: string, limit?: number): Promise<KeyRecord[]>;
 
+  /** Admin-only: list every active key across all owners. Implementations
+   *  may cap or paginate. Returns at most `limit` records, newest first
+   *  where the implementation can sort cheaply (Dynamo cannot without a
+   *  GSI, so the order is undefined for the Dynamo-backed store). */
+  listAll(limit?: number): Promise<KeyRecord[]>;
+
   /** Soft-revoke a key by hash. `revokedBy` is the OIDC sub of the caller. */
   revokeKey(hashedKey: string, revokedBy: string): Promise<boolean>;
 
@@ -198,6 +204,15 @@ export class InMemoryApiKeyStore implements ApiKeyStore {
     const active: KeyRecord[] = [];
     for (const r of this.keys.values()) {
       if (r.ownerSub === ownerSub && !r.revokedAt) active.push(r);
+    }
+    active.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return active.slice(0, limit);
+  }
+
+  async listAll(limit = 200): Promise<KeyRecord[]> {
+    const active: KeyRecord[] = [];
+    for (const r of this.keys.values()) {
+      if (!r.revokedAt) active.push(r);
     }
     active.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return active.slice(0, limit);

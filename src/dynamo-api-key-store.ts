@@ -47,6 +47,7 @@ import {
   PutCommand,
   UpdateCommand,
   QueryCommand,
+  ScanCommand,
 } from "@aws-sdk/lib-dynamodb";
 
 import {
@@ -219,6 +220,32 @@ export class DynamoApiKeyStore implements ApiKeyStore {
       }),
     );
     return (r.Items ?? []).map(itemToRecord);
+  }
+
+  async listAll(limit = 200): Promise<KeyRecord[]> {
+    // No GSI on "all keys" — Scan is the right primitive here. We
+    // FilterExpression on "active only" so revoked keys (which keep
+    // their pk/sk but get a revokedAt) drop out at the DDB layer
+    // rather than wasting bytes over the wire. For a table with
+    // <10k items this is fine; if it ever grew we'd add a GSI.
+    const items: Record<string, any>[] = [];
+    let cursor: Record<string, any> | undefined;
+    do {
+      const r = await this.client.send(
+        new ScanCommand({
+          TableName: this.tableName,
+          FilterExpression: "attribute_not_exists(revokedAt) AND sk = :meta",
+          ExpressionAttributeValues: { ":meta": "META" },
+          Limit: 100,
+          ExclusiveStartKey: cursor,
+        }),
+      );
+      if (r.Items) items.push(...r.Items);
+      cursor = r.LastEvaluatedKey;
+      if (items.length >= limit) break;
+    } while (cursor);
+    items.sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+    return items.slice(0, limit).map(itemToRecord);
   }
 
   async revokeKey(hashedKey: string, revokedBy: string): Promise<boolean> {
