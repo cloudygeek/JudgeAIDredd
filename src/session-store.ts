@@ -51,6 +51,11 @@ export interface SessionSummary {
   currentTurn: number;
   hijackStrikes: number;
   lockedHijacked: boolean;
+  /** OIDC sub of the API key owner who initiated this session, if any.
+   *  Used by the dashboard to scope sessions to the signed-in user. */
+  ownerSub?: string | null;
+  /** Display convenience — same source as ownerSub. */
+  ownerEmail?: string | null;
 }
 
 export interface SessionStore {
@@ -73,6 +78,17 @@ export interface SessionStore {
   // ---- session lifecycle --------------------------------------------------
   setProjectRoot(sessionId: string, cwd: string): Promise<void>;
   getProjectRoot(sessionId: string): Promise<string | null>;
+
+  /** Stamp the session with the API-key owner identity. Called from
+   *  /intent once the bearer token has been validated. Idempotent —
+   *  first writer wins, subsequent calls are no-ops, so a key swap
+   *  mid-session can't change ownership. */
+  setSessionOwner(
+    sessionId: string,
+    ownerSub: string,
+    ownerEmail: string | null,
+  ): Promise<void>;
+  getSessionOwner(sessionId: string): Promise<{ ownerSub: string | null; ownerEmail: string | null }>;
 
   recordClaudeMdScan(sessionId: string, scan: ClaudeMdScanResult): Promise<void>;
   getClaudeMdScan(sessionId: string): Promise<ClaudeMdScanResult | null>;

@@ -136,6 +136,10 @@ export interface SessionState {
   /** Once the strike threshold is hit, the session is locked: every subsequent
    *  tool call is denied without running the pipeline. */
   lockedHijacked: boolean;
+  /** OIDC sub of the API key owner who initiated this session, if any. */
+  ownerSub: string | null;
+  /** Email of the API key owner (display only). */
+  ownerEmail: string | null;
 }
 
 export class InMemorySessionStore implements SessionStore {
@@ -165,6 +169,8 @@ export class InMemorySessionStore implements SessionStore {
         currentTurn: s.currentTurn,
         hijackStrikes: s.hijackStrikes,
         lockedHijacked: s.lockedHijacked,
+        ownerSub: s.ownerSub,
+        ownerEmail: s.ownerEmail,
       });
     }
     // Newest-first by startedAt
@@ -193,9 +199,32 @@ export class InMemorySessionStore implements SessionStore {
         claudeMdScan: null,
         hijackStrikes: 0,
         lockedHijacked: false,
+        ownerSub: null,
+        ownerEmail: null,
       });
     }
     return this.sessions.get(sessionId)!;
+  }
+
+  async setSessionOwner(
+    sessionId: string,
+    ownerSub: string,
+    ownerEmail: string | null,
+  ): Promise<void> {
+    const session = this.getSession(sessionId);
+    // First writer wins — never let a swap of the bearer key change ownership
+    // (e.g. an attacker presenting their own valid key for someone else's
+    // session would otherwise re-stamp the owner).
+    if (session.ownerSub) return;
+    session.ownerSub = ownerSub;
+    session.ownerEmail = ownerEmail;
+  }
+
+  async getSessionOwner(
+    sessionId: string,
+  ): Promise<{ ownerSub: string | null; ownerEmail: string | null }> {
+    const s = this.sessions.get(sessionId);
+    return { ownerSub: s?.ownerSub ?? null, ownerEmail: s?.ownerEmail ?? null };
   }
 
   /**

@@ -190,6 +190,8 @@ export class DynamoSessionStore implements SessionStore {
       claudeMdScan: null,
       hijackStrikes: 0,
       lockedHijacked: false,
+      ownerSub: null,
+      ownerEmail: null,
     };
   }
 
@@ -345,6 +347,8 @@ export class DynamoSessionStore implements SessionStore {
       currentTurn: m.currentTurn ?? 0,
       hijackStrikes: m.hijackStrikes ?? 0,
       lockedHijacked: m.lockedHijacked ?? false,
+      ownerSub: m.ownerSub ?? null,
+      ownerEmail: m.ownerEmail ?? null,
     }));
   }
 
@@ -474,6 +478,8 @@ export class DynamoSessionStore implements SessionStore {
       claudeMdScan: (meta?.claudeMdScan as ClaudeMdScanResult | undefined) ?? null,
       hijackStrikes: meta?.hijackStrikes ?? 0,
       lockedHijacked: meta?.lockedHijacked ?? false,
+      ownerSub: meta?.ownerSub ?? null,
+      ownerEmail: meta?.ownerEmail ?? null,
     };
 
     // Seed the tool-seq counter so future inserts don't collide with
@@ -513,6 +519,39 @@ export class DynamoSessionStore implements SessionStore {
   async getProjectRoot(sessionId: string): Promise<string | null> {
     const meta = await this.getMeta(sessionId);
     return meta?.projectRoot ?? null;
+  }
+
+  async setSessionOwner(
+    sessionId: string,
+    ownerSub: string,
+    ownerEmail: string | null,
+  ): Promise<void> {
+    const meta = await this.getMeta(sessionId);
+    // First writer wins — see InMemorySessionStore.setSessionOwner for rationale.
+    if (meta?.ownerSub) return;
+    if (!meta) {
+      await this.putMeta(sessionId, {
+        sessionId,
+        ownerSub,
+        ownerEmail,
+        startedAt: new Date().toISOString(),
+        currentTurn: 0,
+        hijackStrikes: 0,
+        lockedHijacked: false,
+      });
+    } else {
+      await this.updateMeta(sessionId, { ownerSub, ownerEmail });
+    }
+  }
+
+  async getSessionOwner(
+    sessionId: string,
+  ): Promise<{ ownerSub: string | null; ownerEmail: string | null }> {
+    const meta = await this.getMeta(sessionId);
+    return {
+      ownerSub: meta?.ownerSub ?? null,
+      ownerEmail: meta?.ownerEmail ?? null,
+    };
   }
 
   async recordClaudeMdScan(sessionId: string, scan: ClaudeMdScanResult): Promise<void> {

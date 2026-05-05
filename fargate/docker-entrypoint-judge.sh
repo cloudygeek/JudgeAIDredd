@@ -23,6 +23,11 @@ set -euo pipefail
 #   DREDD_DASHBOARD_ORIGIN  Origin the hook container accepts CORS from
 #                     (only used when DREDD_ROLE=hook)
 #   DREDD_AUTH_MODE   off|optional|required         (default: optional)
+#
+# Clerk auth (DASHBOARD role only):
+#   CLERK_SECRET_KEY                Clerk secret used to verify session JWTs
+#   CLERK_PUBLISHABLE_KEY     OR    Clerk publishable key for the browser
+#   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY  (either name works)
 
 MODE="${MODE:-interactive}"
 BACKEND="${BACKEND:-bedrock}"

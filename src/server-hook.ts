@@ -88,6 +88,13 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     return json(res, 400, { error: "Missing prompt" });
   }
 
+  // Stamp the session owner from the validated API key so the dashboard
+  // can scope sessions to the signed-in Clerk user. First writer wins;
+  // calling more than once with the same key is idempotent.
+  if (identity.keyValid && identity.ownerSub) {
+    await tracker.setSessionOwner(session_id, identity.ownerSub, identity.ownerEmail);
+  }
+
   if (cwd) {
     await tracker.setProjectRoot(session_id, cwd);
 

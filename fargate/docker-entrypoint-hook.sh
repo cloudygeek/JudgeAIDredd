@@ -29,6 +29,10 @@ set -euo pipefail
 #   DREDD_DASHBOARD_ORIGIN  Origin the hook container accepts CORS from
 #                     (only used when DREDD_ROLE=hook)
 #   DREDD_AUTH_MODE   off|optional|required         (default: optional)
+#
+# Hook role does NOT use Clerk env vars (CLERK_SECRET_KEY,
+# CLERK_PUBLISHABLE_KEY) — those are only read by the dashboard
+# container. Hooks authenticate via Bearer API keys.
 
 MODE="${MODE:-interactive}"
 BACKEND="${BACKEND:-bedrock}"

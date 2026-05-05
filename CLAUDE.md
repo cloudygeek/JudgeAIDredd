@@ -165,8 +165,23 @@ docker run -p 3000:3000 \
 | `DREDD_HOOK_URL` | (unset) | On the dashboard container, the URL the browser will POST /api/feed + /api/mode to |
 | `DREDD_DASHBOARD_ORIGIN` | (unset) | On the hook container, the CORS Origin the dashboard is served from |
 | `DREDD_AUTH_MODE` | `optional` | `off` / `optional` / `required` — hook Bearer-key enforcement |
+| `CLERK_SECRET_KEY` | (unset) | **Dashboard role only.** Clerk secret used by `verifyToken` to validate session JWTs on every `/api/*` request. Without it the dashboard returns 503 on `/api/*` |
+| `CLERK_PUBLISHABLE_KEY` | (unset) | **Dashboard role only.** Clerk publishable key (`pk_test_…` / `pk_live_…`) injected into the dashboard HTML so the browser can bootstrap `@clerk/clerk-js`. `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is read as a fallback |
 
 Session logs: see the **Session storage** note below — Dynamo-backed for the shared sandbox deployment. Console logs (`dredd-YYYY-MM-DD.log`) still live on disk in `$DATA_DIR/logs/` and are viewable via the dashboard (Logs tab).
+
+### Dashboard auth (Clerk)
+
+Sign-in is required to view anything on the dashboard. Clerk verifies session JWTs server-side via `@clerk/backend` (`src/clerk-auth.ts`).
+
+There are two roles, hard-coded by email in `src/clerk-auth.ts`:
+
+- **admin** — `adrian.asher@checkout.com`, `adrianasher30@gmail.com`. Can list every user's API keys and sessions, view console logs, toggle the global trust mode, and download the integration bundle.
+- **user** — any other Clerk-authenticated identity. Sees only sessions whose `ownerSub` matches their Clerk userId, only their own API keys, no mode toggle, no console logs.
+
+Sessions are tied to Clerk identity via the API key path: when a user generates an API key from the dashboard's API Keys tab, the key's `ownerSub` is set to their Clerk userId. The hook server stamps this `ownerSub` on each session in `setSessionOwner` at `/intent` time. Dashboard `/api/sessions` filters on it for non-admin users.
+
+Adding an admin requires a code change to `ADMIN_EMAILS` in `src/clerk-auth.ts` and a redeploy — there is no env-var override.
 
 ## Two-container architecture
 

@@ -30,6 +30,62 @@ import {
 } from "node:fs";
 import { join, sep } from "node:path";
 import { inspect } from "node:util";
+
+// ============================================================================
+// .env.local loader (local dev only)
+// ============================================================================
+//
+// On the sandbox/Fargate deployment, secrets come from SSM via the task
+// definition's `secrets` map — the env vars are already populated when this
+// process starts. For local development we'd rather not require `export
+// CLERK_SECRET_KEY=…` before every `npm run server`, so this block looks
+// for `.env.local` in the project root and parses it into process.env.
+//
+// Behaviour:
+//   - File missing → silent no-op.
+//   - Key already set in process.env → not overwritten. The shell's
+//     environment always wins so a one-off override stays a one-off.
+//   - Lines starting with # are comments. Empty lines are skipped.
+//   - Values may be quoted with single or double quotes; quotes are
+//     stripped. No interpolation, no `export` prefix support — keep it
+//     simple. If the format isn't enough, source the file from your
+//     shell instead.
+//
+// `.env.local` is gitignored. NEVER commit secrets.
+(() => {
+  // Resolve relative to this source file so it works whether run from the
+  // repo root or a different cwd (e.g. tsx invoked from /tmp).
+  const candidates = [
+    new URL("../.env.local", import.meta.url),
+    new URL("../../.env.local", import.meta.url),
+  ];
+  for (const url of candidates) {
+    let raw: string;
+    try {
+      raw = readFileSync(url, "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq < 0) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let value = trimmed.slice(eq + 1).trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      if (key && process.env[key] === undefined) {
+        process.env[key] = value;
+      }
+    }
+    break;
+  }
+})();
 import { InMemorySessionStore } from "./session-tracker.js";
 import { DynamoSessionStore } from "./dynamo-session-store.js";
 import { CachedSessionStore } from "./cached-session-store.js";
@@ -445,12 +501,13 @@ console.log(`  [AUTH]  Mode: ${AUTH_MODE}`);
 
 export interface RequestIdentity {
   ownerSub: string | null;
+  ownerEmail: string | null;
   keyType: "user" | "service" | "benchmark" | null;
   keyPresented: boolean;
   keyValid: boolean;
 }
 
-const ANON: RequestIdentity = { ownerSub: null, keyType: null, keyPresented: false, keyValid: false };
+const ANON: RequestIdentity = { ownerSub: null, ownerEmail: null, keyType: null, keyPresented: false, keyValid: false };
 
 function extractBearer(req: IncomingMessage): string | null {
   const h = req.headers.authorization;
@@ -492,11 +549,12 @@ export async function authenticateHookRequest(
       });
       return null;
     }
-    return { ownerSub: null, keyType: null, keyPresented: true, keyValid: false };
+    return { ownerSub: null, ownerEmail: null, keyType: null, keyPresented: true, keyValid: false };
   }
 
   return {
     ownerSub: validated.ownerSub,
+    ownerEmail: validated.ownerEmail,
     keyType: validated.keyType,
     keyPresented: true,
     keyValid: true,

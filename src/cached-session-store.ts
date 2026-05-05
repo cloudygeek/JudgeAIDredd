@@ -112,6 +112,8 @@ export class CachedSessionStore implements SessionStore {
       claudeMdScan: null,
       hijackStrikes: 0,
       lockedHijacked: false,
+      ownerSub: null,
+      ownerEmail: null,
     };
   }
 
@@ -152,6 +154,26 @@ export class CachedSessionStore implements SessionStore {
   async getProjectRoot(sessionId: string): Promise<string | null> {
     const s = await this.getOrLoad(sessionId);
     return s.projectRoot;
+  }
+
+  async setSessionOwner(
+    sessionId: string,
+    ownerSub: string,
+    ownerEmail: string | null,
+  ): Promise<void> {
+    await this.backend.setSessionOwner(sessionId, ownerSub, ownerEmail);
+    const s = await this.getOrLoad(sessionId);
+    if (!s.ownerSub) {
+      s.ownerSub = ownerSub;
+      s.ownerEmail = ownerEmail;
+    }
+  }
+
+  async getSessionOwner(
+    sessionId: string,
+  ): Promise<{ ownerSub: string | null; ownerEmail: string | null }> {
+    const s = await this.getOrLoad(sessionId);
+    return { ownerSub: s.ownerSub, ownerEmail: s.ownerEmail };
   }
 
   async recordClaudeMdScan(sessionId: string, scan: ClaudeMdScanResult): Promise<void> {

@@ -28,6 +28,14 @@ set -euo pipefail
 #   DREDD_DASHBOARD_ORIGIN  Origin the hook container accepts CORS from
 #                     (only used when DREDD_ROLE=hook)
 #   DREDD_AUTH_MODE   off|optional|required         (default: optional)
+#
+# Clerk auth (DASHBOARD role only — hook role does not use these):
+#   CLERK_SECRET_KEY                Clerk secret used to verify session JWTs
+#                                   (sk_test_… or sk_live_…)
+#   CLERK_PUBLISHABLE_KEY     OR    Clerk publishable key, served to the
+#   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY  browser to bootstrap @clerk/clerk-js.
+#                                   Either name works; the server reads
+#                                   whichever is set.
 
 MODE="${MODE:-interactive}"
 BACKEND="${BACKEND:-bedrock}"
@@ -99,6 +107,13 @@ if [ "$DREDD_ROLE" = "hook" ] && [ -n "$DREDD_DASHBOARD_ORIGIN" ]; then
   echo "  Dashboard CORS: $DREDD_DASHBOARD_ORIGIN"
 fi
 echo "  Auth mode:      $DREDD_AUTH_MODE"
+if [ "$DREDD_ROLE" = "dashboard" ]; then
+  if [ -n "${CLERK_SECRET_KEY:-}" ] && { [ -n "${CLERK_PUBLISHABLE_KEY:-}" ] || [ -n "${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}" ]; }; then
+    echo "  Clerk auth:     configured"
+  else
+    echo "  Clerk auth:     NOT configured — /api/* will return 503"
+  fi
+fi
 echo "═══════════════════════════════════════════════════════"
 
 # Dump $DATA_DIR state at startup so we can tell whether the volume is
