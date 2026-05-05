@@ -222,7 +222,14 @@ export class PreToolInterceptor {
     tool: string,
     input: Record<string, unknown>,
     fileContext?: string,
-    projectRoot?: string | null
+    projectRoot?: string | null,
+    /** Trust mode for THIS call. Defaults to "autonomous" so existing
+     *  callers that don't pass it keep the strict pipeline. Interactive
+     *  mode skips the drift-deny short-circuit and escalates everything
+     *  ambiguous to the judge — short user replies generate
+     *  low-information embeddings that produce false drift-deny signals
+     *  the judge handles correctly with the full goal context. */
+    mode: "interactive" | "autonomous" | "learn" = "autonomous"
   ): Promise<InterceptionResult> {
     const start = Date.now();
     const s = this.getSession(sessionId);
@@ -331,8 +338,17 @@ export class PreToolInterceptor {
       return result;
     }
 
-    if (drift.similarity < this.config.denyThreshold) {
-      // Very low similarity — auto-deny without judge
+    if (drift.similarity < this.config.denyThreshold && mode !== "interactive") {
+      // Very low similarity — auto-deny without judge.
+      //
+      // SKIPPED in interactive mode. The user is steering and the goal
+      // updates each turn from short replies ("option 2", "do that one",
+      // "fix it"). Those short prompts produce low-information embeddings
+      // that have low cosine similarity to ANY tool call, so a hard deny
+      // here false-positives. Escalate to the judge instead — it sees the
+      // full prior turn and can decide. In autonomous mode the goal is
+      // the original intent, the embedding is rich, and drift-deny is
+      // a meaningful security signal — keep it.
       const result: InterceptionResult = {
         allowed: false,
         tool,

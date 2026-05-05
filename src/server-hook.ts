@@ -142,8 +142,15 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   }
 
   if ((mode === "interactive" || mode === "learn") && !result.isOriginal) {
+    // Treat short replies as confirmations of the previous turn rather than
+    // standalone goals. Includes "option N" / "option foo" so users picking
+    // from a clarifying question don't reset the goal to a meaningless
+    // 2-word string. Stays in sync with isConfirmationPrompt() in
+    // server-core.ts (used by transcript backfill) — divergence here was
+    // the cause of "option 2" being treated as a new goal and tripping
+    // drift-deny on the next tool call.
     const confirmationOnly =
-      /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|👍)\s*[.!?👍]*\s*$/i;
+      /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|option\s+\w+|👍)\s*[.!?👍]*\s*$/i;
     const isConfirmation = confirmationOnly.test(prompt) && prompt.trim().length < 80;
 
     if (isConfirmation) {
@@ -333,7 +340,8 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     tool_name,
     tool_input ?? {},
     fullContext || undefined,
-    await tracker.getProjectRoot(session_id)
+    await tracker.getProjectRoot(session_id),
+    mode
   );
 
   await tracker.recordToolCall(
