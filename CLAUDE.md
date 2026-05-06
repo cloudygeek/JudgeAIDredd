@@ -36,12 +36,13 @@ Three layers, all centred on **`SessionTracker`** (`src/session-tracker.ts`) whi
 ### 1. HTTP server (`src/server.ts`)
 
 Routes called by the hook script:
-- `POST /intent` ← UserPromptSubmit. Registers/updates intent. Detects confirmation prompts (`yes`, `ok`, `do it`, ... under 80 chars) and does NOT treat them as new intents.
+- `POST /intent` ← UserPromptSubmit. Registers/updates intent. Detects confirmation prompts (`yes`, `ok`, `do it`, ... under 80 chars) and does NOT treat them as new intents. Persists `isConfirmation` on each TurnIntent so the dashboard's Goals view can mute confirmation noise.
 - `POST /evaluate` ← PreToolUse. Runs the three-stage pipeline. Returns `permissionDecision: allow|deny|ask`.
 - `POST /track` ← PostToolUse. Records tool result, accumulates file writes, parses env exports.
 - `POST /end` ← Stop. Writes full session log to `results/`.
 - `POST /pivot` ← explicit user direction change.
 - `POST /compact` ← PreCompact notification.
+- `POST /notification` ← Notification hook. Increments per-session friction counter — fires every time Claude Code surfaces a permission/notification dialog to the user despite Dredd's PreToolUse decision. The only signal that Dredd allowed something but the user got prompted anyway. Counter is in-memory on the hook container (resets on Fargate task replacement); read it back via `GET /api/notifications/:id` immediately after a run while ALB stickiness still pins to the same task.
 - `GET /api/sessions`, `/api/session-log/:id`, `/api/feed`, `/api/policies` — feed the dashboard (`src/web/dashboard.html`).
 
 **Backfill**: if `/evaluate` fires before `/intent` (Dredd restarted mid-session), it parses `transcript_path` (Claude's JSONL) to reconstruct intent + recent tool calls. If that fails it falls back to policy-only mode.
