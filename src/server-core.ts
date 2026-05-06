@@ -342,6 +342,30 @@ export function addFeed(entry: FeedEntry) {
 }
 
 // ============================================================================
+// Notification counters — in-memory, per-session.
+// ============================================================================
+//
+// Counts how many times Claude Code surfaced a permission/notification prompt
+// to the user in a given session. Populated by the hook container's
+// /notification handler. Lives in-process: a Fargate task replacement
+// resets it. That's acceptable for the friction-measurement use case
+// (A/B harness reads the counter shortly after the run ends and sticky
+// cookies pin a session to one task for its lifetime). If we ever need
+// durability we can replicate the existing addFeed → Dynamo pattern.
+
+export const notificationCounts: Map<string, number> = new Map();
+
+export function recordNotification(sessionId: string): number {
+  const next = (notificationCounts.get(sessionId) ?? 0) + 1;
+  notificationCounts.set(sessionId, next);
+  return next;
+}
+
+export function getNotificationCount(sessionId: string): number {
+  return notificationCounts.get(sessionId) ?? 0;
+}
+
+// ============================================================================
 // Stores
 // ============================================================================
 
@@ -973,6 +997,16 @@ export async function buildSessionLogShape(sessionId: string): Promise<Record<st
     hijackStrikes: await tracker.getHijackStrikes(sessionId),
     lockedHijacked: await tracker.isLocked(sessionId),
     toolHistory: ctx.recentTools,
+    // Goal history — every user prompt that registered an intent. Includes
+    // the original (turnNumber 0) and every subsequent turn. Embeddings are
+    // stripped because they're large and only useful server-side.
+    turnIntents: ctx.turnIntents.map((t) => ({
+      turnNumber: t.turnNumber,
+      timestamp: t.timestamp,
+      prompt: t.prompt,
+      isConfirmation: t.isConfirmation ?? false,
+      hasImages: !!t.images?.length,
+    })),
     filesWritten: (await tracker.getWrittenFiles(sessionId)).map((f) => ({
       path: f.path,
       writeCount: f.writeCount,

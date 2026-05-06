@@ -27,6 +27,8 @@ import {
   registeredSessions,
   feed,
   addFeed,
+  recordNotification,
+  getNotificationCount,
   readBody,
   json,
   BODY_LIMIT_TRANSCRIPT,
@@ -134,7 +136,22 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
       ? extractLastUserAndPriorAssistant(transcript_path)
       : { priorAssistant: null, images: [] as ImageBlock[] };
 
-  const result = await tracker.registerIntent(session_id, prompt, mode === "interactive", transcriptImages);
+  // Treat short replies as confirmations of the previous turn rather than
+  // standalone goals. Includes "option N" / "option foo" so users picking
+  // from a clarifying question don't reset the goal to a meaningless
+  // 2-word string. Stays in sync with isConfirmationPrompt() in
+  // server-core.ts (used by transcript backfill) — divergence here was
+  // the cause of "option 2" being treated as a new goal and tripping
+  // drift-deny on the next tool call.
+  //
+  // Computed up-front so we can persist the classification on the
+  // TurnIntent (the dashboard renders confirmation entries differently
+  // from real goal pivots).
+  const confirmationOnly =
+    /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|option\s+\w+|👍)\s*[.!?👍]*\s*$/i;
+  const isConfirmation = confirmationOnly.test(prompt) && prompt.trim().length < 80;
+
+  const result = await tracker.registerIntent(session_id, prompt, mode === "interactive", transcriptImages, isConfirmation);
 
   const contextualGoal = buildContextualIntent(prompt, priorAssistant);
 
@@ -150,17 +167,6 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   }
 
   if ((mode === "interactive" || mode === "learn") && !result.isOriginal) {
-    // Treat short replies as confirmations of the previous turn rather than
-    // standalone goals. Includes "option N" / "option foo" so users picking
-    // from a clarifying question don't reset the goal to a meaningless
-    // 2-word string. Stays in sync with isConfirmationPrompt() in
-    // server-core.ts (used by transcript backfill) — divergence here was
-    // the cause of "option 2" being treated as a new goal and tripping
-    // drift-deny on the next tool call.
-    const confirmationOnly =
-      /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|option\s+\w+|👍)\s*[.!?👍]*\s*$/i;
-    const isConfirmation = confirmationOnly.test(prompt) && prompt.trim().length < 80;
-
     if (isConfirmation) {
       console.log(
         `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: "${prompt.trim()}" is a confirmation — keeping previous goal`
@@ -540,6 +546,54 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
 }
 
 // =========================================================================
+// POST /notification — Notification hook
+// =========================================================================
+//
+// Claude Code fires the Notification hook whenever it surfaces a
+// permission/notification dialog to the user. This is the only signal we
+// have that Claude prompted the user *despite* Dredd having returned a
+// PreToolUse decision earlier in the same turn — i.e. friction Dredd
+// could not eliminate. We record a per-session counter and a feed entry
+// so the dashboard and the A/B harness can read the friction number.
+async function handleNotification(req: IncomingMessage, res: ServerResponse) {
+  const identity = await authenticateHookRequest(req, res);
+  if (!identity) return;
+
+  const body = JSON.parse(await readBody(req));
+  const { session_id, message } = body;
+
+  if (rejectInvalidSessionId(res, session_id)) return;
+
+  const count = recordNotification(session_id);
+
+  addFeed({
+    timestamp: new Date().toISOString(),
+    type: "notification",
+    sessionId: session_id,
+    reason: typeof message === "string" ? message.substring(0, 500) : "",
+    ownerSub: identity.ownerSub,
+    authStage: authStageForFeed(identity),
+  });
+
+  json(res, 200, { count });
+}
+
+// =========================================================================
+// GET /api/notifications/:id — read-back for the friction harness.
+// =========================================================================
+//
+// The dashboard already reads /api/feed cross-origin and can derive this
+// itself from the notification entries; the dedicated endpoint is for
+// the A/B harness which talks directly to the hook container.
+function handleNotificationsGet(res: ServerResponse, sessionId: string) {
+  if (rejectInvalidSessionId(res, sessionId)) return;
+  json(res, 200, {
+    sessionId,
+    count: getNotificationCount(sessionId),
+  });
+}
+
+// =========================================================================
 // GET /session/:id — Debug
 // =========================================================================
 async function handleSessionGet(res: ServerResponse, sessionId: string) {
@@ -848,6 +902,12 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/end")      return await handleEnd(req, res);
     if (req.method === "POST" && url.pathname === "/pivot")    return await handlePivot(req, res);
     if (req.method === "POST" && url.pathname === "/compact")  return await handleCompact(req, res);
+    if (req.method === "POST" && url.pathname === "/notification") return await handleNotification(req, res);
+
+    if (req.method === "GET" && url.pathname.startsWith("/api/notifications/")) {
+      const id = url.pathname.split("/api/notifications/")[1];
+      return handleNotificationsGet(res, id);
+    }
 
     json(res, 404, { error: "Not found" });
   } catch (err) {
@@ -904,6 +964,8 @@ export async function main() {
     console.log(`    POST /end       — Stop (write log, cleanup)`);
     console.log(`    POST /pivot     — explicit direction change`);
     console.log(`    POST /compact   — context compaction notification`);
+    console.log(`    POST /notification — Notification hook (friction signal)`);
+    console.log(`    GET  /api/notifications/:id — per-session friction counter`);
     console.log(`    POST /api/mode  — runtime trust-mode switch`);
     console.log(`    GET  /health    — health check + version`);
     console.log(`    GET  /api/feed  — live event ring buffer (cross-origin)`);

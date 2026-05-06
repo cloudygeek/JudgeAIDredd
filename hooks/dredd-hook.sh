@@ -294,6 +294,22 @@ case "$HOOK_EVENT" in
     echo '{}'
     ;;
 
+  "Notification")
+    # Claude Code surfaced a notification/permission prompt to the user.
+    # Record it so the dashboard and A/B harness can count user-visible
+    # friction. Fire-and-forget — the prompt has already been shown by
+    # the time we get here, so blocking the hook serves no purpose.
+    MESSAGE=$(echo "$INPUT" | jq -r '.message // empty')
+    curl -s -X POST "$DREDD_URL/notification" \
+      "${DREDD_CURL_ARGS[@]}" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -n --arg sid "$SESSION_ID" --arg msg "$MESSAGE" \
+            '{session_id: $sid, message: $msg}')" \
+      --connect-timeout 2 --max-time 5 > /dev/null 2>&1 &
+
+    echo '{}'
+    ;;
+
   *)
     echo '{}'
     ;;

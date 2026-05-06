@@ -37,6 +37,19 @@ export interface TurnIntent {
   embedding: number[];
   /** Images attached to this prompt (from pasted screenshots etc.) */
   images?: ImageBlock[];
+  /**
+   * In interactive/learn mode, the rolling currentGoal updates on every
+   * non-confirmation user prompt — short replies like "yes" / "ok" /
+   * "option 2" / "FINISHED" are treated as confirming the previous turn
+   * rather than as new goals. This flag records the classification at the
+   * time `/intent` ran so the dashboard can render confirmation noise
+   * distinctly from real goal pivots without re-running the regex.
+   *
+   * Optional because (a) older session records don't have it and (b) the
+   * autonomous mode path doesn't compute it (every prompt is a fresh
+   * intent there).
+   */
+  isConfirmation?: boolean;
 }
 
 export interface ToolCallRecord {
@@ -306,7 +319,7 @@ export class InMemorySessionStore implements SessionStore {
     // toolHistory and turnMetrics are preserved for the full session log
   }
 
-  async registerIntent(sessionId: string, prompt: string, skipDrift = false, images?: ImageBlock[]): Promise<{
+  async registerIntent(sessionId: string, prompt: string, skipDrift = false, images?: ImageBlock[], isConfirmation?: boolean): Promise<{
     isOriginal: boolean;
     turnNumber: number;
     driftFromOriginal: number | null;
@@ -326,6 +339,9 @@ export class InMemorySessionStore implements SessionStore {
       prompt,
       embedding: promptEmbedding ?? [],
       images: images?.length ? images : undefined,
+      // Only meaningful for non-original turns; for the original turn
+      // there's no prior goal to confirm.
+      isConfirmation: session.originalIntent === null ? false : isConfirmation,
     };
 
     let driftFromOriginal: number | null = null;

@@ -205,13 +205,14 @@ export class CachedSessionStore implements SessionStore {
     prompt: string,
     skipDrift?: boolean,
     images?: ImageBlock[],
+    isConfirmation?: boolean,
   ): Promise<{
     isOriginal: boolean;
     turnNumber: number;
     driftFromOriginal: number | null;
     driftFromPrevious: number | null;
   }> {
-    const result = await this.backend.registerIntent(sessionId, prompt, skipDrift, images);
+    const result = await this.backend.registerIntent(sessionId, prompt, skipDrift, images, isConfirmation);
     // Re-read the state from the backend to keep the cache in sync with
     // all the derived fields (originalEmbedding, turn counters, ...).
     // A Dynamo round-trip here is fine — registerIntent isn't hot.

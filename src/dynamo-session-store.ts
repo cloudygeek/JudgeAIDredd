@@ -435,6 +435,7 @@ export class DynamoSessionStore implements SessionStore {
       prompt: t.prompt,
       embedding: t.embedding ?? [],
       images: t.images,
+      isConfirmation: t.isConfirmation,
     }));
 
     const filesRead: FileReadRecord[] = filesReadItems.map((f) => ({
@@ -646,6 +647,7 @@ export class DynamoSessionStore implements SessionStore {
     prompt: string,
     skipDrift = false,
     images?: ImageBlock[],
+    isConfirmation?: boolean,
   ): Promise<{
     isOriginal: boolean;
     turnNumber: number;
@@ -711,6 +713,7 @@ export class DynamoSessionStore implements SessionStore {
       prompt: storedPrompt,
       embedding: promptEmbedding ?? [],
       images: images?.length ? images : undefined,
+      isConfirmation,
     };
 
     let driftFromOriginal: number | null = null;

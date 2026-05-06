@@ -102,6 +102,14 @@ export interface SessionStore {
     prompt: string,
     skipDrift?: boolean,
     images?: ImageBlock[],
+    /**
+     * Whether the prompt was classified as a short confirmation
+     * ("yes" / "ok" / "option 2" / etc.) of the previous turn. Computed by
+     * the caller (server-hook.ts:handleIntent) and persisted on the
+     * TurnIntent so the dashboard can render goal history without
+     * confirmation noise.
+     */
+    isConfirmation?: boolean,
   ): Promise<{
     isOriginal: boolean;
     turnNumber: number;
