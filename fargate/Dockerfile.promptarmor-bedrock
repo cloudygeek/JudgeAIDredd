@@ -1,32 +1,34 @@
 # PromptArmor head-to-head — Anthropic-on-Bedrock subset
 #
 # Lean image for the AgentDojo Phase B run against the deployed
-# /screen endpoint. No Chromium, no Postgres, no MCP servers — those
-# belong to the heavyweight test runner (fargate/Dockerfile) which is
-# overkill for this corpus.
+# /screen endpoint. Follows the AI Sandbox pattern: stays alive on
+# port 3000, ALB target group health-checks GET /, operator pokes
+# POST /run via curl to start a batch.
 #
-# What it runs:
-#   benchmarks/agentdojo/run_benchmark.py with
-#     --backend bedrock
-#     --model {sonnet, opus-4-7}
-#     --defense {None, B7, B7.1}
-#     --promptarmor-backend bedrock
-#     --promptarmor-model {claude-sonnet-4-6, claude-opus-4-7}
+# What it runs (when tasked via POST /run with {"test": "promptarmor-bedrock"}):
+#   /docker-entrypoint-promptarmor-bedrock.sh -> matrix of
+#     benchmarks/agentdojo/run_benchmark.py invocations across
+#     sonnet/opus-4-7 x none/B7/B7.1/promptarmor.
+#
+# No Chromium, no Postgres, no MCP — those belong to the heavyweight
+# test runner (fargate/Dockerfile).
 #
 # Build context: project root.
 #   docker build -f fargate/Dockerfile.promptarmor-bedrock \
 #     --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
+#     --platform=linux/amd64 \
 #     -t promptarmor-bedrock .
 
 FROM 891377407345.dkr.ecr.eu-west-1.amazonaws.com/cko-pull-through/docker-hub/library/python:3.11-slim-bookworm
 
 WORKDIR /app
 
-# ── Minimal system packages ────────────────────────────────────────────────
-# curl: container health check + manual debugging.
-# ca-certificates: TLS to api.openai.com / *.amazonaws.com / dredd ALB.
+# ── System packages ────────────────────────────────────────────────────────
+# curl: ALB health check + manual debugging.
+# ca-certificates: TLS to *.amazonaws.com / dredd ALB.
+# nodejs: required by the AI Sandbox HTTP wrapper (api-server.cjs).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates \
+        curl ca-certificates nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Python wheels (vendored) ───────────────────────────────────────────────
@@ -43,9 +45,11 @@ RUN pip3 install --no-index --find-links /tmp/python-wheels/ \
     && rm -rf /tmp/python-wheels/
 
 # ── Application source ──────────────────────────────────────────────────────
-# Just the AgentDojo bridge. No src/ TS code — this container talks to
-# the deployed Dredd hook via HTTP, it doesn't run the hook itself.
+# AgentDojo bridge + a minimal package.json the api-server reads for
+# its version banner. No src/ TS code — this container talks to the
+# deployed Dredd hook via HTTP, it doesn't run the hook itself.
 COPY benchmarks/ ./benchmarks/
+COPY package.json ./package.json
 
 # ── Build provenance ────────────────────────────────────────────────────────
 ARG GIT_COMMIT=unknown
@@ -55,21 +59,30 @@ ENV GIT_DIRTY=${GIT_DIRTY}
 
 # Defaults that point the benchmark at the deployed sandbox hook.
 # Override per-run by setting these at `docker run -e ...` time or in
-# the Fargate task definition.
+# the Fargate task definition / POST /run env.
 ENV DREDD_URL="https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal" \
     AWS_REGION="eu-west-2" \
     AGENTDOJO_LOGDIR="/app/runs" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    TEST_NUM="promptarmor-bedrock"
 
 # Results land here; mount a volume / copy out post-run.
 RUN mkdir -p /app/runs
 
-# ── Entrypoint ──────────────────────────────────────────────────────────────
-COPY fargate/docker-entrypoint-promptarmor-bedrock.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
+# ── Entrypoints + AI Sandbox HTTP wrapper ───────────────────────────────────
+COPY fargate/docker-entrypoint-promptarmor-bedrock.sh /docker-entrypoint-promptarmor-bedrock.sh
+RUN chmod +x /docker-entrypoint-promptarmor-bedrock.sh
 
-# Non-root user (defence in depth — the runner only needs to write to /app/runs).
-RUN useradd -m -s /bin/bash dredd && chown -R dredd:dredd /app /docker-entrypoint.sh
+# Lifecycle: api-server stays alive on port 3000 satisfying the ALB
+# health check; POST /run spawns the benchmark entrypoint as a child
+# process and surfaces logs via GET /logs. This is the same pattern
+# every other Test-NN container uses.
+COPY fargate/api-server.cjs /app/server.js
+
+# Non-root user (defence in depth).
+RUN useradd -m -s /bin/bash dredd && chown -R dredd:dredd /app /docker-entrypoint-promptarmor-bedrock.sh
 USER dredd
 
-ENTRYPOINT ["/docker-entrypoint.sh"]
+EXPOSE 3000
+
+CMD ["node", "/app/server.js"]
