@@ -172,12 +172,15 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     registeredSessions.add(session_id);
   }
 
+  // Hoisted so the feed entry below can include the classification —
+  // null in autonomous mode (single-goal, no stack semantics).
+  let stackUpdate: import("./server-core.js").IntentStackUpdateResult | null = null;
   if (mode === "interactive" || mode === "learn") {
     // Stack-aware intent update. The stack absorbs queued prompts (the
     // LLM combines them at the next generation boundary), adopts the
     // assistant proposal on confirmation, and only clears prior intents
     // on a true topic switch (closed state, drift > NEW_TASK_DRIFT_MIN).
-    const stackUpdate = await applyIntentStackUpdate(
+    stackUpdate = await applyIntentStackUpdate(
       tracker,
       session_id,
       prompt,
@@ -239,6 +242,8 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     reason: `Turn ${result.turnNumber}: ${classification}${result.driftFromOriginal !== null ? ` (drift: ${result.driftFromOriginal.toFixed(3)})` : ""}`,
     ownerSub: identity.ownerSub,
     authStage: authStageForFeed(identity),
+    intentKind: stackUpdate?.kind,
+    intentStackSize: stackUpdate?.stack.length,
   });
 
   json(res, 200, {

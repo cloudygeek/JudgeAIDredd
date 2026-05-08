@@ -631,7 +631,12 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     </div>
 
     <div class="detail-section">
-      <h3>Goals <span class="muted" style="font-size:0.7em;font-weight:normal">— each user prompt; current goal highlighted, confirmations muted</span></h3>
+      <h3>Active Intent Stack <span class="muted" style="font-size:0.7em;font-weight:normal">— interactive/learn mode; what the judge currently authorises against</span></h3>
+      <div id="detail-active-intents"></div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Goals <span class="muted" style="font-size:0.7em;font-weight:normal">— full prompt history; current goal highlighted, confirmations muted</span></h3>
       <div id="detail-intents"></div>
     </div>
 
@@ -878,6 +883,13 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       const isIntent = f.type === 'intent';
       const msg = isIntent ? (f.prompt ?? f.reason ?? '') : (f.reason ?? f.prompt ?? '');
       const msgEsc = esc(msg);
+      // Intent stack classification badge — only present on interactive/learn
+      // /intent entries. Tells you at a glance whether the goal was appended
+      // (queued / continuation / open-followup) or replaced (new-task).
+      const intentKind = isIntent ? (f.intentKind ?? '') : '';
+      const intentKindHtml = intentKind
+        ? `<span class="badge ${intentKind === 'new-task' ? 'badge-deny' : intentKind === 'queued' || intentKind === 'continuation' || intentKind === 'open-followup' ? 'badge-allow' : ''}" style="margin-right:6px">${esc(intentKind)}${f.intentStackSize ? ` · stack ${esc(f.intentStackSize)}` : ''}</span>`
+        : '';
       const stageText = isIntent ? (f.reason ?? '') : (f.stage ?? '');
       const stageHtml = stageText ? `<span class="muted">[${esc(stageText)}]</span> ` : '';
       const sid = f.sessionId ?? '';
@@ -886,7 +898,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       const sidHtml = showSid && sid
         ? `<span class="feed-sid cell-link muted" title="${esc(sid)}" onclick="showDetail('${esc(sid)}')">${esc(sidShort)}</span> `
         : '';
-      return `<div class="feed-entry"><span class="feed-time">${time}</span> ${sidHtml}<span class="${cls}">${icon}</span> <span class="feed-tool">${esc(f.tool ?? f.type ?? '')}</span> ${stageHtml}<span class="muted" title="${msgEsc}">${msgEsc}</span></div>`;
+      return `<div class="feed-entry"><span class="feed-time">${time}</span> ${sidHtml}<span class="${cls}">${icon}</span> <span class="feed-tool">${esc(f.tool ?? f.type ?? '')}</span> ${intentKindHtml}${stageHtml}<span class="muted" title="${msgEsc}">${msgEsc}</span></div>`;
     }
 
     // Settings modal — fetches /api/whoami and renders the OIDC JWT claims
@@ -1194,7 +1206,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         document.getElementById('detail-page').classList.add('active');
 
         document.getElementById('detail-title').textContent = `Session ${sessionId.substring(0, 8)}`;
-        document.getElementById('detail-task').textContent = data.originalTask ?? '';
+        document.getElementById('detail-task').textContent = data.currentTask ?? data.originalTask ?? '';
 
         // Prime the per-session feed from current global feed state.
         try {
@@ -1246,6 +1258,43 @@ mv .claude/settings.json .claude/settings.json.dredd-off
               <td>${t.toolCallsDenied > 0 ? `<span class="badge badge-deny">${esc(t.toolCallsDenied)}</span>` : '0'}</td>
               <td>${t.goalReminderInjected ? '✓' : ''}</td>
             </tr>`).join('');
+
+        // Active Intent Stack — interactive/learn only. The judge
+        // authorises tool calls against this set (any-goal-match). Each
+        // entry's `kind` tells you whether it was appended (queued /
+        // continuation / open-followup), adopted (confirmation), or a
+        // replacement (new-task). Resolved entries are dimmed — they're
+        // post-Stop and only kept until the next new-task push or TTL.
+        const activeIntents = data.activeIntents ?? [];
+        const turnState = data.turnState ?? null;
+        const stackHeader = activeIntents.length > 0 && turnState
+          ? `<div style="padding:6px 0 10px;color:var(--muted);font-size:0.85em">turn-state: <span class="badge">${esc(turnState)}</span> · stack size: ${activeIntents.length}</div>`
+          : '';
+        const kindBadge = (kind) => {
+          // Colour-code: replacements/new tasks in red-ish, additive in
+          // green, confirmations in blue, original in neutral.
+          const cls = kind === 'new-task' ? 'badge-deny'
+            : kind === 'queued' || kind === 'continuation' || kind === 'open-followup' ? 'badge-allow'
+            : kind === 'confirmation' ? 'badge'
+            : 'badge';
+          return `<span class="badge ${cls}">${esc(kind)}</span>`;
+        };
+        document.getElementById('detail-active-intents').innerHTML = activeIntents.length === 0
+          ? '<div class="empty">No active intent stack — autonomous-mode session, or no /intent yet recorded.</div>'
+          : stackHeader + activeIntents.map((e, i) => {
+              const ts = e.registeredAt ? new Date(e.registeredAt).toLocaleString() : '';
+              const opacity = e.resolved ? '0.6' : '1';
+              const resolvedTag = e.resolved ? '<span class="badge muted">resolved</span>' : '';
+              return `<div style="padding:8px 0;border-bottom:1px solid var(--border);opacity:${opacity}">
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">
+                  <span class="mono muted" style="min-width:48px">#${i + 1}</span>
+                  ${kindBadge(e.kind)}
+                  ${resolvedTag}
+                  <span class="muted" style="margin-left:auto;font-size:0.85em">${esc(ts)}</span>
+                </div>
+                <div style="white-space:pre-wrap;word-break:break-word">${esc(e.prompt ?? '')}</div>
+              </div>`;
+            }).join('');
 
         // Goals — every user prompt that registered an intent. The first one
         // is the immutable original task; subsequent non-confirmation prompts

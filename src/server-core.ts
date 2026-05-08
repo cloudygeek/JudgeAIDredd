@@ -333,6 +333,16 @@ export type FeedEntry = {
   ownerSub?: string | null;
   /** "unauthenticated" (no key) / "bad-key" (present but invalid). */
   authStage?: string | null;
+  /**
+   * Interactive/learn intent stack classification for this turn —
+   * "original" / "queued" / "confirmation" / "new-task" / "continuation"
+   * / "open-followup". Absent on autonomous-mode entries. Lets the
+   * dashboard live feed mark each /intent with a badge showing whether
+   * the goal was appended or replaced.
+   */
+  intentKind?: string;
+  /** Stack length after this update, when applicable. */
+  intentStackSize?: number;
 };
 
 export const feed: FeedEntry[] = [];
@@ -1244,6 +1254,18 @@ export async function buildSessionLogShape(sessionId: string): Promise<Record<st
       break;
     }
   }
+  // Active intent stack (interactive/learn). The wire shape strips the
+  // 1024-dim embedding (server-only) but keeps the kind/resolved flags
+  // so the dashboard can render append vs replace decisions distinctly
+  // from the noisier per-turn intent log.
+  const activeIntents = (state.activeIntents ?? []).map((e) => ({
+    prompt: e.prompt,
+    kind: e.kind,
+    resolved: e.resolved,
+    registeredAt: e.registeredAt,
+    hasImages: !!e.images?.length,
+  }));
+
   return {
     sessionId,
     timestamp: new Date().toISOString(),
@@ -1253,6 +1275,12 @@ export async function buildSessionLogShape(sessionId: string): Promise<Record<st
     hijackStrikes: state.hijackStrikes,
     lockedHijacked: state.lockedHijacked,
     toolHistory: state.toolHistory,
+    activeIntents,
+    turnState: deriveTurnState({
+      prevUserPromptAt: state.lastUserPromptAt,
+      prevPreToolUseAt: state.lastPreToolUseAt,
+      prevStopAt: state.lastStopAt,
+    }),
     turnIntents: allIntents.map((t) => ({
       turnNumber: t.turnNumber,
       timestamp: t.timestamp,
