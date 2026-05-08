@@ -1,0 +1,73 @@
+# PromptArmor head-to-head — Anthropic-on-Bedrock subset (zip variant)
+#
+# Flat layout for the AI Sandbox CodeBuild pipeline. Build context is
+# the unzipped contents of judge-ai-dredd-promptarmor-bedrock.zip:
+#   /Dockerfile
+#   /docker-entrypoint.sh
+#   /server.js                   (was fargate/api-server.cjs)
+#   /package.json
+#   /benchmarks/
+#   /python-wheels/
+#
+# The non-zip sibling Dockerfile.promptarmor-bedrock builds from the
+# project tree directly — same image, different layout.
+
+FROM 891377407345.dkr.ecr.eu-west-1.amazonaws.com/cko-pull-through/docker-hub/library/python:3.11-slim-bookworm
+
+WORKDIR /app
+
+# ── System packages ────────────────────────────────────────────────────────
+# curl: ALB health check + manual debugging.
+# ca-certificates: TLS to *.amazonaws.com / dredd ALB.
+# nodejs: required by the AI Sandbox HTTP wrapper (server.js).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python wheels (vendored) ───────────────────────────────────────────────
+# Pre-resolved wheel set; install with --no-deps so pip doesn't
+# resolve closure conflicts (e.g. cohere wants pydantic-core<2.44 but
+# we ship 2.46 by design).
+COPY python-wheels/ /tmp/python-wheels/
+RUN pip3 install --no-index --find-links /tmp/python-wheels/ \
+        --no-deps /tmp/python-wheels/*.whl \
+    && python3 -c "from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline; print('agentdojo import OK')" \
+    && python3 -c "import boto3, requests; print('boto3', boto3.__version__, 'requests', requests.__version__)" \
+    && rm -rf /tmp/python-wheels/
+
+# ── Application source ──────────────────────────────────────────────────────
+# AgentDojo bridge + minimal package.json the api-server reads for
+# its version banner. No src/ TS code — this container talks to the
+# deployed Dredd hook via HTTP, it doesn't run the hook itself.
+COPY benchmarks/ ./benchmarks/
+COPY package.json ./package.json
+
+# ── Build provenance ────────────────────────────────────────────────────────
+ARG GIT_COMMIT=unknown
+ARG GIT_DIRTY=false
+ENV GIT_COMMIT=${GIT_COMMIT}
+ENV GIT_DIRTY=${GIT_DIRTY}
+
+ENV DREDD_URL="https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal" \
+    AWS_REGION="eu-west-2" \
+    AGENTDOJO_LOGDIR="/app/runs" \
+    PYTHONUNBUFFERED=1 \
+    TEST_NUM="promptarmor-bedrock"
+
+RUN mkdir -p /app/runs
+
+# ── Entrypoint + AI Sandbox HTTP wrapper (flat layout) ─────────────────────
+COPY docker-entrypoint-promptarmor-bedrock.sh /docker-entrypoint-promptarmor-bedrock.sh
+RUN chmod +x /docker-entrypoint-promptarmor-bedrock.sh
+
+# server.js is the renamed api-server.cjs.
+COPY server.js /app/server.js
+
+# Non-root user.
+RUN useradd -m -s /bin/bash dredd \
+    && chown -R dredd:dredd /app /docker-entrypoint-promptarmor-bedrock.sh
+USER dredd
+
+EXPOSE 3000
+
+CMD ["node", "/app/server.js"]
