@@ -104,6 +104,10 @@ run_cell() {
       args+=(--promptarmor-backend "$PROMPTARMOR_BACKEND")
       args+=(--promptarmor-model "$PROMPTARMOR_MODEL")
       args+=(--promptarmor-run-id "$RUN_ID")
+      # AI Sandbox internal ALBs sign with CKO's self-signed CA chain
+      # which isn't in the container's trust store. Same -k flag the
+      # entrypoint health probe uses.
+      args+=(--promptarmor-no-verify-tls)
       ;;
     *)
       fail "Unknown defence: $defence (expected: none|B7|B7.1|promptarmor)"

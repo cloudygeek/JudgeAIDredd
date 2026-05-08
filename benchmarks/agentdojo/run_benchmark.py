@@ -210,6 +210,7 @@ def build_pipeline(
     promptarmor_model: str | None = None,
     promptarmor_run_id: str | None = None,
     promptarmor_api_key: str | None = None,
+    promptarmor_verify_tls: bool = True,
 ) -> AgentPipeline:
     """Build an AgentPipeline with optional Judge Dredd defense and/or PromptArmor.
 
@@ -245,6 +246,7 @@ def build_pipeline(
             model=promptarmor_model,
             run_id=promptarmor_run_id,
             api_key=promptarmor_api_key,
+            verify_tls=promptarmor_verify_tls,
         )
 
     # Build the loop in execution order:
@@ -371,6 +373,10 @@ def main():
     parser.add_argument("--promptarmor-api-key", default=None,
                         help="Bearer token for the hook server's /screen endpoint. "
                              "Falls back to DREDD_API_KEY env var if unset.")
+    parser.add_argument("--promptarmor-no-verify-tls", action="store_true",
+                        help="Disable TLS certificate verification on /screen calls. "
+                             "Required for internal CKO ALBs whose self-signed CA "
+                             "chain isn't in the container's trust store.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -408,6 +414,7 @@ def main():
         promptarmor_model=args.promptarmor_model,
         promptarmor_run_id=args.promptarmor_run_id,
         promptarmor_api_key=promptarmor_api_key,
+        promptarmor_verify_tls=not args.promptarmor_no_verify_tls,
     )
 
     all_summaries = []

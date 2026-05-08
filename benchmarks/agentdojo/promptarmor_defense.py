@@ -71,6 +71,7 @@ class PromptArmorDefense(BasePipelineElement):
         run_id: str | None = None,
         api_key: str | None = None,
         timeout: float = 30.0,
+        verify_tls: bool = True,
     ) -> None:
         if backend not in ("openai", "bedrock"):
             raise ValueError(f"backend must be openai or bedrock, got {backend!r}")
@@ -80,6 +81,15 @@ class PromptArmorDefense(BasePipelineElement):
         self.run_id = run_id
         self.api_key = api_key
         self.timeout = timeout
+        self.verify_tls = verify_tls
+        if not verify_tls:
+            # Don't drown the logs in InsecureRequestWarning lines —
+            # the operator opted in via --promptarmor-no-verify-tls.
+            try:
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            except Exception:
+                pass
         self._last_query: str | None = None
         self.stats = {
             "screened": 0,
@@ -117,6 +127,7 @@ class PromptArmorDefense(BasePipelineElement):
                 json=body,
                 headers=headers,
                 timeout=self.timeout,
+                verify=self.verify_tls,
             )
             resp.raise_for_status()
             result = resp.json()
