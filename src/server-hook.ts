@@ -40,6 +40,7 @@ import {
   backfillFromTranscript,
   extractLastUserAndPriorAssistant,
   buildContextualIntent,
+  applyIntentStackUpdate,
   buildSessionLogShape,
   flushLogs,
   type TrustMode,
@@ -151,6 +152,11 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|option\s+\w+|👍)\s*[.!?👍]*\s*$/i;
   const isConfirmation = confirmationOnly.test(prompt) && prompt.trim().length < 80;
 
+  // Read the prior turn-state markers BEFORE we register this prompt;
+  // the stack classifier needs to see "what was the state when the user
+  // hit Enter?", not "what is it now we've recorded the new event?".
+  const prevTimings = await tracker.noteUserPromptSubmit(session_id);
+
   const result = await tracker.registerIntent(session_id, prompt, mode === "interactive", transcriptImages, isConfirmation);
 
   const contextualGoal = buildContextualIntent(prompt, priorAssistant);
@@ -166,31 +172,53 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     registeredSessions.add(session_id);
   }
 
-  if ((mode === "interactive" || mode === "learn") && !result.isOriginal) {
-    if (isConfirmation) {
-      if (priorAssistant) {
-        // The user is consenting to whatever the assistant just proposed.
-        // Adopt that proposal as the new goal so subsequent tool calls
-        // are judged against what the user actually agreed to, not the
-        // bare "yes" reply or a stale earlier turn. contextualGoal
-        // already wraps prompt+priorAssistant via buildContextualIntent.
-        await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
-        console.log(
-          `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: "${prompt.trim()}" confirms previous proposal — adopting proposal as goal`
-        );
-      } else {
-        console.log(
-          `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: "${prompt.trim()}" is a confirmation but no prior assistant context — keeping previous goal`
-        );
-      }
-    } else {
+  if (mode === "interactive" || mode === "learn") {
+    // Stack-aware intent update. The stack absorbs queued prompts (the
+    // LLM combines them at the next generation boundary), adopts the
+    // assistant proposal on confirmation, and only clears prior intents
+    // on a true topic switch (closed state, drift > NEW_TASK_DRIFT_MIN).
+    const stackUpdate = await applyIntentStackUpdate(
+      tracker,
+      session_id,
+      prompt,
+      priorAssistant,
+      isConfirmation,
+      prevTimings,
+      CONFIG.embeddingModel,
+      transcriptImages,
+    );
+
+    // Re-seed the interceptor's per-session goal state from the stack.
+    // The interceptor's drift detector is the same instance the store
+    // tracks (passed by reference), so setActiveIntents already updated
+    // the goalEmbeddings — but registerGoal also resets goalStartIndex
+    // (the boundary for "tools belonging to the current task"). On
+    // continuation we keep the existing index; on new-task / original
+    // we reset it. confirmation gets the proposal as the contextual
+    // goal so the judge sees what the user agreed to.
+    if (
+      stackUpdate.kind === "new-task" ||
+      stackUpdate.kind === "original"
+    ) {
+      // Use the contextual form so the judge sees prior_assistant_response
+      // when relevant — same as the previous behaviour.
       await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
-      console.log(
-        `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: updated goal to "${prompt.substring(0, 60)}..." ` +
-        `(prior assistant context: ${priorAssistant ? "yes" : "no"}, ` +
-        `drift from original: ${result.driftFromOriginal?.toFixed(3) ?? "n/a"})`
-      );
+    } else if (stackUpdate.kind === "confirmation" && priorAssistant) {
+      await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
     }
+    // queued / open-followup / continuation: don't reset the goal
+    // boundary — those are *additions* to what the agent is allowed
+    // to do, not a replacement.
+
+    const stackPrompts = stackUpdate.stack
+      .map((e) => `"${e.prompt.substring(0, 30)}"(${e.kind}${e.resolved ? "*" : ""})`)
+      .join(" → ");
+    console.log(
+      `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: ` +
+      `${stackUpdate.kind} (turn-state=${stackUpdate.turnState}, ` +
+      `drift=${stackUpdate.driftToStackTop?.toFixed(3) ?? "n/a"}, ` +
+      `stack=${stackUpdate.stack.length}: ${stackPrompts})`
+    );
   }
 
   const classification = tracker.classifyDrift(result.driftFromOriginal);
@@ -267,6 +295,13 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   if (!tool_name) {
     return json(res, 400, { error: "Missing tool_name" });
   }
+
+  // Mark the turn-state — the agent has fired a PreToolUse, so any
+  // UserPromptSubmit between now and the next Stop is queued (DRAINING).
+  // Best-effort: we don't fail the request on a marker write error.
+  await tracker.notePreToolUse(session_id).catch((err) => {
+    console.warn(`  [${session_id.substring(0, 8)}] notePreToolUse failed: ${err}`);
+  });
 
   if (!registeredSessions.has(session_id)) {
     if (transcriptContent) {
@@ -361,13 +396,22 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       `AGENT REASONING (why it wants to use this tool):\n${agent_reasoning}`;
   }
 
+  // In interactive/learn mode pass the active intent stack so the judge
+  // authorises against ALL queued goals, not just the most recent. In
+  // autonomous mode pass undefined and keep the single-goal behaviour.
+  const activeIntents =
+    mode === "interactive" || mode === "learn"
+      ? await tracker.getActiveIntents(session_id)
+      : undefined;
+
   const result = await interceptor.evaluate(
     session_id,
     tool_name,
     tool_input ?? {},
     fullContext || undefined,
     await tracker.getProjectRoot(session_id),
-    mode
+    mode,
+    activeIntents,
   );
 
   await tracker.recordToolCall(
@@ -555,6 +599,35 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
   interceptor.reset(session_id);
 
   json(res, 200, { summary });
+}
+
+// =========================================================================
+// POST /stop — Stop hook (turn boundary, NOT session end)
+// =========================================================================
+//
+// Claude Code fires Stop after every assistant turn. We use it to mark
+// the turn boundary in the per-session timing markers so the next
+// /intent can derive turnState correctly:
+//   - lastStopAt updated to now
+//   - all activeIntents marked resolved (so the next "new-task"
+//     classification can evict them)
+//
+// Session END comes through /end via the SessionEnd hook; this endpoint
+// is purely a turn-boundary signal.
+async function handleStop(req: IncomingMessage, res: ServerResponse) {
+  const identity = await authenticateHookRequest(req, res);
+  if (!identity) return;
+
+  const body = JSON.parse(await readBody(req));
+  const { session_id } = body;
+
+  if (rejectInvalidSessionId(res, session_id)) return;
+
+  await tracker.noteStop(session_id).catch((err) => {
+    console.warn(`  [${session_id.substring(0, 8)}] noteStop failed: ${err}`);
+  });
+
+  json(res, 200, {});
 }
 
 // =========================================================================
@@ -894,6 +967,21 @@ const server = createServer(async (req, res) => {
         const prev = CONFIG.mode;
         CONFIG.mode = next as TrustMode;
         console.log(`  [MODE] runtime switch: ${prev} → ${next}`);
+
+        // Mode flips are dev-only. The interactive intent stack and the
+        // autonomous single-goal model have different invariants — when
+        // the operator flips, the safest thing is to drop in-flight
+        // intent context for every session this container knows about.
+        // The next /intent on each session re-seeds correctly under the
+        // new mode. We don't touch session_id sets / tool history.
+        const sessions = await tracker.listSessions(500);
+        for (const s of sessions) {
+          await tracker.setActiveIntents(s.sessionId, []).catch(() => {});
+        }
+        if (sessions.length > 0) {
+          console.log(`  [MODE] cleared intent stacks for ${sessions.length} session(s)`);
+        }
+
         return json(res, 200, { mode: CONFIG.mode, previous: prev });
       }
     }
@@ -912,6 +1000,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/evaluate") return await handleEvaluate(req, res);
     if (req.method === "POST" && url.pathname === "/track")    return await handleTrack(req, res);
     if (req.method === "POST" && url.pathname === "/end")      return await handleEnd(req, res);
+    if (req.method === "POST" && url.pathname === "/stop")     return await handleStop(req, res);
     if (req.method === "POST" && url.pathname === "/pivot")    return await handlePivot(req, res);
     if (req.method === "POST" && url.pathname === "/compact")  return await handleCompact(req, res);
     if (req.method === "POST" && url.pathname === "/notification") return await handleNotification(req, res);

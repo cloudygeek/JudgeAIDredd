@@ -21,6 +21,7 @@ import type { ClaudeMdScanResult } from "./claudemd-scanner.js";
 import type {
   ImageBlock,
   TurnIntent,
+  IntentEntry,
   ToolCallRecord,
   FileRecord,
   FileReadRecord,
@@ -32,6 +33,7 @@ import type {
 export type {
   ImageBlock,
   TurnIntent,
+  IntentEntry,
   ToolCallRecord,
   FileRecord,
   FileReadRecord,
@@ -95,6 +97,42 @@ export interface SessionStore {
 
   pivotSession(sessionId: string, reason: string): Promise<void>;
   endSession(sessionId: string): Promise<void>;
+
+  // ---- turn-state markers (interactive/learn intent stack) ---------------
+  /**
+   * Record that a UserPromptSubmit hook fired for this session and
+   * return the prior turn-state markers so the caller can decide
+   * whether the prompt is open / draining / closed. Updates
+   * lastUserPromptAt to now() in the same call.
+   */
+  noteUserPromptSubmit(sessionId: string): Promise<{
+    /** ms since epoch — was 0 if never set. */
+    prevUserPromptAt: number;
+    prevPreToolUseAt: number;
+    prevStopAt: number;
+  }>;
+  /** Record that a PreToolUse hook fired (intent stack timing only). */
+  notePreToolUse(sessionId: string): Promise<void>;
+  /**
+   * Record that a Stop hook fired and mark all intent stack entries
+   * resolved=true. Returns nothing — the next /intent will then evict
+   * resolved entries on a "new-task" classification.
+   */
+  noteStop(sessionId: string): Promise<void>;
+
+  // ---- intent stack (interactive/learn) ----------------------------------
+  /**
+   * Read-only access to the active intent stack — used by the judge
+   * pipeline to render multi-goal context and by drift evaluation to
+   * sync the DriftDetector's goalEmbeddings.
+   */
+  getActiveIntents(sessionId: string): Promise<IntentEntry[]>;
+  /**
+   * Replace the intent stack and re-seed the DriftDetector's goal
+   * embeddings to match. Used by the hook on every UserPromptSubmit
+   * after applyIntentStackUpdate has decided the new shape.
+   */
+  setActiveIntents(sessionId: string, entries: IntentEntry[]): Promise<void>;
 
   // ---- intent & drift -----------------------------------------------------
   registerIntent(

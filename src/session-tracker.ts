@@ -52,6 +52,51 @@ export interface TurnIntent {
   isConfirmation?: boolean;
 }
 
+/**
+ * An entry on the interactive/learn intent stack. The LLM combines
+ * queued user prompts when it begins generating, so the judge needs to
+ * track ALL active goals, not just the latest one. A tool call is
+ * on-task if it advances ANY active intent.
+ *
+ * Stack semantics, set by the kind:
+ *   - "original"      first prompt of the session
+ *   - "confirmation"  short ack like "yes"/"ok"; carries the prior
+ *                     assistant proposal as the contextual goal
+ *   - "queued"        user typed while a tool call was in flight
+ *                     (DRAINING). LLM will combine with current
+ *                     generation; we always append, never replace
+ *   - "open-followup" user typed a second prompt before LLM picked
+ *                     anything up (OPEN). Same treatment as queued
+ *   - "continuation"  closed-state prompt that's similar (drift<0.3)
+ *                     to the top of stack — refinement / next step
+ *   - "new-task"      closed-state prompt that's distant (drift>0.5)
+ *                     — clears resolved entries first, then pushes
+ *
+ * `resolved` is set true when Stop fires; on the next "new-task" push
+ * we evict everything resolved.
+ */
+export interface IntentEntry {
+  /** Plain user prompt as it arrived (after fence-tag scrub). */
+  prompt: string;
+  /** Wrapped form passed to judge (may include prior_assistant_response). */
+  contextual: string;
+  /** Embedding of the plain prompt — used by drift detector min-over-stack. */
+  embedding: number[];
+  /** Epoch ms when this entry was pushed. */
+  registeredAt: number;
+  kind:
+    | "original"
+    | "confirmation"
+    | "queued"
+    | "open-followup"
+    | "continuation"
+    | "new-task";
+  /** Set true on Stop. Resolved entries are evicted on the next new-task push. */
+  resolved: boolean;
+  /** Images attached to the originating prompt, if any. */
+  images?: ImageBlock[];
+}
+
 export interface ToolCallRecord {
   turnNumber: number;
   tool: string;
@@ -153,7 +198,56 @@ export interface SessionState {
   ownerSub: string | null;
   /** Email of the API key owner (display only). */
   ownerEmail: string | null;
+  /**
+   * Interactive/learn-mode intent stack. The LLM combines queued user
+   * prompts at the next generation boundary, so the judge needs to
+   * authorise tool calls against ALL goals the user has stated since
+   * the last Stop, not just the most recent. Empty in autonomous mode
+   * (overwrite-on-every-turn semantics there).
+   *
+   * Capped at MAX_INTENT_STACK to keep judge prompts bounded; oldest
+   * non-original entries are popped on overflow. The original intent
+   * is never popped — it's the session-defining goal.
+   */
+  activeIntents: IntentEntry[];
+  /**
+   * Epoch ms of the last UserPromptSubmit. Combined with
+   * lastPreToolUseAt and lastStopAt, gives us the turn state when the
+   * NEXT prompt arrives (open / draining / closed).
+   */
+  lastUserPromptAt: number;
+  /**
+   * Epoch ms of the last PreToolUse on this session. If
+   * lastPreToolUseAt > lastStopAt, the agent is currently mid-turn.
+   * If lastUserPromptAt > lastStopAt AND lastPreToolUseAt > lastStopAt
+   * AND lastPreToolUseAt > lastUserPromptAt, the user typed mid-tool-call
+   * (DRAINING) — the LLM will combine the queued prompt with the
+   * current generation, so we must append rather than replace.
+   */
+  lastPreToolUseAt: number;
+  /**
+   * Epoch ms of the last Stop hook firing on this session. Defines the
+   * boundary between turns. On Stop we mark all stack entries
+   * resolved=true; the next "new-task" push then clears them.
+   */
+  lastStopAt: number;
 }
+
+/**
+ * Cap on the active-intent stack size. Five concurrent goals is more
+ * than any real human juggles, and bigger stacks bloat the judge prompt
+ * (every additional intent is rendered + drift-checked). On overflow
+ * the OLDEST non-original entry is popped — the session-defining goal
+ * is sticky.
+ */
+export const MAX_INTENT_STACK = 5;
+
+/**
+ * How long after Stop a resolved entry stays on the stack before being
+ * implicitly evicted. Five minutes is generous for "I'll keep iterating
+ * on this" without letting a long-idle session accumulate phantom goals.
+ */
+export const RESOLVED_INTENT_TTL_MS = 5 * 60 * 1000;
 
 export class InMemorySessionStore implements SessionStore {
   private sessions = new Map<string, SessionState>();
@@ -214,6 +308,10 @@ export class InMemorySessionStore implements SessionStore {
         lockedHijacked: false,
         ownerSub: null,
         ownerEmail: null,
+        activeIntents: [],
+        lastUserPromptAt: 0,
+        lastPreToolUseAt: 0,
+        lastStopAt: 0,
       });
     }
     return this.sessions.get(sessionId)!;
@@ -316,6 +414,13 @@ export class InMemorySessionStore implements SessionStore {
     session.filesWritten = new Map();
     session.filesRead = [];
     session.envVars = new Map();
+    // The interactive/learn intent stack and turn-state markers belong
+    // to the just-pivoted-away-from task. Clear them so the next
+    // /intent on this session is treated as a fresh first prompt.
+    session.activeIntents = [];
+    session.lastUserPromptAt = 0;
+    session.lastPreToolUseAt = 0;
+    session.lastStopAt = 0;
     // toolHistory and turnMetrics are preserved for the full session log
   }
 
@@ -923,6 +1028,49 @@ export class InMemorySessionStore implements SessionStore {
    */
   async endSession(sessionId: string): Promise<void> {
     this.sessions.delete(sessionId);
+  }
+
+  // ---- turn-state markers (interactive/learn intent stack) ---------------
+
+  async noteUserPromptSubmit(sessionId: string): Promise<{
+    prevUserPromptAt: number;
+    prevPreToolUseAt: number;
+    prevStopAt: number;
+  }> {
+    const s = this.getSession(sessionId);
+    const prev = {
+      prevUserPromptAt: s.lastUserPromptAt,
+      prevPreToolUseAt: s.lastPreToolUseAt,
+      prevStopAt: s.lastStopAt,
+    };
+    s.lastUserPromptAt = Date.now();
+    return prev;
+  }
+
+  async notePreToolUse(sessionId: string): Promise<void> {
+    const s = this.getSession(sessionId);
+    s.lastPreToolUseAt = Date.now();
+  }
+
+  async noteStop(sessionId: string): Promise<void> {
+    const s = this.getSession(sessionId);
+    s.lastStopAt = Date.now();
+    // Mark every active intent as resolved so the next "new-task"
+    // classification on this session evicts them. We do not pop here —
+    // a follow-up "continuation" should still see the prior context.
+    for (const e of s.activeIntents) e.resolved = true;
+  }
+
+  async getActiveIntents(sessionId: string): Promise<IntentEntry[]> {
+    return this.getSession(sessionId).activeIntents;
+  }
+
+  async setActiveIntents(sessionId: string, entries: IntentEntry[]): Promise<void> {
+    const s = this.getSession(sessionId);
+    s.activeIntents = entries;
+    // Keep the drift detector in sync — it consults
+    // goalEmbeddings on every evaluate() and we want min-over-stack.
+    s.driftDetector.setGoalEmbeddings(entries.map((e) => e.embedding));
   }
 }
 

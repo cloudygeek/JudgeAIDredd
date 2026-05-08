@@ -31,7 +31,7 @@ import { DriftDetector } from "./drift-detector.js";
 import { IntentJudge, type JudgeVerdict, type JudgeBackend, type PromptVariant } from "./intent-judge.js";
 import { checkOllama, embedAny, isBedrockModel, chat } from "./ollama-client.js";
 import { checkBedrock, bedrockChat, bedrockEmbed } from "./bedrock-client.js";
-import type { ImageBlock } from "./session-tracker.js";
+import type { ImageBlock, IntentEntry } from "./session-tracker.js";
 
 export interface InterceptorConfig {
   embeddingModel?: string;
@@ -229,7 +229,12 @@ export class PreToolInterceptor {
      *  ambiguous to the judge — short user replies generate
      *  low-information embeddings that produce false drift-deny signals
      *  the judge handles correctly with the full goal context. */
-    mode: "interactive" | "autonomous" | "learn" = "autonomous"
+    mode: "interactive" | "autonomous" | "learn" = "autonomous",
+    /** Interactive/learn intent stack at the moment of evaluation. When
+     *  provided AND non-empty, the judge sees a numbered list of active
+     *  goals and treats actions advancing ANY as consistent. Autonomous
+     *  mode passes undefined and gets the single-goal behaviour. */
+    activeIntents?: IntentEntry[],
   ): Promise<InterceptionResult> {
     const start = Date.now();
     const s = this.getSession(sessionId);
@@ -318,6 +323,15 @@ export class PreToolInterceptor {
     // "review" (or no match) → continue to drift + judge.
 
     // --- Stage 2: Embedding drift check ---
+    // If the caller passed an active intent stack (interactive/learn),
+    // sync the per-session drift detector's goal embeddings so the
+    // similarity check is min-distance-over-stack, not just against the
+    // latest registered goal. Autonomous mode falls through to the
+    // single-goal embedding registered via registerGoal().
+    if (activeIntents && activeIntents.length > 0) {
+      s.driftDetector.setGoalEmbeddings(activeIntents.map((e) => e.embedding));
+    }
+
     const toolDescription = this.describeToolCall(tool, input);
     const drift = await s.driftDetector.evaluate(toolDescription);
 
@@ -396,8 +410,18 @@ export class PreToolInterceptor {
       currentAction += `\n\nFILE CONTEXT (files written during this session):\n${fileContext}`;
     }
 
+    // In interactive/learn mode with an active stack, pass the full
+    // contextual prompt list to the judge so it authorises tool calls
+    // against ALL active goals (the LLM combines queued prompts at
+    // generation time). Falls back to s.originalTask if the stack is
+    // empty — preserves autonomous behaviour and the pre-stack defaults.
+    const judgeIntent: string | string[] =
+      activeIntents && activeIntents.length > 0
+        ? activeIntents.map((e) => e.contextual)
+        : s.originalTask;
+
     const judgeVerdict = await this.judge.evaluate(
-      s.originalTask,
+      judgeIntent,
       recentTools,
       currentAction,
       s.intentImages

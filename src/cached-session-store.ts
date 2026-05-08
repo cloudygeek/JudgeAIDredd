@@ -28,6 +28,7 @@ import type {
   DriftClassification,
   SessionState,
   TurnIntent,
+  IntentEntry,
   ToolCallRecord,
   FileRecord,
   FileReadRecord,
@@ -114,6 +115,10 @@ export class CachedSessionStore implements SessionStore {
       lockedHijacked: false,
       ownerSub: null,
       ownerEmail: null,
+      activeIntents: [],
+      lastUserPromptAt: 0,
+      lastPreToolUseAt: 0,
+      lastStopAt: 0,
     };
   }
 
@@ -196,6 +201,53 @@ export class CachedSessionStore implements SessionStore {
   async endSession(sessionId: string): Promise<void> {
     await this.backend.endSession(sessionId);
     this.drop(sessionId);
+  }
+
+  // ---- turn-state markers (interactive/learn intent stack) -------------
+  //
+  // Mutate the cached SessionState in place so subsequent reads on the
+  // hot path don't need a roundtrip. The backend write is the source of
+  // truth on failover.
+
+  async noteUserPromptSubmit(sessionId: string): Promise<{
+    prevUserPromptAt: number;
+    prevPreToolUseAt: number;
+    prevStopAt: number;
+  }> {
+    const result = await this.backend.noteUserPromptSubmit(sessionId);
+    const cached = this.cache.get(sessionId);
+    if (cached) cached.lastUserPromptAt = Date.now();
+    return result;
+  }
+
+  async notePreToolUse(sessionId: string): Promise<void> {
+    await this.backend.notePreToolUse(sessionId);
+    const cached = this.cache.get(sessionId);
+    if (cached) cached.lastPreToolUseAt = Date.now();
+  }
+
+  async noteStop(sessionId: string): Promise<void> {
+    await this.backend.noteStop(sessionId);
+    const cached = this.cache.get(sessionId);
+    if (cached) {
+      cached.lastStopAt = Date.now();
+      for (const e of cached.activeIntents) e.resolved = true;
+    }
+  }
+
+  async getActiveIntents(sessionId: string): Promise<IntentEntry[]> {
+    const cached = this.cache.get(sessionId);
+    if (cached) return cached.activeIntents;
+    return this.backend.getActiveIntents(sessionId);
+  }
+
+  async setActiveIntents(sessionId: string, entries: IntentEntry[]): Promise<void> {
+    await this.backend.setActiveIntents(sessionId, entries);
+    const cached = this.cache.get(sessionId);
+    if (cached) {
+      cached.activeIntents = entries;
+      cached.driftDetector.setGoalEmbeddings(entries.map((e) => e.embedding));
+    }
   }
 
   // ---- intent & drift ---------------------------------------------------

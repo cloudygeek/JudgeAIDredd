@@ -28,20 +28,66 @@ for d in "$CONFIG_ON" "$CONFIG_OFF"; do
   fi
 done
 
-# Poll capture-pane until the prompt prefix reappears, capped at 120s.
-# The regex is the fragile bit — adjust it after eyeballing one run.
-wait_for_idle() {
-  local sess="$1" deadline=$(( $(date +%s) + 120 ))
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    # Match the empty Claude prompt: a `❯` followed by only whitespace.
-    # The pane is right-padded with spaces to terminal width, hence \s*$.
-    if tmux capture-pane -p -t "$sess" | tail -5 | grep -qE '❯[[:space:]]*$'; then
-      sleep 1   # one extra tick to let the last frame render
+# Detect and dismiss startup dialogs that block the prompt:
+#   - MCP-server approval ("Space to select · Enter to confirm · Esc to
+#     reject all") — we send Esc to skip all MCP servers since the
+#     example prompts don't need them and we want a clean comparison.
+#   - Any other modal that pins a footer like "Esc to reject" / "Esc to
+#     cancel" — same treatment.
+#
+# Stops as soon as we see the steady-state "? for shortcuts" footer
+# (which means we're at an empty prompt and ready for input).
+dismiss_startup_dialogs() {
+  local sess="$1" tries=0 pane
+  while [ "$tries" -lt 10 ]; do
+    pane=$(tmux capture-pane -p -t "$sess")
+    if echo "$pane" | grep -q '? for shortcuts'; then
       return 0
+    fi
+    if echo "$pane" | grep -qE 'Esc to (reject|cancel)|reject all'; then
+      tmux send-keys -t "$sess" Escape
+      sleep 1
+    else
+      sleep 0.5
+    fi
+    tries=$(( tries + 1 ))
+  done
+  echo "warn: $sess never reached an empty prompt during dialog dismissal" >&2
+}
+
+# Poll capture-pane until Claude is idle, capped at 240s.
+#
+# Idle is positively confirmed by "? for shortcuts" (bottom-right hint
+# at the empty prompt) AND negatively by absence of "esc to interrupt"
+# (the busy marker that replaces it during tool calls / model thinking).
+#
+# We scan the WHOLE pane (no tail) because tmux repaints regions out
+# of order: a single mid-render snapshot might omit the bottom hint
+# even when Claude has actually returned to the prompt. The hint sits
+# on the same row as a long, dynamic timestamp string ("MAC-...
+# 14:19 08-May-26") which can also overwrite it transiently. Scanning
+# the full pane catches it on whichever row tmux happens to have
+# painted it on this tick.
+#
+# Require two consecutive matches (≥1s apart) so we don't false-trigger
+# during a transient pre-tool-call repaint where the hint flashes back.
+wait_for_idle() {
+  local sess="$1" deadline=$(( $(date +%s) + 240 )) hits=0 pane
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    pane=$(tmux capture-pane -p -t "$sess")
+    if echo "$pane" | grep -q '? for shortcuts' && \
+       ! echo "$pane" | grep -q 'esc to interrupt'; then
+      hits=$(( hits + 1 ))
+      if [ "$hits" -ge 2 ]; then
+        sleep 1   # one extra tick to let the last frame render
+        return 0
+      fi
+    else
+      hits=0
     fi
     sleep 0.5
   done
-  echo "warn: $sess didn't return to prompt within 120s" >&2
+  echo "warn: $sess didn't return to prompt within 240s" >&2
 }
 
 run_one() {
@@ -63,8 +109,13 @@ run_one() {
   tmux new-session -d -s "$rec_sess" -x 200 -y 50 \
     "asciinema rec --quiet --overwrite --output-format asciicast-v2 --command 'tmux attach -t $claude_sess' '$cast'"
 
-  # 3. Let Claude render its prompt.
+  # 3. Wait for Claude to finish booting and dismiss any startup dialogs
+  #    we don't want to record (MCP-server approval, model picker, etc.).
+  #    Theme + trust-folder dialogs are pre-acked once when configs are
+  #    seeded; everything else gets dismissed here so the recording
+  #    starts cleanly.
   sleep 3
+  dismiss_startup_dialogs "$claude_sess"
 
   # 4. Drive prompts.
   while IFS= read -r prompt; do

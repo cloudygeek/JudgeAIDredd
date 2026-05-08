@@ -28,7 +28,15 @@ export interface DriftScore {
 
 export class DriftDetector {
   private embeddingModel: string;
-  private taskEmbedding: number[] | null = null;
+  /**
+   * The goal embeddings the agent is currently authorised to act on. In
+   * autonomous mode this is always a single embedding (every new
+   * UserPromptSubmit replaces it). In interactive/learn mode it is the
+   * stack of active intents — a tool call is on-task if it semantically
+   * matches ANY active intent (min cosine distance / max cosine
+   * similarity across the stack).
+   */
+  private goalEmbeddings: number[][] = [];
   private turnSimilarities: number[] = [];
   private previousSimilarity: number = 1.0;
 
@@ -37,11 +45,29 @@ export class DriftDetector {
   }
 
   /**
-   * Register the original task. Computes and caches its embedding.
+   * Register the operative goal. Replaces the active goal stack with a
+   * single entry (autonomous mode and the first interactive turn).
+   * Caches the goal's embedding.
    */
   async registerGoal(task: string): Promise<void> {
     const embeddings = await embedAny(task, this.embeddingModel);
-    this.taskEmbedding = embeddings[0];
+    this.goalEmbeddings = [embeddings[0]];
+    this.turnSimilarities = [];
+    this.previousSimilarity = 1.0;
+  }
+
+  /**
+   * Replace the goal stack with a list of pre-computed embeddings.
+   * Used by interactive/learn mode where the SessionState owns the
+   * authoritative IntentEntry stack and re-syncs the detector on every
+   * /intent. Embeddings are passed in (not re-computed) so we don't
+   * pay the embedAny cost again — the stack maintainer already has
+   * them from the IntentEntry.
+   *
+   * Empty input clears the stack; the next evaluate() call will throw.
+   */
+  setGoalEmbeddings(embeddings: number[][]): void {
+    this.goalEmbeddings = embeddings.filter((e) => e && e.length > 0);
     this.turnSimilarities = [];
     this.previousSimilarity = 1.0;
   }
@@ -76,9 +102,15 @@ export class DriftDetector {
 
   /**
    * Evaluate semantic drift for a turn.
+   *
+   * When multiple goals are active (interactive/learn stack), the action
+   * is on-task if it matches any of them. We take the MAX similarity
+   * across the stack — equivalent to MIN cosine distance — so an action
+   * advancing a queued sub-goal isn't flagged as drifted just because it
+   * diverges from the original.
    */
   async evaluate(turnSummary: string): Promise<DriftScore> {
-    if (!this.taskEmbedding) {
+    if (this.goalEmbeddings.length === 0) {
       throw new Error("Goal not registered. Call registerGoal() first.");
     }
 
@@ -87,7 +119,11 @@ export class DriftDetector {
     const embedTimeMs = Date.now() - start;
 
     const turnEmbedding = embeddings[0];
-    const similarity = cosineSimilarity(this.taskEmbedding, turnEmbedding);
+    let similarity = -Infinity;
+    for (const ge of this.goalEmbeddings) {
+      const s = cosineSimilarity(ge, turnEmbedding);
+      if (s > similarity) similarity = s;
+    }
 
     this.turnSimilarities.push(similarity);
 
@@ -119,7 +155,7 @@ export class DriftDetector {
    * Reset state for a new test run.
    */
   reset(): void {
-    this.taskEmbedding = null;
+    this.goalEmbeddings = [];
     this.turnSimilarities = [];
     this.previousSimilarity = 1.0;
   }

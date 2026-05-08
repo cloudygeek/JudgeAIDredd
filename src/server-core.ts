@@ -89,7 +89,9 @@ import { inspect } from "node:util";
 import { InMemorySessionStore } from "./session-tracker.js";
 import { DynamoSessionStore } from "./dynamo-session-store.js";
 import { CachedSessionStore } from "./cached-session-store.js";
-import type { SessionStore, ImageBlock } from "./session-store.js";
+import type { SessionStore, ImageBlock, IntentEntry } from "./session-store.js";
+import { MAX_INTENT_STACK, RESOLVED_INTENT_TTL_MS } from "./session-tracker.js";
+import { embedAny, cosineSimilarity } from "./ollama-client.js";
 import {
   type ApiKeyStore,
   InMemoryApiKeyStore,
@@ -851,6 +853,242 @@ ${sanitisedUser}
 </user_prompt>`;
 }
 
+// =============================================================================
+// Interactive/learn intent stack
+// =============================================================================
+//
+// In interactive (and learn) mode, the user can submit a prompt while the
+// agent is still working on the previous one. Claude Code combines queued
+// prompts at the next generation boundary, so the judge has to authorise
+// tool calls against ALL active goals — not just the most recent. The stack
+// implements that.
+//
+// We classify each /intent into one of:
+//   - confirmation       short ack ("yes", "ok", "option 2")
+//   - queued / open      arrived during DRAINING (or OPEN) — append
+//   - new-task           closed-state, low similarity to top of stack — clear resolved, push
+//   - continuation       closed-state, high similarity — push, keep prior
+//
+// The hook calls applyIntentStackUpdate() which:
+//   1. derives turnState from the timing markers,
+//   2. classifies the prompt,
+//   3. mutates the stack accordingly,
+//   4. writes the stack back to the store and re-syncs the drift detector
+//      via setActiveIntents().
+//
+// CONFIDENCE THRESHOLDS:
+//   continuation_max_drift = 0.30   action embedding-similar enough to
+//                                   the existing stack top — refinement
+//   new_task_min_drift     = 0.50   topic switch — wipe resolved, push
+// Everything in 0.30–0.50 (the "ambiguous middle") defaults to append
+// without clearing resolved entries. This is the conservative choice — we
+// keep the prior intent visible to the judge so a follow-up that turns
+// out to BE the prior task isn't suddenly judged in isolation.
+
+const CONTINUATION_DRIFT_MAX = 0.30;
+const NEW_TASK_DRIFT_MIN = 0.50;
+
+export type TurnState = "open" | "draining" | "closed";
+
+export function deriveTurnState(prev: {
+  prevUserPromptAt: number;
+  prevPreToolUseAt: number;
+  prevStopAt: number;
+}): TurnState {
+  // Stop is the boundary between turns. Anything earlier than the most
+  // recent Stop is "from the previous turn" and doesn't influence state.
+  const preToolSinceStop = prev.prevPreToolUseAt > prev.prevStopAt;
+  const userPromptSinceStop = prev.prevUserPromptAt > prev.prevStopAt;
+
+  if (!userPromptSinceStop && !preToolSinceStop) {
+    // Fresh session OR previous turn fully completed (Stop fired). The
+    // incoming prompt is the start of a new turn.
+    return "closed";
+  }
+  if (preToolSinceStop) {
+    // The agent has fired at least one PreToolUse since the last Stop —
+    // it's mid-execution. The new prompt is queued.
+    return "draining";
+  }
+  // User submitted a prompt since the last Stop, but no PreToolUse has
+  // fired since — the LLM is generating but hasn't called a tool yet, OR
+  // the user fired two prompts back-to-back before the LLM responded.
+  // Either way, the new prompt is open-followup; the LLM will combine.
+  return "open";
+}
+
+/**
+ * Build an IntentEntry from a raw user prompt + optional prior assistant
+ * context. Computes the embedding (one round-trip to the embedder) and
+ * wraps the contextual form via buildContextualIntent.
+ */
+async function makeIntentEntry(
+  prompt: string,
+  priorAssistant: string | null,
+  kind: IntentEntry["kind"],
+  embeddingModel: string,
+  images?: ImageBlock[],
+): Promise<IntentEntry> {
+  const embeddings = await embedAny(prompt, embeddingModel);
+  return {
+    prompt,
+    contextual: buildContextualIntent(prompt, priorAssistant),
+    embedding: embeddings[0],
+    registeredAt: Date.now(),
+    kind,
+    resolved: false,
+    images: images?.length ? images : undefined,
+  };
+}
+
+/**
+ * Trim the stack:
+ *   - drop resolved entries older than RESOLVED_INTENT_TTL_MS,
+ *   - cap total length at MAX_INTENT_STACK by popping the OLDEST
+ *     non-original entry (the original is sticky — it's the
+ *     session-defining goal).
+ */
+function trimStack(stack: IntentEntry[]): IntentEntry[] {
+  const now = Date.now();
+  const fresh = stack.filter(
+    (e) => !e.resolved || now - e.registeredAt < RESOLVED_INTENT_TTL_MS,
+  );
+  if (fresh.length <= MAX_INTENT_STACK) return fresh;
+
+  // Over cap. Keep the original (kind === "original") + the most recent
+  // (MAX_INTENT_STACK - 1) entries.
+  const original = fresh.find((e) => e.kind === "original");
+  const tail = fresh
+    .filter((e) => e.kind !== "original")
+    .slice(-(MAX_INTENT_STACK - (original ? 1 : 0)));
+  return original ? [original, ...tail] : tail;
+}
+
+export interface IntentStackUpdateResult {
+  /** What classification we applied. */
+  kind: IntentEntry["kind"];
+  /** Turn state at the moment of the new prompt. */
+  turnState: TurnState;
+  /** Final stack after the update. */
+  stack: IntentEntry[];
+  /**
+   * Cosine distance to the closest stack entry before the new prompt
+   * was added — null when the stack was empty (very first prompt).
+   */
+  driftToStackTop: number | null;
+}
+
+/**
+ * Apply the interactive/learn stack update for a new UserPromptSubmit.
+ *
+ * @param store              the SessionStore (cached or in-memory)
+ * @param sessionId
+ * @param prompt             raw user prompt (after fence-tag scrub)
+ * @param priorAssistant     prior assistant text from transcript (may be null)
+ * @param isConfirmation     classification from the /intent regex
+ * @param prevTimings        markers BEFORE we noted this UserPromptSubmit
+ * @param embeddingModel     CONFIG.embeddingModel
+ * @param images             attached images, if any
+ */
+export async function applyIntentStackUpdate(
+  store: SessionStore,
+  sessionId: string,
+  prompt: string,
+  priorAssistant: string | null,
+  isConfirmation: boolean,
+  prevTimings: {
+    prevUserPromptAt: number;
+    prevPreToolUseAt: number;
+    prevStopAt: number;
+  },
+  embeddingModel: string,
+  images?: ImageBlock[],
+): Promise<IntentStackUpdateResult> {
+  const turnState = deriveTurnState(prevTimings);
+  const existing = await store.getActiveIntents(sessionId);
+
+  // First prompt of the session — always "original".
+  if (existing.length === 0) {
+    const entry = await makeIntentEntry(
+      prompt,
+      priorAssistant,
+      "original",
+      embeddingModel,
+      images,
+    );
+    const stack = [entry];
+    await store.setActiveIntents(sessionId, stack);
+    return { kind: "original", turnState, stack, driftToStackTop: null };
+  }
+
+  // Confirmation: adopt the prior assistant proposal as the new top.
+  // Falls through to "queued" if there is no prior assistant context —
+  // a bare "yes" with no proposal can't carry a meaningful goal so we
+  // treat it as a queued/open follow-up against the existing stack.
+  if (isConfirmation && priorAssistant) {
+    const entry = await makeIntentEntry(
+      prompt,
+      priorAssistant,
+      "confirmation",
+      embeddingModel,
+      images,
+    );
+    const stack = trimStack([...existing, entry]);
+    await store.setActiveIntents(sessionId, stack);
+    return { kind: "confirmation", turnState, stack, driftToStackTop: 0 };
+  }
+
+  // Compute drift to the closest non-resolved stack entry — the action
+  // is "near" the active intent set if it's near any of them.
+  const promptEmbedding = (await embedAny(prompt, embeddingModel))[0];
+  const liveEntries = existing.filter((e) => !e.resolved);
+  // If everything is resolved, fall back to comparing against the whole
+  // stack so we don't lose the signal.
+  const compareSet = liveEntries.length > 0 ? liveEntries : existing;
+  let maxSim = -Infinity;
+  for (const e of compareSet) {
+    if (!e.embedding || e.embedding.length === 0) continue;
+    const s = cosineSimilarity(e.embedding, promptEmbedding);
+    if (s > maxSim) maxSim = s;
+  }
+  const driftToStackTop = maxSim === -Infinity ? null : 1 - maxSim;
+
+  let kind: IntentEntry["kind"];
+  let stack = [...existing];
+
+  if (turnState === "draining") {
+    kind = "queued";
+  } else if (turnState === "open") {
+    kind = "open-followup";
+  } else if (driftToStackTop !== null && driftToStackTop > NEW_TASK_DRIFT_MIN) {
+    // Closed state, distant from any prior intent — true topic switch.
+    // Evict resolved entries; keep the original (it's the session-defining
+    // goal even if the user has long since moved on).
+    kind = "new-task";
+    stack = stack.filter((e) => e.kind === "original" || !e.resolved);
+  } else if (driftToStackTop !== null && driftToStackTop < CONTINUATION_DRIFT_MAX) {
+    kind = "continuation";
+  } else {
+    // Ambiguous middle. Default to continuation: append, keep prior
+    // entries. Conservative — we don't strip the user's earlier goals.
+    kind = "continuation";
+  }
+
+  const entry: IntentEntry = {
+    prompt,
+    contextual: buildContextualIntent(prompt, priorAssistant),
+    embedding: promptEmbedding,
+    registeredAt: Date.now(),
+    kind,
+    resolved: false,
+    images: images?.length ? images : undefined,
+  };
+  stack = trimStack([...stack, entry]);
+  await store.setActiveIntents(sessionId, stack);
+
+  return { kind, turnState, stack, driftToStackTop };
+}
+
 export async function backfillFromTranscript(
   sessionId: string,
   transcriptPathOrContent: string,
@@ -983,24 +1221,39 @@ export async function backfillFromTranscript(
  * in Dynamo. Returns null when the session is completely unknown.
  */
 export async function buildSessionLogShape(sessionId: string): Promise<Record<string, unknown> | null> {
-  const ctx = await tracker.getSessionContext(sessionId);
-  if (!ctx.originalTask && ctx.currentTurn === 0 && ctx.turnIntents.length === 0) {
+  const state = await tracker.loadSession(sessionId);
+  if (!state || (!state.originalIntent && state.currentTurn === 0 && state.turnIntents.length === 0)) {
     return null;
   }
   const summary = await tracker.getFullSessionSummary(sessionId);
   const driftHistory = tracker.getDriftDetector(sessionId).getHistory();
+  // Goal history — every user prompt that registered an intent. The original
+  // (turn 0) is stored separately on SessionState; prepend it so the
+  // dashboard's Goals view shows the first prompt alongside subsequent
+  // turns. Embeddings are stripped (large, server-side only).
+  const allIntents = state.originalIntent
+    ? [state.originalIntent, ...state.turnIntents]
+    : state.turnIntents;
+  // Latest non-confirmation prompt is the "current task" the dashboard
+  // displays at the top of the detail view. Falls back to the original
+  // prompt when no subsequent non-confirmation has registered.
+  let currentTask: string | null = state.originalIntent?.prompt ?? null;
+  for (let i = state.turnIntents.length - 1; i >= 0; i--) {
+    if (!state.turnIntents[i].isConfirmation) {
+      currentTask = state.turnIntents[i].prompt;
+      break;
+    }
+  }
   return {
     sessionId,
     timestamp: new Date().toISOString(),
-    originalTask: ctx.originalTask,
+    originalTask: state.originalIntent?.prompt ?? null,
+    currentTask,
     summary,
-    hijackStrikes: await tracker.getHijackStrikes(sessionId),
-    lockedHijacked: await tracker.isLocked(sessionId),
-    toolHistory: ctx.recentTools,
-    // Goal history — every user prompt that registered an intent. Includes
-    // the original (turnNumber 0) and every subsequent turn. Embeddings are
-    // stripped because they're large and only useful server-side.
-    turnIntents: ctx.turnIntents.map((t) => ({
+    hijackStrikes: state.hijackStrikes,
+    lockedHijacked: state.lockedHijacked,
+    toolHistory: state.toolHistory,
+    turnIntents: allIntents.map((t) => ({
       turnNumber: t.turnNumber,
       timestamp: t.timestamp,
       prompt: t.prompt,

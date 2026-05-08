@@ -261,10 +261,18 @@ case "$HOOK_EVENT" in
     ;;
 
   "Stop")
-    # Stop fires after every assistant turn (not at session end). Do NOT
-    # call /end here — that would wipe the session state and cause the next
-    # user prompt to be registered as a new "original intent", breaking
-    # interactive-mode confirmation handling.
+    # Stop fires after every assistant turn (not at session end). We POST
+    # to /stop so the server can mark the turn boundary — this is what
+    # lets the interactive intent stack distinguish DRAINING (queued
+    # prompt) from CLOSED (next-turn prompt). Fire-and-forget; we do
+    # NOT call /end here (that would wipe the session state and cause
+    # the next user prompt to be registered as a new "original intent",
+    # breaking confirmation handling).
+    curl -s -X POST "$DREDD_URL/stop" \
+      "${DREDD_CURL_ARGS[@]}" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -n --arg sid "$SESSION_ID" '{session_id: $sid}')" \
+      --connect-timeout 2 --max-time 5 > /dev/null 2>&1 &
     echo '{}'
     ;;
 

@@ -62,6 +62,7 @@ import type {
   DriftClassification,
   SessionState,
   TurnIntent,
+  IntentEntry,
   ToolCallRecord,
   FileRecord,
   FileReadRecord,
@@ -192,6 +193,10 @@ export class DynamoSessionStore implements SessionStore {
       lockedHijacked: false,
       ownerSub: null,
       ownerEmail: null,
+      activeIntents: [],
+      lastUserPromptAt: 0,
+      lastPreToolUseAt: 0,
+      lastStopAt: 0,
     };
   }
 
@@ -481,6 +486,13 @@ export class DynamoSessionStore implements SessionStore {
       lockedHijacked: meta?.lockedHijacked ?? false,
       ownerSub: meta?.ownerSub ?? null,
       ownerEmail: meta?.ownerEmail ?? null,
+      // Intent stack + turn-state markers. Stored on META so the cache
+      // miss / failover path reconstructs them correctly. Older sessions
+      // pre-stack-feature read back as empty defaults.
+      activeIntents: (meta?.activeIntents as any) ?? [],
+      lastUserPromptAt: meta?.lastUserPromptAt ?? 0,
+      lastPreToolUseAt: meta?.lastPreToolUseAt ?? 0,
+      lastStopAt: meta?.lastStopAt ?? 0,
     };
 
     // Seed the tool-seq counter so future inserts don't collide with
@@ -626,6 +638,13 @@ export class DynamoSessionStore implements SessionStore {
       originalIntent: null,
       originalEmbedding: null,
       currentTurn: 0,
+      // The interactive/learn intent stack and turn-state markers belong
+      // to the task we're pivoting away from — wipe them so the next
+      // /intent on this session is treated as a fresh first prompt.
+      activeIntents: [],
+      lastUserPromptAt: 0,
+      lastPreToolUseAt: 0,
+      lastStopAt: 0,
     });
 
     // Reset ephemeral drift detector / seq counter.
@@ -638,6 +657,63 @@ export class DynamoSessionStore implements SessionStore {
     // drop local ephemeral state so the next session id reuse starts clean.
     await this.updateMeta(sessionId, { endedAt: new Date().toISOString() });
     this.ephemeral.delete(sessionId);
+  }
+
+  // ---- turn-state markers (interactive/learn intent stack) -------------
+
+  async noteUserPromptSubmit(sessionId: string): Promise<{
+    prevUserPromptAt: number;
+    prevPreToolUseAt: number;
+    prevStopAt: number;
+  }> {
+    const meta = await this.getMeta(sessionId);
+    const prev = {
+      prevUserPromptAt: (meta?.lastUserPromptAt as number | undefined) ?? 0,
+      prevPreToolUseAt: (meta?.lastPreToolUseAt as number | undefined) ?? 0,
+      prevStopAt: (meta?.lastStopAt as number | undefined) ?? 0,
+    };
+    await this.updateMeta(sessionId, { lastUserPromptAt: Date.now() });
+    return prev;
+  }
+
+  async notePreToolUse(sessionId: string): Promise<void> {
+    await this.updateMeta(sessionId, { lastPreToolUseAt: Date.now() });
+  }
+
+  async noteStop(sessionId: string): Promise<void> {
+    const meta = await this.getMeta(sessionId);
+    const stack = ((meta?.activeIntents as IntentEntry[] | undefined) ?? []).map(
+      (e) => ({ ...e, resolved: true }),
+    );
+    await this.updateMeta(sessionId, {
+      lastStopAt: Date.now(),
+      activeIntents: stack,
+    });
+  }
+
+  async getActiveIntents(sessionId: string): Promise<IntentEntry[]> {
+    const meta = await this.getMeta(sessionId);
+    return (meta?.activeIntents as IntentEntry[] | undefined) ?? [];
+  }
+
+  async setActiveIntents(sessionId: string, entries: IntentEntry[]): Promise<void> {
+    // Truncate prompt/contextual to avoid blowing the 400KB item limit.
+    // 10KB × 2 fields × 5 entries = 100KB max, plus 5 embeddings × ~4KB
+    // each = 20KB. Comfortably under. The judge sees the full prompt on
+    // the in-flight request; the persisted form is only used for restart
+    // recovery so a truncated copy is fine.
+    const persistable = entries.map((e) => ({
+      ...e,
+      prompt: truncString(e.prompt, 10_000),
+      contextual: truncString(e.contextual, 10_000),
+    }));
+    await this.updateMeta(sessionId, { activeIntents: persistable });
+    // Keep the in-process drift detector in sync with the persisted
+    // stack. Container failover loses this until the next loadSession,
+    // which is acceptable — the cache layer above us re-warms on miss.
+    this.eph(sessionId).driftDetector.setGoalEmbeddings(
+      entries.map((e) => e.embedding),
+    );
   }
 
   // ---- intent & drift -------------------------------------------------

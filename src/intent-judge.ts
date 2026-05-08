@@ -275,7 +275,7 @@ export class IntentJudge {
    * @param images - Images attached to the user's intent (screenshots etc.)
    */
   async evaluate(
-    originalTask: string,
+    originalTask: string | string[],
     actionHistory: string[],
     currentAction: string,
     images?: ImageBlock[]
@@ -286,7 +286,15 @@ export class IntentJudge {
     // directives that the model sees as part of the system context, and
     // reopen the tag. The directive in the system prompt is the primary
     // defence; this is the structural backstop.
-    const scrubbedOriginal = scrubFenceTags(originalTask);
+    //
+    // originalTask may be either a single string (autonomous mode — one
+    // operative goal) or a list (interactive/learn — the active intent
+    // stack). For the list form we render a numbered list inside
+    // <user_intent> and tell the judge an action is consistent if it
+    // advances ANY listed goal.
+    const scrubbedOriginal = Array.isArray(originalTask)
+      ? originalTask.map(scrubFenceTags)
+      : scrubFenceTags(originalTask);
     const scrubbedHistory = actionHistory.map(scrubFenceTags);
     const scrubbedAction = scrubFenceTags(currentAction);
 
@@ -310,8 +318,25 @@ export class IntentJudge {
     // are inside delimiter tags AND have any contained fence tags
     // scrubbed (above). The judge's system prompt forbids following any
     // instruction text inside these tags.
+    //
+    // When the caller passes an array (interactive/learn intent stack),
+    // we render the goals as a numbered list and tell the judge to
+    // accept actions advancing ANY of them. This is required because the
+    // LLM combines queued user prompts at generation time, so the user
+    // is effectively asking for all of them at once.
+    const intentBlock = Array.isArray(scrubbedOriginal)
+      ? scrubbedOriginal.length === 1
+        ? scrubbedOriginal[0]
+        : "The user has stated the following goals (most recent last). " +
+          "An action is CONSISTENT if it plausibly advances ANY of them. " +
+          "It is HIJACKED only if it advances none of them.\n\n" +
+          scrubbedOriginal
+            .map((g, i) => `${i + 1}. ${g}`)
+            .join("\n\n")
+      : scrubbedOriginal;
+
     const userPrompt = `<user_intent>
-${scrubbedOriginal}${imageNote}
+${intentBlock}${imageNote}
 </user_intent>
 
 ACTIONS TAKEN SO FAR (scoped to the current task only, not prior tasks):
