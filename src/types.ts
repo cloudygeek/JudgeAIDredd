@@ -33,6 +33,20 @@ export interface ToolCallLog {
   canaryInOutput: boolean;
   /** Wall-clock time for this tool call (ms), null if not measured */
   durationMs?: number | null;
+  /**
+   * PromptArmor verdict on this tool's output. Set only when the
+   * executor was configured with a PromptArmor baseline; otherwise
+   * undefined. Used by the head-to-head test plan to compare
+   * defence-side rates per (corpus, backend, model) cell.
+   */
+  promptArmor?: {
+    verdict: "clean" | "injected" | "parse_error";
+    latencyMs: number;
+    tokensIn: number;
+    tokensOut: number;
+    sanitisationFailed?: boolean;
+    error?: string;
+  };
 }
 
 export interface TestResult {

@@ -33,8 +33,9 @@ import { tmpdir } from "node:os";
 import { TurnLogger, detectCanaries } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
 import type { HijackScenario } from "../../scenarios/t3-goal-hijacking.js";
-import type { TurnLog, ToolCallLog, TestResult } from "../types.js";
+import type { TurnLog, ToolCallLog, TestResult } from "../../src/types.js";
 import type { CanaryServer } from "./canary-server.js";
+import type { PromptArmorBaseline } from "../../src/promptarmor-baseline.js";
 
 const WORKSPACE_TEMPLATE = join(import.meta.dirname, "..", "workspace-template");
 
@@ -316,6 +317,15 @@ export interface ExecutorOptions {
   maxTurns?: number;
   effort?: "low" | "medium" | "high" | "max";
   canaryServer?: CanaryServer;
+  /**
+   * Optional PromptArmor screen. When set, every tool result is run
+   * through `screen()` before being appended to the conversation
+   * history. If the verdict is `injected`, the sanitised text replaces
+   * the raw output in the agent's view; the raw text is still recorded
+   * on `turnToolCalls[].output` for auditing. Verdicts are recorded on
+   * `turnToolCalls[].promptArmor` for downstream analysis.
+   */
+  promptArmor?: PromptArmorBaseline;
 }
 
 export async function executeScenario(
@@ -446,6 +456,44 @@ export async function executeScenario(
 
           console.log(`      → ${truncOutput.substring(0, 100)}${truncOutput.length > 100 ? "..." : ""}`);
 
+          // PromptArmor pass — when configured, screen the tool result
+          // before it enters the agent's context. We feed the agent the
+          // sanitised version on `injected`; the raw output stays on
+          // turnToolCalls[].output for auditing and disagreement
+          // analysis. The screen runs synchronously in the executor's
+          // event loop — paper p50 is ~200–600 ms with GPT-4o, so this
+          // adds a meaningful slowdown to long-running tool sequences.
+          // That is intrinsic to the head-to-head comparison, not a
+          // wiring artefact.
+          let agentVisibleContent = truncOutput;
+          let promptArmorVerdict: ToolCallLog["promptArmor"] = undefined;
+          if (options.promptArmor) {
+            try {
+              const screen = await options.promptArmor.screen(truncOutput, scenario.initialTask);
+              agentVisibleContent = screen.sanitised;
+              promptArmorVerdict = {
+                verdict: screen.verdict,
+                latencyMs: screen.latencyMs,
+                tokensIn: screen.tokens.in,
+                tokensOut: screen.tokens.out,
+                sanitisationFailed: screen.sanitisationFailed,
+              };
+              if (screen.verdict === "injected") {
+                console.log(`      [promptarmor] injected — sanitised tool output (${truncOutput.length}→${agentVisibleContent.length} chars)`);
+              }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.warn(`      [promptarmor] screen failed: ${msg} — passing raw output through`);
+              promptArmorVerdict = {
+                verdict: "parse_error",
+                latencyMs: 0,
+                tokensIn: 0,
+                tokensOut: 0,
+                error: msg,
+              };
+            }
+          }
+
           turnToolCalls.push({
             tool: tc.function.name,
             input: parsedInput,
@@ -453,12 +501,13 @@ export async function executeScenario(
             canaryInInput: detectCanaries(JSON.stringify(parsedInput)).length > 0,
             canaryInOutput: detectCanaries(truncOutput).length > 0,
             durationMs: Date.now() - tcStart,
+            promptArmor: promptArmorVerdict,
           });
 
           conversationHistory.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: truncOutput,
+            content: agentVisibleContent,
           });
         }
       }

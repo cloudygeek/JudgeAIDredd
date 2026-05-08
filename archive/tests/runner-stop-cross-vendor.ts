@@ -44,8 +44,8 @@ import type { HijackScenario } from "../../scenarios/t3-goal-hijacking.js";
 import { getScenarios } from "../../scenarios/t3-goal-hijacking.js";
 import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
-import type { TestResult } from "../types.js";
-import { getBuildInfo } from "../build-info.js";
+import type { TestResult } from "../../src/types.js";
+import { getBuildInfo } from "../../src/build-info.js";
 
 // Dynamic executor load — avoids pulling in @anthropic-ai/claude-agent-sdk
 // when the test targets a non-Anthropic backend.
@@ -79,6 +79,16 @@ const { values } = parseArgs({
     "theta-block": { type: "string", default: "0.5" },
     "delta-warn": { type: "string", default: "0.2" },
     "output-dir": { type: "string", default: "./results/test29/" },
+    /**
+     * PromptArmor screen on every tool result. Format:
+     *   --with-promptarmor=backend=openai,model=gpt-4o
+     *   --with-promptarmor=backend=bedrock,model=eu.anthropic.claude-sonnet-4-6,run_id=phaseB-day1
+     * Comma-separated key=value; uses `=` not `:` to avoid colliding
+     * with Bedrock inference profile IDs (which contain colons).
+     * Implemented for the OpenAI executor only — see comment near
+     * the loadExecutor switch below for the Bedrock-side gap.
+     */
+    "with-promptarmor": { type: "string" },
   },
 });
 
@@ -98,6 +108,41 @@ const THETA_WARN = parseFloat(values["theta-warn"]!);
 const THETA_BLOCK = parseFloat(values["theta-block"]!);
 const DELTA_WARN = parseFloat(values["delta-warn"]!);
 const OUTPUT_DIR = values["output-dir"]!;
+
+// PromptArmor screen — singleton constructed once per process when
+// --with-promptarmor is set. Lazy-imported so the runner can be used
+// without OpenAI/AWS creds in the no-screen case.
+let promptArmor: import("../../src/promptarmor-baseline.js").PromptArmorBaseline | null = null;
+async function initPromptArmor() {
+  const flag = values["with-promptarmor"];
+  if (!flag) return;
+  const parts = flag.split(",").map((p) => p.trim());
+  const kv: Record<string, string> = {};
+  for (const p of parts) {
+    const idx = p.indexOf("=");
+    if (idx === -1) throw new Error(`bad --with-promptarmor segment: ${p}`);
+    kv[p.substring(0, idx)] = p.substring(idx + 1);
+  }
+  if (kv.backend !== "openai" && kv.backend !== "bedrock") {
+    throw new Error(`--with-promptarmor backend must be openai or bedrock; got ${kv.backend}`);
+  }
+  if (!kv.model) throw new Error("--with-promptarmor requires model=...");
+  if (AGENT_BACKEND !== "openai") {
+    console.warn(
+      `  [promptarmor] WARNING: --with-promptarmor is wired for the OpenAI executor only. ` +
+      `Agent backend is ${AGENT_BACKEND}; the screen will not run. ` +
+      `Use the AgentDojo Python harness + /screen endpoint for non-OpenAI backends.`,
+    );
+    return;
+  }
+  const { PromptArmorBaseline } = await import("../../src/promptarmor-baseline.js");
+  promptArmor = new PromptArmorBaseline({
+    backend: kv.backend,
+    model: kv.model,
+    runId: kv.run_id,
+  });
+  console.log(`  [promptarmor] enabled: backend=${kv.backend} model=${kv.model} run_id=${kv.run_id ?? "(none)"}`);
+}
 
 function selectScenarios(): HijackScenario[] {
   if (SCENARIO_FILTER === "all") return getScenarios("all");
@@ -187,6 +232,7 @@ function summariseCell(runs: TestResult[]): CellResult["summary"] {
 }
 
 async function main() {
+  await initPromptArmor();
   const executeScenario = await loadExecutor(AGENT_BACKEND);
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
 
@@ -253,6 +299,7 @@ async function main() {
               model,
               logger,
               maxTurns: MAX_TURNS,
+              promptArmor: promptArmor ?? undefined,
             });
             result.repetition = rep + 1;
             runs.push(result);

@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { TurnLogger, detectCanaries } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
 import type { HijackScenario } from "../../scenarios/t3-goal-hijacking.js";
-import type { TurnLog, ToolCallLog, TestResult } from "../types.js";
+import type { TurnLog, ToolCallLog, TestResult } from "../../src/types.js";
 import type { CanaryServer } from "./canary-server.js";
 
 const WORKSPACE_TEMPLATE = join(import.meta.dirname, "..", "workspace-template");

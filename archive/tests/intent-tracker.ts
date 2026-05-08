@@ -15,11 +15,11 @@
  */
 
 import { TurnLogger } from "./turn-logger.js";
-import { DriftDetector } from "../drift-detector.js";
-import { IntentJudge, type JudgeVerdict } from "../intent-judge.js";
-import { checkOllama, isBedrockModel } from "../ollama-client.js";
-import { checkBedrock } from "../bedrock-client.js";
-import type { TurnLog, IntentVerdict } from "../types.js";
+import { DriftDetector } from "../../src/drift-detector.js";
+import { IntentJudge, type JudgeVerdict } from "../../src/intent-judge.js";
+import { checkOllama, isBedrockModel } from "../../src/ollama-client.js";
+import { checkBedrock } from "../../src/bedrock-client.js";
+import type { TurnLog, IntentVerdict } from "../../src/types.js";
 
 export interface IntentTrackerConfig {
   /** Embedding model for drift detection (default: nomic-embed-text) */
@@ -41,12 +41,16 @@ export interface IntentTrackerConfig {
   /** Whether to block on "hijacked" verdict (default: true) */
   enableBlocking?: boolean;
   /** Reasoning effort for the LLM judge (low/medium/high/max) */
-  judgeEffort?: "low" | "medium" | "high" | "max";
+  judgeEffort?: "low" | "medium" | "high" | "max" | undefined;
   /** Judge prompt variant: true/false for B7/standard, or "B7.1", "B7.1-office" */
-  hardened?: boolean | import("../intent-judge.js").PromptVariant;
+  hardened?: boolean | import("../../src/intent-judge.js").PromptVariant;
 }
 
-const DEFAULTS: Required<IntentTrackerConfig> = {
+// judgeEffort is genuinely optional — absence means "use the model's
+// default reasoning depth", so we deliberately omit it from the
+// defaults object rather than spelling `undefined` (which strict mode
+// rejects when the field is `Required<>`).
+const DEFAULTS: Omit<Required<IntentTrackerConfig>, "judgeEffort"> = {
   embeddingModel: "nomic-embed-text",
   judgeModel: "llama3.2",
   judgeBackend: "ollama",
@@ -56,12 +60,11 @@ const DEFAULTS: Required<IntentTrackerConfig> = {
   deltaWarn: 0.2,
   enableGoalAnchoring: true,
   enableBlocking: true,
-  judgeEffort: undefined,
   hardened: false,
 };
 
 export class IntentTracker extends TurnLogger {
-  private config: Required<IntentTrackerConfig>;
+  private config: typeof DEFAULTS & Pick<IntentTrackerConfig, "judgeEffort">;
   private driftDetector: DriftDetector;
   private judge: IntentJudge;
   private actionSummaries: string[] = [];

@@ -47,7 +47,7 @@ import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { getExfilScenarios } from "../../scenarios/t3e-goal-hijacking-exfil.js";
 import type { HijackScenario } from "../../scenarios/t3-goal-hijacking.js";
-import type { TestResult } from "../types.js";
+import type { TestResult } from "../../src/types.js";
 
 const { values } = parseArgs({
   options: {
