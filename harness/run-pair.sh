@@ -33,7 +33,9 @@ done
 wait_for_idle() {
   local sess="$1" deadline=$(( $(date +%s) + 120 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if tmux capture-pane -p -t "$sess" | tail -3 | grep -qE '│ >|^>[[:space:]]*$'; then
+    # Match the empty Claude prompt: a `❯` followed by only whitespace.
+    # The pane is right-padded with spaces to terminal width, hence \s*$.
+    if tmux capture-pane -p -t "$sess" | tail -5 | grep -qE '❯[[:space:]]*$'; then
       sleep 1   # one extra tick to let the last frame render
       return 0
     fi
@@ -56,8 +58,10 @@ run_one() {
 
   # 2. asciinema in another detached tmux session, attached to the first.
   #    The outer tmux gives asciinema a pty; neither session is displayed.
+  #    Force asciicast-v2 — asciinema 3.x defaults to v3 which older
+  #    asciinema-player builds don't read.
   tmux new-session -d -s "$rec_sess" -x 200 -y 50 \
-    "asciinema rec --quiet --overwrite --command 'tmux attach -t $claude_sess' '$cast'"
+    "asciinema rec --quiet --overwrite --output-format asciicast-v2 --command 'tmux attach -t $claude_sess' '$cast'"
 
   # 3. Let Claude render its prompt.
   sleep 3

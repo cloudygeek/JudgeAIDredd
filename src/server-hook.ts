@@ -168,9 +168,21 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
 
   if ((mode === "interactive" || mode === "learn") && !result.isOriginal) {
     if (isConfirmation) {
-      console.log(
-        `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: "${prompt.trim()}" is a confirmation — keeping previous goal`
-      );
+      if (priorAssistant) {
+        // The user is consenting to whatever the assistant just proposed.
+        // Adopt that proposal as the new goal so subsequent tool calls
+        // are judged against what the user actually agreed to, not the
+        // bare "yes" reply or a stale earlier turn. contextualGoal
+        // already wraps prompt+priorAssistant via buildContextualIntent.
+        await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
+        console.log(
+          `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: "${prompt.trim()}" confirms previous proposal — adopting proposal as goal`
+        );
+      } else {
+        console.log(
+          `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: "${prompt.trim()}" is a confirmation but no prior assistant context — keeping previous goal`
+        );
+      }
     } else {
       await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
       console.log(
