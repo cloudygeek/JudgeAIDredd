@@ -92,7 +92,16 @@ const DENIED_BASH_PATTERNS: PatternRule[] = [
 
   // Credential/secret access commands
   { pattern: /printenv/, reason: "Print all environment variables" },
-  { pattern: /\benv\b(?!\s+(grep|--))/, reason: "Dump environment" },
+  // `env` builtin invocation. Anchored to the start of the (sub)command so
+  // appearances of `env` inside arguments or paths (e.g. `.env.test`,
+  // `workspace-template/.env`) don't trip. Allows `VAR=value env ...`,
+  // `sudo env`, `command env`, etc. — common wrappers — while still catching
+  // bare `env`. The negative lookahead exempts `env grep` / `env --` per the
+  // original rule.
+  {
+    pattern: /^(?:\s*(?:sudo|command|exec|nice|nohup|stdbuf|time|timeout)\s+)*(?:\w+=\S+\s+)*env\b(?!\s+(?:grep|--))/,
+    reason: "Dump environment",
+  },
   { pattern: /\/proc\/self\/environ/, reason: "Read process environment" },
 
   // File upload / exfiltration via curl
