@@ -749,6 +749,8 @@ async function executeWithConverse(
   turnNum: number,
   interceptor?: PreToolInterceptor,
   interceptionLog?: InterceptionLog[],
+  // Session-keyed interceptor; pass through from runTrajectory.
+  sessionId?: string,
 ): Promise<{ toolCalls: ToolCallLog[]; assistantText: string }> {
   const converseModel = resolveModel(model);
   const turnToolCalls: ToolCallLog[] = [];
@@ -793,8 +795,8 @@ async function executeWithConverse(
       const tcStart = Date.now();
 
       let denialReason: string | null = null;
-      if (interceptor) {
-        const intercept = await interceptor.evaluate(tu.name, tu.input ?? {});
+      if (interceptor && sessionId) {
+        const intercept = await interceptor.evaluate(sessionId, tu.name, tu.input ?? {});
         interceptionLog?.push({
           turn: turnNum,
           tool: tu.name,
@@ -1044,6 +1046,14 @@ async function runTrajectory(
   logger.reset();
   logger.registerGoal(scenario.initialTask);
 
+  // Per-trajectory synthetic session id. Post-research-v1 the
+  // interceptor is session-keyed (registerGoal/evaluate/getLog all
+  // take sessionId); this runner only ever evaluates one scenario at
+  // a time per interceptor instance, so a single synthetic id is
+  // fine. The id includes scenario + model so log messages stay
+  // distinguishable when many trajectories run in parallel.
+  const sessionId = `alab-${scenario.id}-${model.replace(/[^a-z0-9]/gi, "-")}-${Date.now()}`;
+
   if (logger instanceof IntentTracker) {
     await logger.preflight();
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -1074,7 +1084,7 @@ async function runTrajectory(
         hardened: DREDD_JUDGE_PROMPT as any,
       });
       await preToolInterceptor.preflight();
-      await preToolInterceptor.registerGoal(scenario.initialTask);
+      await preToolInterceptor.registerGoal(sessionId, scenario.initialTask);
     }
   }
 
@@ -1129,6 +1139,7 @@ async function runTrajectory(
           turnNum,
           preToolInterceptor,
           interceptionLog,
+          sessionId,
         );
         toolCalls = result.toolCalls;
         assistantText = result.assistantText;
@@ -1172,7 +1183,7 @@ async function runTrajectory(
   // Harvest the SDK-path interceptor's per-call log if applicable.
   // The Converse path populates interceptionLog directly during execution.
   if (preToolInterceptor && backend === "sdk") {
-    for (const r of preToolInterceptor.getLog()) {
+    for (const r of preToolInterceptor.getLog(sessionId)) {
       interceptionLog.push({
         turn: -1, // SDK hooks don't carry a turn index; -1 marks SDK-sourced entries
         tool: r.tool,

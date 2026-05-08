@@ -77,14 +77,16 @@ export async function createDefenceHooks(config?: DefenceHooksConfig) {
 
     const result = await tracker.registerIntent(sessionId, prompt);
 
-    // On first call, also register with the interceptor
+    // On first call, also register with the interceptor. Post-research-v1
+    // the interceptor's session-keyed; pass sessionId.
     if (result.isOriginal) {
-      await interceptor.registerGoal(prompt);
+      await interceptor.registerGoal(sessionId, prompt);
     }
 
-    // Get the appropriate reminder based on drift classification
+    // Get the appropriate reminder based on drift classification.
+    // getGoalReminder is now async — await before returning.
     if (result.driftFromOriginal !== null) {
-      const reminder = tracker.getGoalReminder(sessionId, result.driftFromOriginal);
+      const reminder = await tracker.getGoalReminder(sessionId, result.driftFromOriginal);
       if (reminder) {
         return { systemMessage: reminder };
       }
@@ -100,8 +102,9 @@ export async function createDefenceHooks(config?: DefenceHooksConfig) {
     const toolName = (input as any).tool_name as string;
     const toolInput = (input as any).tool_input as Record<string, unknown>;
 
-    // Get session context for the interceptor
-    const sessionCtx = tracker.getSessionContext(sessionId);
+    // Get session context for the interceptor.
+    // getSessionContext is now async — await it.
+    const sessionCtx = await tracker.getSessionContext(sessionId);
 
     // If we don't have an original task yet (shouldn't happen, but defensive)
     if (!sessionCtx.originalTask) {
@@ -109,11 +112,12 @@ export async function createDefenceHooks(config?: DefenceHooksConfig) {
       return {};
     }
 
-    // Evaluate through the three-stage pipeline
-    const result = await interceptor.evaluate(toolName, toolInput);
+    // Evaluate through the three-stage pipeline. Interceptor is now
+    // session-keyed: pass sessionId first.
+    const result = await interceptor.evaluate(sessionId, toolName, toolInput);
 
     // Record the decision
-    tracker.recordToolCall(
+    await tracker.recordToolCall(
       sessionId,
       toolName,
       toolInput,
@@ -145,30 +149,31 @@ export async function createDefenceHooks(config?: DefenceHooksConfig) {
     const toolInput = (input as any).tool_input as Record<string, unknown>;
     const toolOutput = (input as any).tool_output as string ?? "";
 
-    // Track file reads
+    // Track file reads. recordFileRead/Write/EnvVar are now async —
+    // await them so any subsequent reads in this hook see consistent state.
     if (toolName === "Read") {
       const filePath = String(toolInput.file_path ?? "");
-      tracker.recordFileRead(sessionId, filePath, toolOutput);
+      await tracker.recordFileRead(sessionId, filePath, toolOutput);
     }
 
     // Track file writes
     if (toolName === "Write") {
       const filePath = String(toolInput.file_path ?? "");
       const content = String(toolInput.content ?? "");
-      tracker.recordFileWrite(sessionId, filePath, content, false);
+      await tracker.recordFileWrite(sessionId, filePath, content, false);
     }
 
     // Track file edits
     if (toolName === "Edit") {
       const filePath = String(toolInput.file_path ?? "");
       const newString = String(toolInput.new_string ?? "");
-      tracker.recordFileWrite(sessionId, filePath, newString, true);
+      await tracker.recordFileWrite(sessionId, filePath, newString, true);
     }
 
     // Track env var mutations in Bash commands
     if (toolName === "Bash") {
       const command = String(toolInput.command ?? "");
-      tracker.recordEnvVar(sessionId, command);
+      await tracker.recordEnvVar(sessionId, command);
     }
 
     return {};
@@ -180,12 +185,14 @@ export async function createDefenceHooks(config?: DefenceHooksConfig) {
     const sessionId = (input as any).session_id as string;
     if (!sessionId) return {};
 
-    const sessionCtx = tracker.getSessionContext(sessionId);
-    const fullSummary = tracker.getFullSessionSummary(sessionId);
+    // Several tracker getters became async post-research-v1; the
+    // interceptor's log is now session-keyed. Await + pass sessionId.
+    const sessionCtx = await tracker.getSessionContext(sessionId);
+    const fullSummary = await tracker.getFullSessionSummary(sessionId);
     const driftHistory = tracker.getDriftDetector(sessionId).getHistory();
-    const interceptorLog = interceptor.getLog();
-    const writtenFiles = tracker.getWrittenFiles(sessionId);
-    const envVars = tracker.getEnvVars(sessionId);
+    const interceptorLog = interceptor.getLog(sessionId);
+    const writtenFiles = await tracker.getWrittenFiles(sessionId);
+    const envVars = await tracker.getEnvVars(sessionId);
 
     const sessionLog = {
       sessionId,
@@ -283,8 +290,8 @@ export async function createDefenceHooks(config?: DefenceHooksConfig) {
       }
     }
 
-    // Clean up session state
-    tracker.endSession(sessionId);
+    // Clean up session state. endSession is now async.
+    await tracker.endSession(sessionId);
 
     return {};
   };
