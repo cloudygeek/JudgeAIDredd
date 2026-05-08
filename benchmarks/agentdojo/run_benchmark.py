@@ -23,6 +23,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 
 def _patch_openai_tool_call_decode():
@@ -133,6 +134,7 @@ from agentdojo.task_suite.load_suites import get_suite
 # Our bridge
 sys.path.insert(0, str(Path(__file__).parent))
 from dredd_defense import JudgeDreddDefense
+from promptarmor_defense import PromptArmorDefense
 from bedrock_llm import BedrockAnthropicLLM, BEDROCK_MODELS
 from bedrock_converse_llm import BedrockConverseLLM, BEDROCK_CONVERSE_MODELS
 
@@ -204,8 +206,17 @@ def build_pipeline(
     backend: str = "bedrock",
     aws_region: str = "eu-west-2",
     agent_region: str | None = None,
+    promptarmor_backend: str | None = None,
+    promptarmor_model: str | None = None,
+    promptarmor_run_id: str | None = None,
+    promptarmor_api_key: str | None = None,
 ) -> AgentPipeline:
-    """Build an AgentPipeline with optional Judge Dredd defense."""
+    """Build an AgentPipeline with optional Judge Dredd defense and/or PromptArmor.
+
+    PromptArmor screens tool results AFTER ToolsExecutor and BEFORE the
+    next LLM step. It can run alone (defense=None, promptarmor_backend
+    set) or combined with a Dredd judge variant.
+    """
     if backend == "bedrock":
         llm = BedrockAnthropicLLM(model_id, aws_region=aws_region, temperature=0.0)
     elif backend == "bedrock-converse":
@@ -224,25 +235,38 @@ def build_pipeline(
     system_message = SystemMessage(load_system_message())
     init_query = InitQuery()
 
-    if defense:
-        dredd = JudgeDreddDefense(
-            dredd_url=dredd_url,
-            prompt_variant=defense,
+    promptarmor: PromptArmorDefense | None = None
+    if promptarmor_backend:
+        if not promptarmor_model:
+            raise ValueError("--promptarmor-backend requires --promptarmor-model")
+        promptarmor = PromptArmorDefense(
+            screen_url=dredd_url,
+            backend=promptarmor_backend,
+            model=promptarmor_model,
+            run_id=promptarmor_run_id,
+            api_key=promptarmor_api_key,
         )
-        tools_loop = ToolsExecutionLoop([
-            dredd,
-            ToolsExecutor(tool_result_to_str),
-            llm,
-        ])
-    else:
-        tools_loop = ToolsExecutionLoop([
-            ToolsExecutor(tool_result_to_str),
-            llm,
-        ])
+
+    # Build the loop in execution order:
+    #   [optional dredd pre-tool gate] → ToolsExecutor → [optional PromptArmor post-tool screen] → llm
+    loop_elements: list[Any] = []
+    if defense:
+        loop_elements.append(JudgeDreddDefense(dredd_url=dredd_url, prompt_variant=defense))
+    loop_elements.append(ToolsExecutor(tool_result_to_str))
+    if promptarmor:
+        loop_elements.append(promptarmor)
+    loop_elements.append(llm)
+    tools_loop = ToolsExecutionLoop(loop_elements)
 
     pipeline = AgentPipeline([system_message, init_query, llm, tools_loop])
 
-    defense_suffix = f"-dredd-{defense}" if defense else ""
+    defense_suffix = ""
+    if defense:
+        defense_suffix += f"-dredd-{defense}"
+    if promptarmor_backend:
+        # Slugify model id so file paths stay sane (Bedrock IDs contain dots/colons).
+        slug = (promptarmor_model or "").replace(":", "_").replace(".", "_").replace("/", "_")
+        defense_suffix += f"-promptarmor-{promptarmor_backend}-{slug}"
     # Pipeline name must contain a key from MODEL_NAMES for attack crafting.
     # Bedrock model IDs (eu.anthropic.claude-...) don't match — use a
     # synthetic name that includes "claude-3-5-sonnet-20241022" or similar.
@@ -334,6 +358,19 @@ def main():
                              "runs the (user_task, injection_task) pairs listed, bypassing "
                              "the cartesian product. --suite / --all-suites / -ut / -it are "
                              "ignored; suites come from the pair file.")
+    # PromptArmor — content-side defence. Independent of --defense
+    # (Dredd's pre-tool gate); both can be on for an A+B run, or
+    # promptarmor alone for the head-to-head baseline.
+    parser.add_argument("--promptarmor-backend", choices=["openai", "bedrock"], default=None,
+                        help="Enable PromptArmor with this detector backend.")
+    parser.add_argument("--promptarmor-model", default=None,
+                        help="PromptArmor detector model id (must match server allow-list)")
+    parser.add_argument("--promptarmor-run-id", default=None,
+                        help="When set, /screen appends per-call telemetry to "
+                             "results/promptarmor/<run-id>/calls.jsonl on the server.")
+    parser.add_argument("--promptarmor-api-key", default=None,
+                        help="Bearer token for the hook server's /screen endpoint. "
+                             "Falls back to DREDD_API_KEY env var if unset.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -362,10 +399,15 @@ def main():
     print(f"  Logdir:   {logdir}")
     print()
 
+    promptarmor_api_key = args.promptarmor_api_key or os.environ.get("DREDD_API_KEY")
     pipeline = build_pipeline(
         model_id, defense=defense, dredd_url=args.dredd_url,
         backend=args.backend, aws_region=args.aws_region,
         agent_region=args.agent_region,
+        promptarmor_backend=args.promptarmor_backend,
+        promptarmor_model=args.promptarmor_model,
+        promptarmor_run_id=args.promptarmor_run_id,
+        promptarmor_api_key=promptarmor_api_key,
     )
 
     all_summaries = []

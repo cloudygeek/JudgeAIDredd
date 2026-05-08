@@ -1,0 +1,75 @@
+# PromptArmor head-to-head — Anthropic-on-Bedrock subset
+#
+# Lean image for the AgentDojo Phase B run against the deployed
+# /screen endpoint. No Chromium, no Postgres, no MCP servers — those
+# belong to the heavyweight test runner (fargate/Dockerfile) which is
+# overkill for this corpus.
+#
+# What it runs:
+#   benchmarks/agentdojo/run_benchmark.py with
+#     --backend bedrock
+#     --model {sonnet, opus-4-7}
+#     --defense {None, B7, B7.1}
+#     --promptarmor-backend bedrock
+#     --promptarmor-model {claude-sonnet-4-6, claude-opus-4-7}
+#
+# Build context: project root.
+#   docker build -f fargate/Dockerfile.promptarmor-bedrock \
+#     --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
+#     -t promptarmor-bedrock .
+
+FROM 891377407345.dkr.ecr.eu-west-1.amazonaws.com/cko-pull-through/docker-hub/library/python:3.11-slim-bookworm
+
+WORKDIR /app
+
+# ── Minimal system packages ────────────────────────────────────────────────
+# curl: container health check + manual debugging.
+# ca-certificates: TLS to api.openai.com / *.amazonaws.com / dredd ALB.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python wheels (vendored) ───────────────────────────────────────────────
+# All deps are in python-wheels/ already — same wheel set used by
+# fargate/Dockerfile. We install --no-deps because the wheel set is
+# pre-resolved (e.g. cohere wants pydantic-core<2.44 but we ship 2.46
+# by design). The full closure is on disk so pip can satisfy every
+# import without hitting PyPI.
+COPY python-wheels/ /tmp/python-wheels/
+RUN pip3 install --no-index --find-links /tmp/python-wheels/ \
+        --no-deps /tmp/python-wheels/*.whl \
+    && python3 -c "from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline; print('agentdojo import OK')" \
+    && python3 -c "import boto3, requests; print('boto3', boto3.__version__, 'requests', requests.__version__)" \
+    && rm -rf /tmp/python-wheels/
+
+# ── Application source ──────────────────────────────────────────────────────
+# Just the AgentDojo bridge. No src/ TS code — this container talks to
+# the deployed Dredd hook via HTTP, it doesn't run the hook itself.
+COPY benchmarks/ ./benchmarks/
+
+# ── Build provenance ────────────────────────────────────────────────────────
+ARG GIT_COMMIT=unknown
+ARG GIT_DIRTY=false
+ENV GIT_COMMIT=${GIT_COMMIT}
+ENV GIT_DIRTY=${GIT_DIRTY}
+
+# Defaults that point the benchmark at the deployed sandbox hook.
+# Override per-run by setting these at `docker run -e ...` time or in
+# the Fargate task definition.
+ENV DREDD_URL="https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal" \
+    AWS_REGION="eu-west-2" \
+    AGENTDOJO_LOGDIR="/app/runs" \
+    PYTHONUNBUFFERED=1
+
+# Results land here; mount a volume / copy out post-run.
+RUN mkdir -p /app/runs
+
+# ── Entrypoint ──────────────────────────────────────────────────────────────
+COPY fargate/docker-entrypoint-promptarmor-bedrock.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+# Non-root user (defence in depth — the runner only needs to write to /app/runs).
+RUN useradd -m -s /bin/bash dredd && chown -R dredd:dredd /app /docker-entrypoint.sh
+USER dredd
+
+ENTRYPOINT ["/docker-entrypoint.sh"]
