@@ -120,15 +120,21 @@ run_cell() {
   fi
 
   # Per-cell log so we can grep for failures without losing the
-  # aggregate summary in a 22k-line file.
+  # aggregate summary in a 22k-line file. Tee to stdout too so the
+  # AI Sandbox api-server's log buffer (GET /logs) shows live progress
+  # rather than going silent for 30+ minutes per cell. pipefail makes
+  # the conditional honour python3's exit code, not tee's.
   local cell_log="$LOGDIR/${RUN_ID}-${model}-${defence}-${attack}-${suite}.log"
   local start_ts; start_ts=$(date +%s)
-  if python3 "${args[@]}" >"$cell_log" 2>&1; then
+  set -o pipefail
+  if python3 "${args[@]}" 2>&1 | tee "$cell_log"; then
+    set +o pipefail
     local elapsed=$(( $(date +%s) - start_ts ))
     log "  ✓ $label (${elapsed}s) → $cell_log"
     printf '%s\tOK\t%s\n' "$label" "$elapsed" >>"$SUMMARY_LOG"
   else
     local rc=$?
+    set +o pipefail
     local elapsed=$(( $(date +%s) - start_ts ))
     log "  ✗ $label exited $rc (${elapsed}s) — see $cell_log"
     printf '%s\tFAIL(%s)\t%s\n' "$label" "$rc" "$elapsed" >>"$SUMMARY_LOG"
