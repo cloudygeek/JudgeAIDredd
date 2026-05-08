@@ -268,28 +268,45 @@ function parseDetectorOutput(raw: string): ParseResult {
   const trimmed = raw.trim();
   if (!trimmed) return { kind: "unparseable", reason: "empty output" };
 
-  // Line 1: yes/no. Be permissive on case and trailing punctuation.
-  const lines = trimmed.split(/\r?\n/);
-  const firstLine = lines[0]?.trim().toLowerCase() ?? "";
-  const isYes = /^yes\b/.test(firstLine);
-  const isNo = /^no\b/.test(firstLine);
+  // Strip common LLM dressing before pattern-matching:
+  //   - Markdown bold/italic around the verdict (`**Yes**`, `*No*`).
+  //   - Leading "## Heading" or "**Heading:**" preambles.
+  //   - Bullet markers and trailing punctuation on the verdict line.
+  // Sonnet/Opus are particularly fond of `**Yes**` and `**No**` — the
+  // paper's prompt is one line and gives no formatting guidance, so
+  // models pick their own styles. We accept the variants rather than
+  // refuse them.
+  const stripped = trimmed
+    .replace(/\*+/g, "")          // markdown bold/italic
+    .replace(/^#+\s+/gm, "")      // markdown headings
+    .replace(/^[-•*]\s+/gm, "");  // bullet markers
+  const lines = stripped.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
-  if (!isYes && !isNo) {
-    return { kind: "unparseable", reason: `unexpected first line: ${firstLine.substring(0, 60)}` };
+  // Find the first line that starts with Yes or No (after the strip).
+  // Some models (and the paper's GPT-3.5 tail) lead with a sentence like
+  // "Yes, this contains..." or "No, this is benign..." — accept those
+  // by anchoring on word-boundary at the start of the line.
+  let verdictIndex = -1;
+  let isYes = false;
+  for (let i = 0; i < lines.length; i++) {
+    const lower = lines[i].toLowerCase();
+    if (/^yes\b/.test(lower)) { verdictIndex = i; isYes = true; break; }
+    if (/^no\b/.test(lower)) { verdictIndex = i; isYes = false; break; }
   }
-  if (isNo) return { kind: "no" };
+  if (verdictIndex === -1) {
+    return { kind: "unparseable", reason: `no Yes/No line: ${lines[0]?.substring(0, 60) ?? "(empty)"}` };
+  }
+  if (!isYes) return { kind: "no" };
 
-  // Yes branch — find the "Injection:" line. The paper allows a
-  // multi-line injection body, so concatenate everything from the
-  // first "Injection:" marker to the end of the output.
-  const rest = lines.slice(1).join("\n");
-  const m = /(?:^|\n)\s*Injection\s*:\s*([\s\S]+)$/i.exec(rest);
+  // Yes branch — find the "Injection:" line anywhere after the verdict.
+  const rest = lines.slice(verdictIndex + 1).join("\n");
+  const m = /(?:^|\n)\s*Injection\s*:?\s*([\s\S]+)$/i.exec(rest);
   if (!m) {
-    // Yes without an Injection: line is malformed per the paper. Treat
-    // as parse_error so the run summary can flag it.
     return { kind: "unparseable", reason: "Yes without Injection: marker" };
   }
-  const injection = m[1].trim();
+  // Strip common quote wrappers around the injection text — Sonnet
+  // sometimes wraps the extracted span in straight or curly quotes.
+  let injection = m[1].trim().replace(/^["'`""'']+|["'`""'']+$/g, "").trim();
   if (!injection) {
     return { kind: "unparseable", reason: "empty Injection: body" };
   }
