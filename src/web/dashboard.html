@@ -53,6 +53,20 @@
     }
     .mode-select:hover { border-color: var(--muted); }
 
+    /* Per-session override dropdown. Plain when no override is active, then
+       coloured to match the global mode badges when the user has set one. */
+    .session-mode-select {
+      background: var(--card); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 2px 6px; font-size: 11px; font-weight: 500;
+      cursor: pointer; font-family: inherit; max-width: 110px;
+    }
+    .session-mode-select:hover { border-color: var(--muted); }
+    .session-mode-select.mode-global { color: var(--muted); }
+    .session-mode-select.mode-interactive { background: var(--amber); color: #000; border-color: var(--amber); }
+    .session-mode-select.mode-autonomous { background: var(--red); color: #fff; border-color: var(--red); }
+    .session-mode-select.mode-learn { background: var(--blue); color: #fff; border-color: var(--blue); }
+
     .stats {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -359,6 +373,7 @@
           <th style="width:70px;text-align:center">Denied</th>
           <th style="width:60px;text-align:center">Files</th>
           <th style="width:120px;text-align:center">Classification</th>
+          <th style="width:120px;text-align:center" title="Per-session mode override. Beats the global mode for this one session — useful when the judge has locked onto a stale goal.">Mode</th>
         </tr>
       </thead>
       <tbody id="sessions-body">
@@ -991,6 +1006,32 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       }
     }
 
+    // Per-session mode override. Empty string clears the override and
+    // reverts the session to the global mode. Useful when the judge has
+    // locked onto a stale goal and every command trips drift-deny —
+    // flip to learn for that one session, finish the work, then clear.
+    async function setSessionMode(sessionId, value) {
+      const select = document.querySelector(`.session-mode-select[data-session="${sessionId}"]`);
+      const prev = select?.dataset.prev ?? '';
+      try {
+        const resp = await fetch(`${HOOK_API}/api/session-mode`, {
+          credentials: "include",
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId, mode: value || null }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        if (select) {
+          select.dataset.prev = value;
+          select.className = `session-mode-select mode-${value || 'global'}`;
+          select.title = value ? `Override active: ${value}` : 'Using global mode';
+        }
+      } catch (err) {
+        alert(`Failed to set session mode: ${err.message}`);
+        if (select) select.value = prev;
+      }
+    }
+
     async function downloadIntegrationBundle() {
       // Triggers a file download via Content-Disposition. The server bakes
       // our current origin into the zip, so the downloaded script will
@@ -1122,11 +1163,19 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         document.getElementById('session-count').textContent = sessionsData.length;
         document.getElementById('s-sessions').textContent = sessionsData.length;
 
+        // Per-session mode overrides. Best-effort — failure here just
+        // means the per-row dropdown shows "(global)" for everyone.
+        let sessionModes = {};
+        try {
+          const modesResp = await fetch(`${HOOK_API}/api/session-modes`, { credentials: "include" });
+          if (modesResp.ok) sessionModes = (await modesResp.json()).overrides ?? {};
+        } catch (_) { /* leave empty */ }
+
         let totalTools = 0, totalDenied = 0, totalAllowed = 0;
 
         const tbody = document.getElementById('sessions-body');
         if (sessionsData.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="8" class="empty">No sessions yet</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="9" class="empty">No sessions yet</td></tr>';
         } else {
           tbody.innerHTML = sessionsData.map((s, idx) => {
             const tools = s.summary?.toolCalls ?? 0;
@@ -1149,6 +1198,10 @@ mv .claude/settings.json .claude/settings.json.dredd-off
             const sidShort = sid ? (sid.length > 8 ? sid.substring(0, 8) : sid) : '';
             const sidEsc = esc(sid);
             const classEsc = esc(classification);
+            const sessionMode = sessionModes[sid] ?? '';
+            const modeOpts = ['', 'interactive', 'autonomous', 'learn']
+              .map(m => `<option value="${m}"${m === sessionMode ? ' selected' : ''}>${m || '(global)'}</option>`)
+              .join('');
             return `<tr>
               <td class="mono muted">${time}</td>
               <td class="mono muted cell-link" title="${sidEsc}" onclick="showDetail('${sidEsc}')">${esc(sidShort)}</td>
@@ -1158,6 +1211,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
               <td style="text-align:center" class="tooltip"><span class="cell-link" onclick="showDetail('${sidEsc}','denied')">${denied > 0 ? `<span class="badge badge-deny">${denied}</span>` : '0'}</span><div class="tip">${deniedTip}</div></td>
               <td style="text-align:center" class="tooltip"><span class="cell-link" onclick="showDetail('${sidEsc}','files')">${files}</span><div class="tip">${fileTip}</div></td>
               <td style="text-align:center"><span class="badge badge-${classEsc}">${classEsc}</span></td>
+              <td style="text-align:center"><select class="session-mode-select mode-${sessionMode || 'global'}" data-session="${sidEsc}" data-prev="${sessionMode}" onchange="setSessionMode('${sidEsc}', this.value)" title="${sessionMode ? `Override active: ${sessionMode}` : 'Using global mode'}">${modeOpts}</select></td>
             </tr>`;
           }).join('');
         }

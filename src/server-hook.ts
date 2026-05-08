@@ -53,6 +53,20 @@ import { scanClaudeMd, scanClaudeMdContent, type ClaudeMdScanResult } from "./cl
 // from Claude Code hooks.
 const DASHBOARD_ORIGIN = process.env.DREDD_DASHBOARD_ORIGIN ?? "";
 
+// Per-session trust-mode override. Set via POST /api/session-mode from the
+// dashboard. Beats body.mode and CONFIG.mode for that one session — used to
+// rescue stuck sessions where the LLM stack classifier has locked onto a
+// stale goal and every command trips drift-deny. In-memory; cleared on
+// container restart. ALB stickiness keeps the session pinned to one task
+// so the override stays effective for the session's lifetime.
+const sessionModeOverride = new Map<string, TrustMode>();
+
+function effectiveMode(session_id: string, bodyMode: unknown): TrustMode {
+  const override = sessionModeOverride.get(session_id);
+  if (override) return override;
+  return ((bodyMode as TrustMode | undefined) ?? CONFIG.mode);
+}
+
 /**
  * Apply CORS headers for endpoints the dashboard container calls. Returns
  * true and ends the response for OPTIONS preflight so the caller can bail.
@@ -129,7 +143,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     }
   }
 
-  const mode: TrustMode = body.mode ?? CONFIG.mode;
+  const mode: TrustMode = effectiveMode(session_id, body.mode);
 
   const { priorAssistant, images: transcriptImages } = transcriptContent
     ? extractLastUserAndPriorAssistant(transcriptContent, true)
@@ -293,7 +307,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const tool_input: Record<string, unknown> = isBenchmarkFormat ? (body.proposed_action.parameters ?? {}) : body.tool_input;
   const { agent_reasoning, transcript_path } = body;
   const transcriptContent: string | undefined = body.transcript_content;
-  const mode: TrustMode = body.mode ?? CONFIG.mode;
+  const mode: TrustMode = effectiveMode(session_id, body.mode);
   const isLearn = mode === "learn";
 
   if (rejectInvalidSessionId(res, session_id)) return;
@@ -802,7 +816,7 @@ const server = createServer(async (req, res) => {
     <li><code>POST /track</code> — PostToolUse</li>
     <li><code>POST /end</code> · <code>/pivot</code> · <code>/compact</code></li>
     <li><code>GET /api/health</code> · <code>/api/whoami</code> · <code>/api/data-status</code></li>
-    <li><code>GET /api/feed</code> · <code>POST /api/mode</code> <span style="color:#8b949e">(cross-origin from dashboard)</span></li>
+    <li><code>GET /api/feed</code> · <code>POST /api/mode</code> · <code>POST /api/session-mode</code> · <code>GET /api/session-modes</code> <span style="color:#8b949e">(cross-origin from dashboard)</span></li>
   </ul>
 
   <div class="muted">
@@ -991,6 +1005,59 @@ const server = createServer(async (req, res) => {
       }
     }
 
+    // /api/session-mode — cross-origin from the dashboard. Per-session
+    // mode override that beats both body.mode and the global CONFIG.mode.
+    // Used to rescue a session whose intent stack has locked onto a stale
+    // goal: flip it to learn, finish the work, then clear. Unlike
+    // /api/mode this does NOT clear any intent stacks — the whole point
+    // is to keep the same session running.
+    if (url.pathname === "/api/session-mode") {
+      if (applyCors(req, res)) return;
+      if (req.method === "POST") {
+        const body = JSON.parse(await readBody(req));
+        const session_id: unknown = body.session_id;
+        if (typeof session_id !== "string") {
+          return json(res, 400, { error: "Missing session_id" });
+        }
+        if (rejectInvalidSessionId(res, session_id)) return;
+        const next = body.mode;
+        if (next === null) {
+          const prev = sessionModeOverride.get(session_id) ?? null;
+          sessionModeOverride.delete(session_id);
+          console.log(`  [${session_id.substring(0, 8)}] [SESSION-MODE] cleared (was ${prev ?? "none"})`);
+          return json(res, 200, { session_id, mode: null, previous: prev });
+        }
+        if (next !== "interactive" && next !== "autonomous" && next !== "learn") {
+          return json(res, 400, { error: "mode must be interactive, autonomous, learn, or null" });
+        }
+        const prev = sessionModeOverride.get(session_id) ?? null;
+        sessionModeOverride.set(session_id, next as TrustMode);
+        console.log(`  [${session_id.substring(0, 8)}] [SESSION-MODE] override ${prev ?? "none"} → ${next}`);
+        return json(res, 200, { session_id, mode: next, previous: prev });
+      }
+      if (req.method === "GET") {
+        const session_id = url.searchParams.get("session_id") ?? "";
+        if (!session_id || rejectInvalidSessionId(res, session_id)) return;
+        return json(res, 200, {
+          session_id,
+          mode: sessionModeOverride.get(session_id) ?? null,
+          global_mode: CONFIG.mode,
+        });
+      }
+    }
+
+    // /api/session-modes — bulk read of all per-session overrides. The
+    // dashboard's sessions table calls this once per refresh to render
+    // the per-row mode dropdown.
+    if (url.pathname === "/api/session-modes") {
+      if (applyCors(req, res)) return;
+      if (req.method === "GET") {
+        const overrides: Record<string, TrustMode> = {};
+        for (const [sid, m] of sessionModeOverride.entries()) overrides[sid] = m;
+        return json(res, 200, { overrides, global_mode: CONFIG.mode });
+      }
+    }
+
     // Debug/test helper — exposes a session's live context by id. No auth;
     // returns only the in-memory slice. Keep simple — dashboard has
     // /api/session-log/:id for the full shape.
@@ -1073,6 +1140,8 @@ export async function main() {
     console.log(`    POST /notification — Notification hook (friction signal)`);
     console.log(`    GET  /api/notifications/:id — per-session friction counter`);
     console.log(`    POST /api/mode  — runtime trust-mode switch`);
+    console.log(`    POST /api/session-mode — per-session mode override`);
+    console.log(`    GET  /api/session-modes — bulk read of overrides`);
     console.log(`    GET  /health    — health check + version`);
     console.log(`    GET  /api/feed  — live event ring buffer (cross-origin)`);
     console.log("█".repeat(50));
