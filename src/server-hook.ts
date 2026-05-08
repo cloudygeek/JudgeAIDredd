@@ -67,6 +67,22 @@ function effectiveMode(session_id: string, bodyMode: unknown): TrustMode {
   return ((bodyMode as TrustMode | undefined) ?? CONFIG.mode);
 }
 
+// PromptArmor /screen allow-list. Only models from the head-to-head
+// test plan (B1) are accepted — without this, any authenticated key
+// could trigger arbitrary expensive Bedrock/OpenAI calls. Substring
+// match so callers can pass either friendly names or fully-qualified
+// IDs (e.g. "eu.anthropic.claude-sonnet-4-6"). Body cap is enforced
+// separately via BODY_LIMIT_DEFAULT in readBody.
+const PROMPTARMOR_ALLOWED_MODELS: ReadonlyArray<string> = [
+  "gpt-4o",
+  "gpt-4.1",
+  "o4-mini",
+  "claude-sonnet-4-6",
+  "claude-opus-4-7",
+];
+
+const PROMPTARMOR_MAX_CONTENT_BYTES = 32 * 1024;
+
 /**
  * Apply CORS headers for endpoints the dashboard container calls. Returns
  * true and ends the response for OPTIONS preflight so the caller can bail.
@@ -754,6 +770,93 @@ async function handleCompact(req: IncomingMessage, res: ServerResponse) {
 }
 
 // =========================================================================
+// POST /screen — PromptArmor side-channel for benchmark runners
+// =========================================================================
+//
+// Body: {
+//   content: string,           // untrusted blob to screen
+//   task_context?: string,     // forward-compat — currently logged only
+//   backend: "openai" | "bedrock",
+//   model: string,             // must be one of PROMPTARMOR_ALLOWED_MODELS
+//   run_id?: string,           // appends to results/promptarmor/<run_id>/calls.jsonl
+//   temperature?: number,      // default 0
+// }
+//
+// Auth: same Bearer-key gate as the rest of the hook surface.
+// Side-effects: appends to the run's calls.jsonl when run_id is set.
+//   Does NOT touch SessionTracker — this is benchmark plumbing, not a
+//   Dredd-protected operation.
+async function handleScreen(req: IncomingMessage, res: ServerResponse) {
+  const identity = await authenticateHookRequest(req, res);
+  if (!identity) return;
+
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+  } catch {
+    return json(res, 400, { error: "Invalid JSON body" });
+  }
+
+  const content = body.content;
+  const taskContext = body.task_context;
+  const backend = body.backend;
+  const model = body.model;
+  const runId = body.run_id;
+  const temperature = body.temperature;
+
+  if (typeof content !== "string") {
+    return json(res, 400, { error: "content must be a string" });
+  }
+  if (Buffer.byteLength(content, "utf8") > PROMPTARMOR_MAX_CONTENT_BYTES) {
+    return json(res, 413, {
+      error: `content exceeds ${PROMPTARMOR_MAX_CONTENT_BYTES} bytes`,
+    });
+  }
+  if (taskContext !== undefined && typeof taskContext !== "string") {
+    return json(res, 400, { error: "task_context must be a string when provided" });
+  }
+  if (backend !== "openai" && backend !== "bedrock") {
+    return json(res, 400, { error: "backend must be openai or bedrock" });
+  }
+  if (typeof model !== "string" || !PROMPTARMOR_ALLOWED_MODELS.some((m) => model.includes(m))) {
+    return json(res, 400, {
+      error: `model not allowed; must contain one of: ${PROMPTARMOR_ALLOWED_MODELS.join(", ")}`,
+    });
+  }
+  if (runId !== undefined && (typeof runId !== "string" || !/^[a-zA-Z0-9._-]{1,64}$/.test(runId))) {
+    return json(res, 400, { error: "run_id must match [a-zA-Z0-9._-]{1,64}" });
+  }
+  if (temperature !== undefined && (typeof temperature !== "number" || temperature < 0 || temperature > 2)) {
+    return json(res, 400, { error: "temperature must be a number in [0, 2]" });
+  }
+
+  const { PromptArmorBaseline } = await import("./promptarmor-baseline.js");
+  const baseline = new PromptArmorBaseline({
+    backend,
+    model,
+    temperature,
+    runId,
+  });
+
+  try {
+    const result = await baseline.screen(content, taskContext);
+    return json(res, 200, {
+      verdict: result.verdict,
+      sanitised: result.sanitised,
+      latency_ms: result.latencyMs,
+      tokens: { in: result.tokens.in, out: result.tokens.out },
+      injection: result.injection,
+      sanitisation_failed: result.sanitisationFailed,
+      run_id: runId ?? null,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`  [/screen] backend ${backend} failed: ${msg}`);
+    return json(res, 502, { error: "detector backend failed", detail: msg });
+  }
+}
+
+// =========================================================================
 // Router
 // =========================================================================
 const server = createServer(async (req, res) => {
@@ -815,6 +918,7 @@ const server = createServer(async (req, res) => {
     <li><code>POST /evaluate</code> — PreToolUse (judge pipeline)</li>
     <li><code>POST /track</code> — PostToolUse</li>
     <li><code>POST /end</code> · <code>/pivot</code> · <code>/compact</code></li>
+    <li><code>POST /screen</code> — PromptArmor detector (benchmark side-channel)</li>
     <li><code>GET /api/health</code> · <code>/api/whoami</code> · <code>/api/data-status</code></li>
     <li><code>GET /api/feed</code> · <code>POST /api/mode</code> · <code>POST /api/session-mode</code> · <code>GET /api/session-modes</code> <span style="color:#8b949e">(cross-origin from dashboard)</span></li>
   </ul>
@@ -1058,6 +1162,18 @@ const server = createServer(async (req, res) => {
       }
     }
 
+    // /screen — PromptArmor head-to-head endpoint. Wraps
+    // PromptArmorBaseline.screen() so the AgentDojo and MT-AgentRisk
+    // Python runners can call it via requests.post without re-implementing
+    // the detector pass in Python. Locked-down: model allow-list (only
+    // the 5 backends from the test plan), content size cap, no
+    // SessionTracker side-effects. This is a side-channel for benchmarks,
+    // not part of the Dredd hot path.
+    if (url.pathname === "/screen") {
+      if (applyCors(req, res)) return;
+      if (req.method === "POST") return await handleScreen(req, res);
+    }
+
     // Debug/test helper — exposes a session's live context by id. No auth;
     // returns only the in-memory slice. Keep simple — dashboard has
     // /api/session-log/:id for the full shape.
@@ -1138,6 +1254,7 @@ export async function main() {
     console.log(`    POST /pivot     — explicit direction change`);
     console.log(`    POST /compact   — context compaction notification`);
     console.log(`    POST /notification — Notification hook (friction signal)`);
+    console.log(`    POST /screen    — PromptArmor detector (benchmark side-channel)`);
     console.log(`    GET  /api/notifications/:id — per-session friction counter`);
     console.log(`    POST /api/mode  — runtime trust-mode switch`);
     console.log(`    POST /api/session-mode — per-session mode override`);
