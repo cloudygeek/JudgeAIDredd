@@ -32,9 +32,20 @@ fail() { log "FATAL: $*" >&2; exit 1; }
 : "${DREDD_URL:?DREDD_URL must be set}"
 : "${AWS_REGION:?AWS_REGION must be set}"
 
-# Sanity probe — fail fast if the hook isn't reachable.
-if ! curl -fsS --max-time 10 "${DREDD_URL%/}/health" >/dev/null 2>&1; then
-  fail "Cannot reach ${DREDD_URL}/health — fix networking before starting Phase B"
+# Sanity probe — capture real diagnostics so an egress block / DNS
+# issue surfaces with detail rather than a generic "cannot reach".
+# SKIP_HEALTH=1 bypasses the probe entirely (use only when debugging).
+if [[ "${SKIP_HEALTH:-0}" != "1" ]]; then
+  log "Hook health probe: ${DREDD_URL%/}/health"
+  probe_rc=0
+  probe_output=$(curl -sk --max-time 10 -o /tmp/health-body \
+    -w 'http_code=%{http_code} dns=%{time_namelookup}s connect=%{time_connect}s total=%{time_total}s remote=%{remote_ip}:%{remote_port}' \
+    "${DREDD_URL%/}/health" 2>&1) || probe_rc=$?
+  log "  probe: ${probe_output:-(no output)} curl_rc=$probe_rc"
+  log "  body:  $(head -c 200 /tmp/health-body 2>/dev/null || echo '(empty)')"
+  if [[ "$probe_rc" != "0" ]] || ! head -c 200 /tmp/health-body 2>/dev/null | grep -q '"status":"ok"'; then
+    fail "Hook /health probe failed — see diagnostics above. Set SKIP_HEALTH=1 to bypass."
+  fi
 fi
 
 RUN_ID="${RUN_ID:-phaseB-bedrock-$(date -u '+%Y%m%dT%H%M%SZ')}"
