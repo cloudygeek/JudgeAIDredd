@@ -1,11 +1,11 @@
 # Test Plan — PromptArmor Head-to-Head
 
 **Date:** 2026-05-08
-**Context:** P15 was desk-rejected at IEEE Access on novelty grounds. The Cloud-Security paper repo's `Adrian/p15/PLAN_springer_revision.md` (commit `19f4a3c`) repositions for Springer *Cybersecurity* and identifies **PromptArmor** (Shi et al., ICLR 2026; arXiv 2507.15219) as the strongest competing defence — they report **<1% FPR and <1% FNR on AgentDojo**, which is the same benchmark we lead the paper with. This is the code-side plan for Stage B of that revision: implement PromptArmor as a baseline in our framework and run it head-to-head against intent-tracker prompts v1 (B7) and v2 (B7.1) across the same four corpora P15 already uses.
+**Context:** P15 was desk-rejected at IEEE Access on novelty grounds. The Cloud-Security paper repo's `Adrian/p15/PLAN_springer_revision.md` (commit `19f4a3c`) repositions for Springer *Cybersecurity* and identifies **PromptArmor** (Shi et al., ICLR 2026; arXiv 2507.15219) as the strongest competing defence — they report **<1% FPR and <1% FNR on AgentDojo**, which is the same benchmark we lead the paper with. This is the code-side plan for Stage B of that revision: implement PromptArmor as a baseline in our framework and run it head-to-head against intent-tracker prompts v1 (B7) and v2 (B7.1) across **five corpora** — the four P15 already uses (T3e, AgentDojo, MT-AgentRisk, AgentLAB) plus **InjecAgent**, added 2026-05-09 to enable head-to-head against the planning-isolation family (PlanGuard, ACE) that publishes on it.
 
 The headline output is a `tab:promptarmor-headtohead` row group adjacent to `tab:judge-leaderboard` plus a disagreement-cases table. Numbers go into the v2 manuscript draft.
 
-**Authorised budget:** $200 in API spend. **Wall-clock:** 3–5 days. **Decision rule:** if the in-framework PromptArmor numbers reproduce the paper's <1% claim, that's itself the headline finding to report (we are not seeking to dispute it — we want a fair comparison and a disagreement analysis). If they don't reproduce, that's a separate (and arguably stronger) finding for §6.X.
+**Authorised budget:** $250 in API spend (revised 2026-05-09 from $200 to absorb the InjecAgent corpus addition). **Wall-clock:** 3.5–5.5 days. **Decision rule:** if the in-framework PromptArmor numbers reproduce the paper's <1% claim, that's itself the headline finding to report (we are not seeking to dispute it — we want a fair comparison and a disagreement analysis). If they don't reproduce, that's a separate (and arguably stronger) finding for §6.X.
 
 ---
 
@@ -88,32 +88,36 @@ Match P15's existing judge-leaderboard model set so the head-to-head table can s
 
 ### B2. Corpora and run sizes
 
+**Scope expansion (2026-05-09):** added InjecAgent as a fifth corpus to enable head-to-head against the planning-isolation family (PlanGuard~arXiv:2604.10134, ACE~arXiv:2504.20984), both of which publish on InjecAgent. PlanGuard / ACE numbers cited from their papers (no reproduction); on InjecAgent we run our own defence and PromptArmor only.
+
 | Corpus | Invocations / backend | Total (5 backends) | Why |
 |---|---:|---:|---|
 | **T3e** | ~600 | 3,000 | Paper's primary; head-to-head must cover it. |
 | **AgentDojo** | ~3,000 | 15,000 | PromptArmor's reported <1% FPR/FNR is on this benchmark. Reproduction-or-dispute is the centrepiece. |
 | **MT-AgentRisk** | ~1,500 | 7,500 | Already in the paper; complete the matrix. |
 | **AgentLAB** | ~1,200 | 6,000 | Lowest priority; **drops first** if budget binds (per parent plan §4 mitigation). |
-| **Total** | — | **~31,500** | |
+| **InjecAgent** | ~1,000 | 5,000 | Closes the planning-isolation comparator gap (PlanGuard, ACE). **Drops second** if budget binds. |
+| **Total** | — | **~36,500** | |
 
 Cost estimate at current pricing (verify before each run):
-- OpenAI (gpt-4o + gpt-4.1 + o4-mini, ~19k calls): ~$80–120
-- Bedrock (Sonnet 4.6 + Opus 4.7, ~12.5k calls): ~$25–60
-- **Estimated total: $105–180. Budget cap: $200.**
+- OpenAI (gpt-4o + gpt-4.1 + o4-mini, ~22k calls): ~$95–155
+- Bedrock (Sonnet 4.6 + Opus 4.7, ~14.5k calls): ~$30–55
+- **Estimated total: $125–210. Budget cap: $250 (revised 2026-05-09 from $200).**
 
 ### B3. Run cadence
 
 Sequential by corpus, parallel within (backend axis is independent). Use the existing parallel orchestration pattern from `run-test1-local-parallel.sh`:
 
 ```
-day-1: T3e all 5 backends            (~3k calls,  ~$8–15)
-day-2: AgentDojo all 5 backends     (~15k calls, ~$50–80)
-day-3: MT-AgentRisk all 5 backends  (~7.5k calls, ~$25–40)
-day-4: AgentLAB all 5 backends      (~6k calls,  ~$22–45)
-day-5: head-to-head table + disagreement analysis
+day-1: T3e all 5 backends             (~3k calls,  ~$8–15)
+day-2: AgentDojo all 5 backends      (~15k calls, ~$50–80)
+day-3: MT-AgentRisk all 5 backends   (~7.5k calls, ~$25–40)
+day-4: AgentLAB all 5 backends       (~6k calls,  ~$22–45)
+day-5: InjecAgent all 5 backends     (~5k calls,  ~$18–35)
+day-6: head-to-head table + disagreement analysis + InjecAgent vs PlanGuard/ACE
 ```
 
-If Day-2 burn rate threatens the cap, halt before AgentLAB (Day-4) and report on three corpora.
+If burn rate threatens the cap, drop in this order: AgentLAB first (lowest paper-side priority), then InjecAgent (added scope; fall back to citation-only of PlanGuard/ACE if dropped).
 
 ### B4. Comparator definition (the "head-to-head" axis)
 
