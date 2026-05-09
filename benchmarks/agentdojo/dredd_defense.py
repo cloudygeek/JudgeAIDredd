@@ -48,6 +48,13 @@ class JudgeDreddDefense(BasePipelineElement):
         verify_tls: bool = True,
     ) -> None:
         self.dredd_url = dredd_url.rstrip("/")
+        # Keep the original base separately so reset_session() can mint
+        # `${BASE}-${count}` each time rather than appending to whatever
+        # the previous reset produced. Without this, session_id grew by
+        # ~3-4 chars every scenario (agentdojo-bench-1 -> -1-2 -> -1-2-3
+        # ...) and crossed the hook's {1,128} regex limit at ~40 scenarios,
+        # silently turning B7/B7.1 into fail-open runs.
+        self._session_id_base = session_id
         self.session_id = session_id
         self.prompt_variant = prompt_variant
         self.api_key = api_key
@@ -165,7 +172,9 @@ class JudgeDreddDefense(BasePipelineElement):
         if query != self._last_query:
             self._scenario_count += 1
             self._last_query = query
-            new_session_id = f"{self.session_id}-{self._scenario_count}"
+            # Always derive from the original base, never from the current
+            # session_id. Otherwise we accumulate suffixes per scenario.
+            new_session_id = f"{self._session_id_base}-{self._scenario_count}"
             self.reset_session(new_session_id, query)
 
         if len(messages) == 0:
