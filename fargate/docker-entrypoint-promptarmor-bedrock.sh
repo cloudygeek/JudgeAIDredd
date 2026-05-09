@@ -60,6 +60,36 @@ LOGDIR="${AGENTDOJO_LOGDIR:-/app/runs}"
 mkdir -p "$LOGDIR"
 SUMMARY_LOG="$LOGDIR/${RUN_ID}-summary.log"
 
+# S3 result persistence — when RESULTS_S3_URL is set, every cell
+# round-trips through S3 so a redeployed container resumes from where
+# the previous one stopped (AgentDojo's default skip-if-result-exists
+# logic kicks in once $LOGDIR is hydrated). Without this, every
+# container restart re-runs the entire matrix from scratch, including
+# already-completed cell-1 trajectories — wasted ~hours of duplicate
+# Bedrock spend before this was added.
+#
+# RESULTS_S3_URL should include the run id so concurrent cells from
+# different runs don't trample each other:
+#   RESULTS_S3_URL=s3://my-bucket/promptarmor/<RUN_ID>
+RESULTS_S3_URL="${RESULTS_S3_URL:-}"
+
+s3_pull() {
+  if [[ -z "$RESULTS_S3_URL" ]]; then return 0; fi
+  log "s3_sync: pulling ${RESULTS_S3_URL}/ -> ${LOGDIR}/"
+  python3 /app/benchmarks/agentdojo/s3_sync.py pull "$RESULTS_S3_URL" "$LOGDIR" \
+    || log "s3_sync: pull failed (continuing — cells will start fresh)"
+}
+
+s3_push() {
+  if [[ -z "$RESULTS_S3_URL" ]]; then return 0; fi
+  python3 /app/benchmarks/agentdojo/s3_sync.py push "$LOGDIR" "$RESULTS_S3_URL" \
+    || log "s3_sync: push failed (results stay local — risk if container is bounced)"
+}
+
+# Pull existing results before we plan cells; on a resume this means
+# completed trajectories will be skipped by AgentDojo automatically.
+s3_pull
+
 log "─── PromptArmor Phase B (Bedrock subset) ────────────────────────"
 log "RUN_ID=$RUN_ID"
 log "DREDD_URL=$DREDD_URL"
@@ -153,6 +183,10 @@ run_cell() {
     printf '%s\tFAIL(%s)\t%s\n' "$label" "$rc" "$elapsed" >>"$SUMMARY_LOG"
     # Continue the matrix; one bad cell shouldn't abort the whole run.
   fi
+
+  # Flush per-cell so a container bounce mid-matrix doesn't lose
+  # everything completed since startup.
+  s3_push
 }
 
 for suite in "${SUITES_ARR[@]}"; do
@@ -170,6 +204,9 @@ if [[ -f "$SUMMARY_LOG" ]]; then
   cat "$SUMMARY_LOG"
 fi
 log "─────────────────────────────────────────────────────────────────"
+
+# Final flush so the summary log itself lands in S3.
+s3_push
 
 # Exit non-zero if any cell failed so Fargate marks the task as failed.
 if grep -q $'\tFAIL' "$SUMMARY_LOG" 2>/dev/null; then
