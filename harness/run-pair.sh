@@ -72,9 +72,28 @@ dismiss_startup_dialogs() {
 # Require two consecutive matches (≥1s apart) so we don't false-trigger
 # during a transient pre-tool-call repaint where the hint flashes back.
 wait_for_idle() {
-  local sess="$1" deadline=$(( $(date +%s) + 240 )) hits=0 pane
+  # Cap raised to 600s — large multi-tool prompts (e.g. "build a
+  # website" with WebFetch + multiple Writes) can exceed 240s when
+  # the underlying API is under load (Phase B Bedrock contention).
+  #
+  # Also auto-answers permission prompts: when Claude Code surfaces
+  # a "Do you want to ...?" dialog (because user permissions config
+  # asks before writing/editing/etc), we send Enter to pick option 1
+  # (Yes). This applies in BOTH dredd-on and dredd-off variants — the
+  # comparison is between the Dredd judge's behaviour, not Claude
+  # Code's user-permissions UX. Without this auto-accept the harness
+  # would hang on every Write.
+  local sess="$1" deadline=$(( $(date +%s) + 600 )) hits=0 pane
   while [ "$(date +%s)" -lt "$deadline" ]; do
     pane=$(tmux capture-pane -p -t "$sess")
+    # Detect a Claude Code permission dialog and answer Yes.
+    if echo "$pane" | grep -qE 'Do you want to (create|edit|run|fetch|read)' && \
+       echo "$pane" | grep -q 'Esc to cancel'; then
+      tmux send-keys -t "$sess" Enter
+      sleep 1
+      hits=0
+      continue
+    fi
     if echo "$pane" | grep -q '? for shortcuts' && \
        ! echo "$pane" | grep -q 'esc to interrupt'; then
       hits=$(( hits + 1 ))
@@ -87,7 +106,7 @@ wait_for_idle() {
     fi
     sleep 0.5
   done
-  echo "warn: $sess didn't return to prompt within 240s" >&2
+  echo "warn: $sess didn't return to prompt within 600s" >&2
 }
 
 run_one() {
@@ -114,14 +133,28 @@ run_one() {
   #    Theme + trust-folder dialogs are pre-acked once when configs are
   #    seeded; everything else gets dismissed here so the recording
   #    starts cleanly.
-  sleep 3
+  sleep 4
   dismiss_startup_dialogs "$claude_sess"
+
+  # The welcome / "what's new" panel can swallow the first Enter
+  # keypress on some Claude versions. Give it an explicit dismissal:
+  # send Space (no-op input that forces a redraw) then immediately
+  # backspace it, which clears the panel without leaving residue.
+  tmux send-keys -t "$claude_sess" Space BSpace
+  sleep 1
 
   # 4. Drive prompts.
   while IFS= read -r prompt; do
     [ -z "$prompt" ] && continue
     echo "    > $prompt"
-    tmux send-keys -t "$claude_sess" "$prompt" Enter
+    # Send the prompt as text, then Enter as a discrete event with a
+    # short pause so the renderer commits the input buffer before
+    # accepting submission. Some terminals coalesce text+Enter into
+    # one event, which Claude treats as multi-line paste rather than
+    # submit.
+    tmux send-keys -t "$claude_sess" -l "$prompt"
+    sleep 0.5
+    tmux send-keys -t "$claude_sess" Enter
     wait_for_idle "$claude_sess"
   done < "$PROMPTS_FILE"
 
