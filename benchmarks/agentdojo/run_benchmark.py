@@ -236,6 +236,11 @@ def build_pipeline(
     system_message = SystemMessage(load_system_message())
     init_query = InitQuery()
 
+    # Reuse the same auth + TLS settings for the Dredd judge variants.
+    # Both /evaluate and /screen sit on the same hook ALB.
+    dredd_api_key = promptarmor_api_key
+    dredd_verify_tls = promptarmor_verify_tls
+
     promptarmor: PromptArmorDefense | None = None
     if promptarmor_backend:
         if not promptarmor_model:
@@ -253,7 +258,12 @@ def build_pipeline(
     #   [optional dredd pre-tool gate] → ToolsExecutor → [optional PromptArmor post-tool screen] → llm
     loop_elements: list[Any] = []
     if defense:
-        loop_elements.append(JudgeDreddDefense(dredd_url=dredd_url, prompt_variant=defense))
+        loop_elements.append(JudgeDreddDefense(
+            dredd_url=dredd_url,
+            prompt_variant=defense,
+            api_key=dredd_api_key,
+            verify_tls=dredd_verify_tls,
+        ))
     loop_elements.append(ToolsExecutor(tool_result_to_str))
     if promptarmor:
         loop_elements.append(promptarmor)

@@ -44,10 +44,14 @@ class JudgeDreddDefense(BasePipelineElement):
         dredd_url: str = "http://localhost:3001",
         session_id: str = "agentdojo-bench",
         prompt_variant: str = "B7.1",
+        api_key: str | None = None,
+        verify_tls: bool = True,
     ) -> None:
         self.dredd_url = dredd_url.rstrip("/")
         self.session_id = session_id
         self.prompt_variant = prompt_variant
+        self.api_key = api_key
+        self.verify_tls = verify_tls
         self._intent_registered = False
         self._last_query = None
         self._scenario_count = 0
@@ -58,6 +62,18 @@ class JudgeDreddDefense(BasePipelineElement):
             "errors": 0,
             "total_latency_ms": 0,
         }
+        if not verify_tls:
+            try:
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            except Exception:
+                pass
+
+    def _headers(self) -> dict:
+        h = {"Content-Type": "application/json"}
+        if self.api_key:
+            h["Authorization"] = f"Bearer {self.api_key}"
+        return h
 
     def register_intent(self, intent: str) -> None:
         """Register the user task as the session intent with Dredd."""
@@ -68,7 +84,9 @@ class JudgeDreddDefense(BasePipelineElement):
                     "session_id": self.session_id,
                     "prompt": intent,
                 },
+                headers=self._headers(),
                 timeout=10,
+                verify=self.verify_tls,
             )
             resp.raise_for_status()
             self._intent_registered = True
@@ -82,7 +100,9 @@ class JudgeDreddDefense(BasePipelineElement):
             requests.post(
                 f"{self.dredd_url}/end",
                 json={"session_id": self.session_id},
+                headers=self._headers(),
                 timeout=5,
+                verify=self.verify_tls,
             )
         except Exception:
             pass
@@ -108,7 +128,9 @@ class JudgeDreddDefense(BasePipelineElement):
             resp = requests.post(
                 f"{self.dredd_url}/evaluate",
                 json=payload,
+                headers=self._headers(),
                 timeout=30,
+                verify=self.verify_tls,
             )
             resp.raise_for_status()
             result = resp.json()
