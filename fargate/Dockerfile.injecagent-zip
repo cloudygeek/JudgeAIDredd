@@ -1,0 +1,70 @@
+# InjecAgent Phase B (Bedrock subset) — flat-layout zip Dockerfile.
+#
+# Same shape as Dockerfile.promptarmor-bedrock-zip but bundles the
+# vendored InjecAgent corpus + runner instead of the AgentDojo bridge.
+# Both can be deployed simultaneously to separate AI Sandbox containers
+# (e.g. bedt5/bedt6) running in parallel with bedt3/bedt4.
+
+FROM 891377407345.dkr.ecr.eu-west-1.amazonaws.com/cko-pull-through/docker-hub/library/python:3.11-slim-bookworm
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Same vendored wheel set as the AgentDojo container — agentdojo +
+# boto3 + requests + openai cover everything InjecAgent's runner needs.
+# nltk is NOT in the wheel set; we inlined its single ngrams call in
+# benchmarks/injecagent/output_parsing.py to avoid a 200 MB hit.
+COPY python-wheels/ /tmp/python-wheels/
+RUN pip3 install --no-index --find-links /tmp/python-wheels/ \
+        --no-deps /tmp/python-wheels/*.whl \
+    && python3 -c "import boto3, requests; print('boto3', boto3.__version__, 'requests', requests.__version__)" \
+    && rm -rf /tmp/python-wheels/
+
+# Application source: AgentDojo bridge stays in the image because the
+# /app/benchmarks/agentdojo/s3_sync.py helper is shared between the
+# entrypoints. The InjecAgent vendored corpus + runner are the new
+# bits.
+COPY benchmarks/ ./benchmarks/
+
+# Smoke-import the InjecAgent package so vendored copy and inlined
+# ngrams replacement are validated at build time.
+RUN python3 -c "import sys; sys.path.insert(0, 'benchmarks'); \
+    from injecagent.utils import get_tool_dict; \
+    from injecagent.output_parsing import evaluate_output_prompted; \
+    from injecagent.prompts.agent_prompts import PROMPT_DICT; \
+    td = get_tool_dict(); \
+    print(f'InjecAgent: {len(td)} tools, prompts={list(PROMPT_DICT.keys())}')"
+
+COPY package.json ./package.json
+
+ARG GIT_COMMIT=unknown
+ARG GIT_DIRTY=false
+ENV GIT_COMMIT=${GIT_COMMIT}
+ENV GIT_DIRTY=${GIT_DIRTY}
+
+ENV DREDD_URL="https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal" \
+    AWS_REGION="eu-west-2" \
+    AGENTDOJO_LOGDIR="/app/runs" \
+    PYTHONUNBUFFERED=1 \
+    TEST_NUM="injecagent"
+
+RUN mkdir -p /app/runs
+
+COPY docker-entrypoint-injecagent.sh /docker-entrypoint-injecagent.sh
+RUN chmod +x /docker-entrypoint-injecagent.sh
+
+# server.js (renamed from api-server.cjs) — same lifecycle: stays alive
+# on port 3000, ALB health-checks GET /, POST /run dispatches to the
+# matrix entrypoint below.
+COPY server.js /app/server.js
+
+RUN useradd -m -s /bin/bash dredd \
+    && chown -R dredd:dredd /app /docker-entrypoint-injecagent.sh
+USER dredd
+
+EXPOSE 3000
+
+CMD ["node", "/app/server.js"]

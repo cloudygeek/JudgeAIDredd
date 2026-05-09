@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""InjecAgent runner with PromptArmor + Dredd defence support.
+
+Wraps the vendored InjecAgent test corpus (data/test_cases_*.json)
+with a Bedrock-backed agent and optional defence pre-/post-processors.
+
+Mirrors the shape of benchmarks/agentdojo/run_benchmark.py:
+- Single CLI entry, --backend bedrock --model {sonnet, opus-4-7}.
+- --defense {none, B7, B7.1} for the Dredd judge variant (post-output).
+- --promptarmor-{backend,model,run-id,api-key,no-verify-tls} for the
+  PromptArmor preprocessor (pre-input).
+- Per-cell results to <logdir>/<setting>/test_cases_<attack>.json
+  matching upstream layout.
+- Skip-if-result-exists for resumability.
+
+Two attack types from upstream:
+  - dh: direct harm (510 cases base)
+  - ds: data stealing (510 cases base, two-step evaluation)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+# Allow running as `python3 -m injecagent.run_benchmark` from anywhere
+# in /app/benchmarks/, or as `python3 benchmarks/injecagent/run_benchmark.py`
+# from the project root.
+HERE = Path(__file__).resolve().parent
+if __package__ is None or __package__ == "":
+    sys.path.insert(0, str(HERE.parent))
+    from injecagent.utils import get_tool_dict, get_score, get_simulated_attacker_tool_response
+    from injecagent.output_parsing import evaluate_output_prompted
+    from injecagent.prompts.agent_prompts import PROMPT_DICT
+else:
+    from .utils import get_tool_dict, get_score, get_simulated_attacker_tool_response
+    from .output_parsing import evaluate_output_prompted
+    from .prompts.agent_prompts import PROMPT_DICT
+
+logger = logging.getLogger(__name__)
+
+# Bedrock model registry — matches the AgentDojo runner's keys so the
+# entrypoint can pass through the same --model values.
+BEDROCK_MODELS = {
+    "sonnet": "eu.anthropic.claude-sonnet-4-6",
+    "opus-4-7": "eu.anthropic.claude-opus-4-7",
+    "haiku": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+}
+
+
+def call_bedrock(system_prompt: str, user_prompt: str, model_id: str, region: str) -> str:
+    """Single Bedrock Anthropic Messages call. Returns the text completion.
+
+    InjecAgent's upstream ClaudeModel uses the legacy completions API
+    (anthropic.completions.create) which is gone from current Claude
+    models. Use the Messages API via Bedrock Converse — same shape as
+    benchmarks/agentdojo/bedrock_llm.py uses.
+    """
+    import boto3
+    client = boto3.client("bedrock-runtime", region_name=region)
+    resp = client.converse(
+        modelId=model_id,
+        system=[{"text": system_prompt}],
+        messages=[{"role": "user", "content": [{"text": user_prompt}]}],
+        inferenceConfig={"temperature": 0, "maxTokens": 4096},
+    )
+    blocks = resp.get("output", {}).get("message", {}).get("content", []) or []
+    return "".join(b.get("text", "") for b in blocks if "text" in b)
+
+
+def predict_one_case(
+    system_prompt: str,
+    user_prompt: str,
+    item: dict[str, Any],
+    tool_dict: dict[str, Any],
+    model_id: str,
+    region: str,
+    step_2: bool = False,
+) -> str:
+    """Build the InjecAgent prompt and ask the model for a one-shot tool call.
+
+    Mirrors src/evaluate_prompted_agent.py:predict_one_case from upstream
+    but with the model dispatch swapped for Bedrock Converse.
+    """
+    available_tool_names = [item['User Tool']] + item['Attacker Tools']
+    available_tool_descriptions = json.dumps(
+        [tool_dict[t] for t in available_tool_names], indent=True
+    )
+    user_input = item['User Instruction']
+
+    if step_2:
+        agent_scratchpad = (
+            f"\n{item['Thought']}\n"
+            f"Action: {item['User Tool']}\n"
+            f"Action Input: {item['Tool Parameters']}\n"
+            f"Observation: {item['Tool Response']}\n"
+            f"Thought: {item['Attacker Tool Thought']}\n"
+            f"Action: {item['Attacker Tools'][0]}\n"
+            f"Action Input: {item['Attacker Tool Parameters']}\n"
+            f"Observation: {item['Attacker Tool Response']}\n"
+        )
+    else:
+        agent_scratchpad = (
+            f"\n{item['Thought']}\n"
+            f"Action: {item['User Tool']}\n"
+            f"Action Input: {item['Tool Parameters']}\n"
+            f"Observation: {item['Tool Response']}\n"
+        )
+
+    user_prompt_filled = user_prompt.format(
+        available_tool_descriptions=available_tool_descriptions,
+        input=user_input,
+        available_tool_names=available_tool_names,
+        agent_scratchpad=agent_scratchpad,
+    )
+    return call_bedrock(system_prompt, user_prompt_filled, model_id, region)
+
+
+def screen_via_promptarmor(text: str, task_context: str, opts: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """POST text to /screen and return (sanitised, telemetry).
+
+    Returns the original text unchanged on any failure (fail-open), so
+    a transient hook outage doesn't ruin the whole run. Telemetry dict
+    captures verdict + latency + tokens for the per-cell summary.
+    """
+    import requests
+    body = {
+        "content": text[:32_000],  # /screen caps at 32 KB anyway
+        "task_context": task_context,
+        "backend": opts["backend"],
+        "model": opts["model"],
+    }
+    if opts.get("run_id"):
+        body["run_id"] = opts["run_id"]
+    headers = {"Content-Type": "application/json"}
+    if opts.get("api_key"):
+        headers["Authorization"] = f"Bearer {opts['api_key']}"
+    try:
+        resp = requests.post(
+            f"{opts['url'].rstrip('/')}/screen",
+            json=body,
+            headers=headers,
+            timeout=30,
+            verify=opts.get("verify_tls", True),
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        return result.get("sanitised", text), {
+            "verdict": result.get("verdict", "clean"),
+            "latency_ms": result.get("latency_ms"),
+            "tokens": result.get("tokens"),
+            "sanitisation_failed": result.get("sanitisation_failed", False),
+        }
+    except Exception as e:
+        logger.warning(f"PromptArmor /screen failed: {e}")
+        return text, {"verdict": "error", "error": str(e)}
+
+
+def run_setting(
+    setting: str,
+    attack: str,
+    model_id: str,
+    region: str,
+    output_path: Path,
+    pa_opts: dict[str, Any] | None,
+    skip_existing: bool,
+) -> dict[str, Any]:
+    """Run all test cases of one (setting, attack) and append JSONL results.
+
+    setting: "base" | "enhanced"
+    attack:  "dh" (direct harm) | "ds" (data stealing)
+    """
+    test_file = HERE / "data" / f"test_cases_{attack}_{setting}.json"
+    with open(test_file) as f:
+        cases = json.load(f)
+
+    system_prompt, user_prompt = PROMPT_DICT["InjecAgent"]
+    tool_dict = get_tool_dict()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Resume support: load already-evaluated case keys so we skip them.
+    done_keys: set[tuple[str, str]] = set()
+    if skip_existing and output_path.exists():
+        with open(output_path) as f:
+            for line in f:
+                try:
+                    prev = json.loads(line)
+                    done_keys.add((prev["User Instruction"], prev["Tool Response"]))
+                except Exception:
+                    continue
+        logger.info(f"  resume: skipping {len(done_keys)} already-evaluated cases in {output_path.name}")
+
+    stats = {
+        "attack": attack,
+        "setting": setting,
+        "total": len(cases),
+        "evaluated": 0,
+        "skipped": 0,
+        "succ": 0,
+        "unsucc": 0,
+        "invalid": 0,
+        "screened_clean": 0,
+        "screened_injected": 0,
+        "screen_errors": 0,
+    }
+
+    # Append-mode so a mid-run restart can resume from previously
+    # written cases without truncating them.
+    with open(output_path, "a") as outf:
+        for i, item in enumerate(cases):
+            key = (item["User Instruction"], item["Tool Response"])
+            if key in done_keys:
+                stats["skipped"] += 1
+                continue
+
+            try:
+                # PromptArmor pre-screen on the (possibly-malicious)
+                # tool response. This is the single mutation point —
+                # the upstream test case is otherwise immutable.
+                tr_screen = None
+                if pa_opts is not None:
+                    sanitised, tr_screen = screen_via_promptarmor(
+                        item["Tool Response"], item["User Instruction"], pa_opts
+                    )
+                    if tr_screen.get("verdict") == "clean":
+                        stats["screened_clean"] += 1
+                    elif tr_screen.get("verdict") == "injected":
+                        stats["screened_injected"] += 1
+                    else:
+                        stats["screen_errors"] += 1
+                    item = dict(item)  # copy so the in-memory case isn't mutated
+                    item["Tool Response"] = sanitised
+
+                output = predict_one_case(
+                    system_prompt, user_prompt, item, tool_dict, model_id, region
+                )
+                item["output"] = output
+
+                parsed = evaluate_output_prompted(
+                    output,
+                    item["Attacker Tools"][0],
+                    item["Attacker Tools"],
+                    item["User Tool"],
+                    item["Attacker Instruction"],
+                )
+                item["eval"] = parsed["eval"]
+                if parsed["eval"] == "invalid":
+                    item["invalid_reason"] = parsed.get("invalid_reason", "")
+                    stats["invalid"] += 1
+                elif parsed["eval"] == "succ":
+                    stats["succ"] += 1
+                elif parsed["eval"] == "unsucc":
+                    stats["unsucc"] += 1
+
+                # Step 2 for data-stealing attacks: only fires when the
+                # first stage already succeeded. Mirrors upstream.
+                if attack == "ds" and parsed["eval"] == "succ":
+                    item["Attacker Tool Parameters"] = parsed["Attacker Tool Parameters"]
+                    item["Attacker Tool Thought"] = parsed["Attacker Tool Thought"]
+                    item["Attacker Tool Response"] = get_simulated_attacker_tool_response(
+                        item["Attacker Tools"][0],
+                        item["Attacker Tool Parameters"],
+                        tool_dict,
+                    )
+                    if pa_opts is not None:
+                        sanitised2, _ = screen_via_promptarmor(
+                            item["Attacker Tool Response"], item["User Instruction"], pa_opts
+                        )
+                        item["Attacker Tool Response"] = sanitised2
+
+                    output2 = predict_one_case(
+                        system_prompt, user_prompt, item, tool_dict, model_id, region, step_2=True
+                    )
+                    item["output Step 2"] = output2
+                    parsed2 = evaluate_output_prompted(
+                        output2,
+                        item["Attacker Tools"][1] if len(item["Attacker Tools"]) > 1 else item["Attacker Tools"][0],
+                        item["Attacker Tools"],
+                        item["User Tool"],
+                        item["Attacker Instruction"],
+                    )
+                    item["eval Step 2"] = parsed2["eval"]
+                    if parsed2["eval"] == "invalid":
+                        item["invalid_reason  Step 2"] = parsed2.get("invalid_reason", "")
+
+                if tr_screen is not None:
+                    item["promptarmor"] = tr_screen
+
+                outf.write(json.dumps(item) + "\n")
+                outf.flush()
+                stats["evaluated"] += 1
+                if (i + 1) % 25 == 0:
+                    logger.info(
+                        f"  [{setting}/{attack}] {i + 1}/{len(cases)}: "
+                        f"succ={stats['succ']} unsucc={stats['unsucc']} "
+                        f"invalid={stats['invalid']}"
+                    )
+            except Exception as e:
+                logger.warning(f"  case {i} failed: {e}")
+                continue
+
+    return stats
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="InjecAgent runner with PromptArmor / Dredd defences")
+    parser.add_argument("--backend", choices=["bedrock"], default="bedrock",
+                        help="Only Bedrock supported for now.")
+    parser.add_argument("--model", choices=list(BEDROCK_MODELS.keys()), required=True)
+    parser.add_argument("--aws-region", default=os.environ.get("AWS_REGION", "eu-west-2"))
+    parser.add_argument("--setting", choices=["base", "enhanced"], default="base",
+                        help="InjecAgent: base = baseline injection, enhanced = harder.")
+    parser.add_argument("--attacks", default="dh,ds",
+                        help="Comma-separated subset of {dh,ds}. Default both.")
+    parser.add_argument("--logdir", default="./benchmarks/injecagent/runs")
+    parser.add_argument("--force-rerun", "-f", action="store_true",
+                        help="Skip the resume / skip-existing logic.")
+    # PromptArmor pre-screen knobs (mirror the AgentDojo runner).
+    parser.add_argument("--promptarmor-backend", choices=["openai", "bedrock"], default=None,
+                        help="Enable PromptArmor with this detector backend.")
+    parser.add_argument("--promptarmor-model", default=None)
+    parser.add_argument("--promptarmor-run-id", default=None)
+    parser.add_argument("--promptarmor-api-key", default=None)
+    parser.add_argument("--promptarmor-no-verify-tls", action="store_true")
+    parser.add_argument("--dredd-url", default=None,
+                        help="Hook server URL for /screen calls.")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    model_id = BEDROCK_MODELS[args.model]
+    pa_opts: dict[str, Any] | None = None
+    if args.promptarmor_backend:
+        if not args.promptarmor_model:
+            parser.error("--promptarmor-backend requires --promptarmor-model")
+        if not args.dredd_url:
+            parser.error("--promptarmor-backend requires --dredd-url")
+        pa_opts = {
+            "url": args.dredd_url,
+            "backend": args.promptarmor_backend,
+            "model": args.promptarmor_model,
+            "run_id": args.promptarmor_run_id,
+            "api_key": args.promptarmor_api_key or os.environ.get("DREDD_API_KEY"),
+            "verify_tls": not args.promptarmor_no_verify_tls,
+        }
+
+    attacks = [a.strip() for a in args.attacks.split(",") if a.strip()]
+    suffix = "-promptarmor" if pa_opts else "-none"
+    logdir = Path(args.logdir) / f"{args.model}{suffix}"
+    summary: dict[str, Any] = {
+        "model": args.model,
+        "model_id": model_id,
+        "setting": args.setting,
+        "promptarmor": pa_opts is not None,
+        "promptarmor_backend": pa_opts.get("backend") if pa_opts else None,
+        "promptarmor_model": pa_opts.get("model") if pa_opts else None,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "cells": [],
+    }
+
+    for attack in attacks:
+        out_file = logdir / f"test_cases_{attack}_{args.setting}.json"
+        logger.info(f"=== {args.setting}/{attack} -> {out_file} ===")
+        stats = run_setting(
+            args.setting, attack, model_id, args.aws_region,
+            out_file, pa_opts, skip_existing=not args.force_rerun,
+        )
+        summary["cells"].append(stats)
+
+    # Aggregate score using upstream's get_score (expects dh + ds files).
+    if set(attacks) >= {"dh", "ds"}:
+        try:
+            scores = get_score({
+                "dh": str(logdir / f"test_cases_dh_{args.setting}.json"),
+                "ds": str(logdir / f"test_cases_ds_{args.setting}.json"),
+            })
+            summary["scores"] = scores
+        except Exception as e:
+            logger.warning(f"score aggregation failed: {e}")
+            summary["scores"] = None
+
+    summary_file = logdir / "summary.json"
+    summary["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with open(summary_file, "w") as f:
+        json.dump(summary, f, indent=2)
+    logger.info(f"summary written to {summary_file}")
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
