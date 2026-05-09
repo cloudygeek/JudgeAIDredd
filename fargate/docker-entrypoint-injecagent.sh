@@ -65,7 +65,13 @@ LOGDIR="${AGENTDOJO_LOGDIR:-/app/runs}"
 mkdir -p "$LOGDIR"
 SUMMARY_LOG="$LOGDIR/${RUN_ID}-summary.log"
 
-RESULTS_S3_URL="${RESULTS_S3_URL:-}"
+# Default to the standard CKO results bucket. Operator can override
+# by passing RESULTS_S3_URL explicitly, or set RESULTS_S3_DISABLE=1
+# to opt out entirely.
+RESULTS_S3_URL="${RESULTS_S3_URL:-s3://cko-results/injecagent/${RUN_ID}}"
+if [[ "${RESULTS_S3_DISABLE:-0}" == "1" ]]; then
+  RESULTS_S3_URL=""
+fi
 s3_pull() {
   if [[ -z "$RESULTS_S3_URL" ]]; then return 0; fi
   log "s3_sync: pulling ${RESULTS_S3_URL}/ -> ${LOGDIR}/"
