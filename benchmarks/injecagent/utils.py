@@ -1,27 +1,12 @@
 import json
 import os
 import re
-# Vendored from upstream — relative imports adjusted; openai client
-# made lazy so the module imports cleanly without OPENAI_API_KEY when
-# we only need get_score / get_tool_dict / evaluate helpers (the
-# attacker-simulator path needs OpenAI and is the only consumer of the
-# global client; vendored corpus already has all simulated responses
-# baked in so OpenAI is effectively unused).
-try:
-    from .prompts.generation_prompts import SYSTEM_MESSAGE, DS_ATTACKER_TOOL_RESPONSE_GEN_MESSAGE, EXAMPLE
-except Exception:
-    SYSTEM_MESSAGE = DS_ATTACKER_TOOL_RESPONSE_GEN_MESSAGE = EXAMPLE = ""
-
-_openai_client = None
-def _get_openai_client():
-    global _openai_client
-    if _openai_client is None:
-        from openai import OpenAI
-        _openai_client = OpenAI(
-            api_key=os.environ.get("OPENAI_API_KEY"),
-            organization=os.environ.get("OPENAI_ORGANIZATION"),
-        )
-    return _openai_client
+# Vendored from upstream. The upstream attacker-simulator path called
+# GPT-4 via the OpenAI direct API on cache miss; we replaced that with
+# a placeholder return (see get_simulated_attacker_tool_response below)
+# since GPT-4 isn't on Bedrock and shipping an OPENAI_API_KEY into the
+# container is undesirable. The OpenAI client and generation_prompts
+# imports are no longer used and are removed.
 
 def get_score(output_files):
     dh_output_file = output_files['dh']
@@ -154,6 +139,24 @@ def extract_content(text):
     return matches
 
 def get_simulated_attacker_tool_response(attacker_tool, attacker_tool_parameters, tool_dict):
+    """Returns a canned attacker-tool response from the vendored cache.
+
+    Upstream falls through to a GPT-4 call when the (tool,params) key
+    isn't cached. We deliberately do NOT take that path:
+
+      - GPT-4 is only available via the OpenAI direct API (not on
+        Bedrock); enabling the fallback would require shipping an
+        OPENAI_API_KEY into the container.
+      - Mid-run cache writes mutate the corpus, undermining
+        reproducibility across cells / re-runs.
+
+    On a cache miss we return a synthetic placeholder string and log
+    a warning. The downstream `evaluate_output_prompted` is robust to
+    this — it scores based on whether the model picked the *attacker
+    tool* on step 2, not on the response content. Worst case we
+    under-count a few succ cases; better than silently calling the
+    OpenAI API or stalling.
+    """
     here = os.path.dirname(os.path.abspath(__file__))
     file_name = os.path.join(here, 'data', 'attacker_simulated_responses.json')
     with open(file_name, 'r') as f:
@@ -162,27 +165,14 @@ def get_simulated_attacker_tool_response(attacker_tool, attacker_tool_parameters
     if history_key in response_dict:
         return response_dict[history_key]
 
-    attacker_tool_des = json.dumps(tool_dict[attacker_tool], indent=True)
-    
-    prompt_filled = DS_ATTACKER_TOOL_RESPONSE_GEN_MESSAGE.format(example = EXAMPLE, attacker_tool = attacker_tool_des, tool_parameters = attacker_tool_parameters)
-    
-    completion = _get_openai_client().chat.completions.create(
-                    model="gpt-4-0613", 
-                    messages=[
-                        {"role": "system", "content":SYSTEM_MESSAGE},
-                        {"role": "user", "content": prompt_filled}
-                    ]
-                )
-    message = completion.choices[0].message.content
-    simulated_response = extract_content(message)[0]
-    if simulated_response.startswith('json'):
-        simulated_response = simulated_response[4:]
-    response_dict[history_key] = simulated_response.strip()
-
-    with open(file_name, 'w') as f:
-        f.write(json.dumps(response_dict, indent=True))
-
-    return response_dict[history_key]
+    import logging
+    logging.getLogger(__name__).warning(
+        f"attacker_simulated_responses cache miss for {history_key[:120]} — "
+        f"returning placeholder (no GPT-4 fallback)"
+    )
+    # Placeholder that looks like a successful tool response; downstream
+    # scoring only cares that step 2 was attempted with the right tool.
+    return json.dumps({"success": True, "result": "(simulated response unavailable)"})
 
 def get_response_text(data, anchor):
     text = data[0]["generated_text"]
