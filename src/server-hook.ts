@@ -79,9 +79,45 @@ const PROMPTARMOR_ALLOWED_MODELS: ReadonlyArray<string> = [
   "o4-mini",
   "claude-sonnet-4-6",
   "claude-opus-4-7",
+  "qwen3-32b",
+  "qwen3-235b",
 ];
 
 const PROMPTARMOR_MAX_CONTENT_BYTES = 32 * 1024;
+
+// Cap concurrent /screen calls so a Bedrock-side stall can't queue
+// hundreds of in-flight requests on the event loop. Each /screen call
+// blocks on a Bedrock Converse round-trip (~1-3s typical, longer when
+// throttled). Without this cap, a stuck request snowballs: queue
+// grows, no slack for ALB health checks, container goes silent.
+// Observed: 2026-05-10T03:17 -> 07:32 UTC outage where the hook went
+// quiet after a stuck /screen call hung the event loop. Override via
+// PROMPTARMOR_SCREEN_CONCURRENCY env if needed.
+const PROMPTARMOR_SCREEN_CONCURRENCY = parseInt(
+  process.env.PROMPTARMOR_SCREEN_CONCURRENCY ?? "8",
+  10,
+);
+let screenInFlight = 0;
+const screenWaiters: Array<() => void> = [];
+
+function acquireScreenSlot(): Promise<void> {
+  if (screenInFlight < PROMPTARMOR_SCREEN_CONCURRENCY) {
+    screenInFlight++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    screenWaiters.push(() => {
+      screenInFlight++;
+      resolve();
+    });
+  });
+}
+
+function releaseScreenSlot(): void {
+  screenInFlight--;
+  const next = screenWaiters.shift();
+  if (next) next();
+}
 
 /**
  * Apply CORS headers for endpoints the dashboard container calls. Returns
@@ -838,6 +874,7 @@ async function handleScreen(req: IncomingMessage, res: ServerResponse) {
     runId,
   });
 
+  await acquireScreenSlot();
   try {
     const result = await baseline.screen(content, taskContext);
     return json(res, 200, {
@@ -853,6 +890,8 @@ async function handleScreen(req: IncomingMessage, res: ServerResponse) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`  [/screen] backend ${backend} failed: ${msg}`);
     return json(res, 502, { error: "detector backend failed", detail: msg });
+  } finally {
+    releaseScreenSlot();
   }
 }
 

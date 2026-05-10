@@ -121,7 +121,18 @@ export async function bedrockChat(
     ...(additionalModelRequestFields ? { additionalModelRequestFields } : {}),
   });
 
-  const response = await clientFor(REGION).send(command);
+  // Hard timeout on the Bedrock call — a stuck request previously
+  // hung the event loop indefinitely (CloudWatch outage on
+  // 2026-05-10T03:17 to 07:32 UTC: hook went silent after a single
+  // /screen call never returned, ALB health-check took 2h 23m to
+  // notice). 120s is generous — opus thinking-mode runs can take
+  // 30-60s. Anything longer is a hung connection, not a slow model.
+  // Override via BEDROCK_REQUEST_TIMEOUT_MS for thinking-mode runs
+  // that legitimately need more headroom.
+  const timeoutMs = parseInt(process.env.BEDROCK_REQUEST_TIMEOUT_MS ?? "120000", 10);
+  const response = await clientFor(REGION).send(command, {
+    abortSignal: AbortSignal.timeout(timeoutMs),
+  });
 
   const blocks = (response.output?.message?.content ?? []) as any[];
   const content = blocks
@@ -233,7 +244,9 @@ export async function checkBedrock(modelId = MODEL_ID): Promise<boolean> {
       messages: [{ role: "user", content: [{ text: "ok" }] }],
       inferenceConfig: { maxTokens: 1 },
     });
-    await clientFor(REGION).send(command);
+    // Short timeout on the preflight: 30s is plenty for a 1-token
+    // sanity call. Don't let preflight hang container startup.
+    await clientFor(REGION).send(command, { abortSignal: AbortSignal.timeout(30_000) });
     return true;
   } catch {
     return false;
