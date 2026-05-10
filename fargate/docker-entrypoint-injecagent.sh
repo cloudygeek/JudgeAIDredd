@@ -131,8 +131,22 @@ run_cell() {
         args+=(--promptarmor-api-key "$DREDD_API_KEY")
       fi
       ;;
+    B7|B7.1)
+      # Dredd post-output judge: PromptArmor-style preprocessing not
+      # done; we let the model see the raw Tool Response, then judge
+      # the resulting tool call via /evaluate. Same auth + TLS skip
+      # as the AgentDojo container's B7/B7.1 cells. Autonomous mode
+      # is the right benchmark config — see the AgentDojo entrypoint
+      # for the rationale.
+      args+=(--dredd-defense "$defence")
+      args+=(--dredd-mode "${DREDD_MODE:-autonomous}")
+      args+=(--promptarmor-no-verify-tls)
+      if [[ -n "${DREDD_API_KEY:-}" ]]; then
+        args+=(--promptarmor-api-key "$DREDD_API_KEY")
+      fi
+      ;;
     *)
-      fail "Unknown defence: $defence (expected: none|promptarmor)"
+      fail "Unknown defence: $defence (expected: none|promptarmor|B7|B7.1)"
       ;;
   esac
 

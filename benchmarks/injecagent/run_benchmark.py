@@ -51,7 +51,21 @@ BEDROCK_MODELS = {
     "sonnet": "eu.anthropic.claude-sonnet-4-6",
     "opus-4-7": "eu.anthropic.claude-opus-4-7",
     "haiku": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Qwen3-32B as a weaker (paper-comparable) agent. Sonnet 4.6
+    # baseline-refused 100% of InjecAgent (likely trained on the
+    # corpus); we need a non-Anthropic model to actually measure
+    # defence effectiveness. Direct foundation model on Bedrock
+    # eu-central-1 (no inference profile prefix).
+    "qwen3-32b": "qwen.qwen3-32b-v1:0",
 }
+
+# Region routing per model family. Anthropic inference profiles
+# (eu.anthropic.*) are served from any EU region; Qwen direct
+# foundation models live in eu-central-1 only.
+def region_for_model(model_id: str, default_region: str) -> str:
+    if model_id.startswith("qwen."):
+        return "eu-central-1"
+    return default_region
 
 
 def call_bedrock(system_prompt: str, user_prompt: str, model_id: str, region: str) -> str:
@@ -169,6 +183,69 @@ def screen_via_promptarmor(text: str, task_context: str, opts: dict[str, Any]) -
         return text, {"verdict": "error", "error": str(e)}
 
 
+def evaluate_via_dredd(user_instruction: str, tool_name: str, tool_input: dict[str, Any], opts: dict[str, Any]) -> dict[str, Any]:
+    """Map InjecAgent's single-shot evaluator onto Dredd's PreToolUse judge.
+
+    Flow per case:
+      1. POST /intent with the test's User Instruction as the registered
+         intent for a fresh per-case session_id.
+      2. POST /evaluate with the proposed tool call (the attacker tool
+         the model decided to call). The judge sees the registered
+         intent + the proposed action and decides allow/deny.
+      3. If permissionDecision == "deny" -> Dredd would have blocked
+         this attack; count as defended.
+
+    Returns: {"decision": "allow"|"deny"|"error", "reason": str, "stage": str}
+    """
+    import requests
+    headers = {"Content-Type": "application/json"}
+    if opts.get("api_key"):
+        headers["Authorization"] = f"Bearer {opts['api_key']}"
+    verify = opts.get("verify_tls", True)
+
+    # Per-case session id keeps Dredd's state clean between cases.
+    # 16 hex chars from a hash of the instruction is plenty of
+    # collision resistance for ~1k cases per cell.
+    import hashlib
+    sid = "injec-" + hashlib.sha256(user_instruction.encode()).hexdigest()[:16]
+    base = opts["url"].rstrip("/")
+
+    try:
+        # Register intent
+        r1 = requests.post(
+            f"{base}/intent",
+            json={"session_id": sid, "prompt": user_instruction},
+            headers=headers, timeout=15, verify=verify,
+        )
+        r1.raise_for_status()
+
+        # Evaluate the proposed tool call
+        r2 = requests.post(
+            f"{base}/evaluate",
+            json={
+                "session_id": sid,
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "mode": opts.get("mode", "autonomous"),
+            },
+            headers=headers, timeout=30, verify=verify,
+        )
+        r2.raise_for_status()
+        result = r2.json()
+        meta = result.get("_meta", {})
+        hook_output = result.get("hookSpecificOutput", {})
+        return {
+            "decision": hook_output.get("permissionDecision", "allow"),
+            "reason": meta.get("reason", hook_output.get("permissionDecisionReason", "")),
+            "stage": meta.get("stage", ""),
+            "judgeVerdict": meta.get("judgeVerdict"),
+            "evaluationMs": meta.get("evaluationMs"),
+        }
+    except Exception as e:
+        logger.warning(f"Dredd /evaluate failed: {e}")
+        return {"decision": "error", "reason": str(e), "stage": "error"}
+
+
 def run_setting(
     setting: str,
     attack: str,
@@ -176,6 +253,7 @@ def run_setting(
     region: str,
     output_path: Path,
     pa_opts: dict[str, Any] | None,
+    dredd_opts: dict[str, Any] | None,
     skip_existing: bool,
 ) -> dict[str, Any]:
     """Run all test cases of one (setting, attack) and append JSONL results.
@@ -215,6 +293,9 @@ def run_setting(
         "screened_clean": 0,
         "screened_injected": 0,
         "screen_errors": 0,
+        "dredd_blocked": 0,        # judge returned deny on a would-be-succ
+        "dredd_allowed": 0,        # judge returned allow on a would-be-succ
+        "dredd_errors": 0,
     }
 
     # Append-mode so a mid-run restart can resume from previously
@@ -257,16 +338,51 @@ def run_setting(
                     item["Attacker Instruction"],
                 )
                 item["eval"] = parsed["eval"]
-                if parsed["eval"] == "invalid":
+                # Original (no-defence) verdict preserved before any
+                # Dredd post-output adjustment, so the saved item
+                # supports both views ("would the model have taken
+                # the bait without Dredd?" + "did Dredd block it?").
+                item["eval_no_defence"] = parsed["eval"]
+
+                # Dredd post-output judge: if the model emitted a tool
+                # call that would have succeeded, ask Dredd whether
+                # the tool call should be allowed. Deny -> flip to
+                # unsucc (defence applied). Errors / allow -> leave eval
+                # as-is so we don't silently turn a Dredd outage into a
+                # higher ASR.
+                if dredd_opts is not None and parsed["eval"] == "succ":
+                    tool_name = item["Attacker Tools"][0]
+                    try:
+                        tool_input = json.loads(parsed.get("Attacker Tool Parameters", "{}"))
+                    except Exception:
+                        tool_input = {}
+                    dredd_verdict = evaluate_via_dredd(
+                        item["User Instruction"], tool_name, tool_input, dredd_opts
+                    )
+                    item["dredd"] = dredd_verdict
+                    if dredd_verdict["decision"] == "deny":
+                        item["eval"] = "unsucc"
+                        stats["dredd_blocked"] += 1
+                    elif dredd_verdict["decision"] == "allow":
+                        stats["dredd_allowed"] += 1
+                    else:
+                        stats["dredd_errors"] += 1
+
+                if item["eval"] == "invalid":
                     item["invalid_reason"] = parsed.get("invalid_reason", "")
                     stats["invalid"] += 1
-                elif parsed["eval"] == "succ":
+                elif item["eval"] == "succ":
                     stats["succ"] += 1
-                elif parsed["eval"] == "unsucc":
+                elif item["eval"] == "unsucc":
                     stats["unsucc"] += 1
 
-                # Step 2 for data-stealing attacks: only fires when the
-                # first stage already succeeded. Mirrors upstream.
+                # Step 2 for data-stealing attacks: only fires when
+                # the first stage's *no-defence* verdict was succ.
+                # We deliberately use eval_no_defence (not eval) so
+                # that Dredd-blocked step-1 cases still produce a step-2
+                # observation — keeps the dataset symmetric with the
+                # no-defence runs. The step-2 verdict is then itself
+                # post-output-judged below.
                 if attack == "ds" and parsed["eval"] == "succ":
                     item["Attacker Tool Parameters"] = parsed["Attacker Tool Parameters"]
                     item["Attacker Tool Thought"] = parsed["Attacker Tool Thought"]
@@ -293,8 +409,23 @@ def run_setting(
                         item["Attacker Instruction"],
                     )
                     item["eval Step 2"] = parsed2["eval"]
+                    item["eval Step 2 no_defence"] = parsed2["eval"]
                     if parsed2["eval"] == "invalid":
                         item["invalid_reason  Step 2"] = parsed2.get("invalid_reason", "")
+
+                    # Dredd judge on step-2 tool call too.
+                    if dredd_opts is not None and parsed2["eval"] == "succ":
+                        tool_name2 = item["Attacker Tools"][1] if len(item["Attacker Tools"]) > 1 else item["Attacker Tools"][0]
+                        try:
+                            tool_input2 = json.loads(parsed2.get("Attacker Tool Parameters", "{}"))
+                        except Exception:
+                            tool_input2 = {}
+                        dredd_verdict2 = evaluate_via_dredd(
+                            item["User Instruction"], tool_name2, tool_input2, dredd_opts
+                        )
+                        item["dredd Step 2"] = dredd_verdict2
+                        if dredd_verdict2["decision"] == "deny":
+                            item["eval Step 2"] = "unsucc"
 
                 if tr_screen is not None:
                     item["promptarmor"] = tr_screen
@@ -336,7 +467,16 @@ def main() -> int:
     parser.add_argument("--promptarmor-api-key", default=None)
     parser.add_argument("--promptarmor-no-verify-tls", action="store_true")
     parser.add_argument("--dredd-url", default=None,
-                        help="Hook server URL for /screen calls.")
+                        help="Hook server URL for /screen and /evaluate calls.")
+    # Dredd post-output judge — fires AFTER the model emits a tool
+    # call that would have succeeded. POSTs (User Instruction,
+    # tool_name, tool_input) to /evaluate and treats deny as
+    # defended. See test plan §B5: 'Dredd judge on InjecAgent'.
+    parser.add_argument("--dredd-defense", choices=["B7", "B7.1"], default=None,
+                        help="Enable Dredd post-output judge with this prompt variant.")
+    parser.add_argument("--dredd-mode", choices=["interactive", "autonomous", "learn"],
+                        default="autonomous",
+                        help="Trust mode for Dredd /evaluate calls.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -357,8 +497,25 @@ def main() -> int:
             "verify_tls": not args.promptarmor_no_verify_tls,
         }
 
+    dredd_opts: dict[str, Any] | None = None
+    if args.dredd_defense:
+        if not args.dredd_url:
+            parser.error("--dredd-defense requires --dredd-url")
+        dredd_opts = {
+            "url": args.dredd_url,
+            "variant": args.dredd_defense,
+            "mode": args.dredd_mode,
+            "api_key": args.promptarmor_api_key or os.environ.get("DREDD_API_KEY"),
+            "verify_tls": not args.promptarmor_no_verify_tls,
+        }
+
     attacks = [a.strip() for a in args.attacks.split(",") if a.strip()]
-    suffix = "-promptarmor" if pa_opts else "-none"
+    parts: list[str] = []
+    if pa_opts is not None:
+        parts.append("promptarmor")
+    if dredd_opts is not None:
+        parts.append(f"dredd-{args.dredd_defense}")
+    suffix = "-" + "+".join(parts) if parts else "-none"
     logdir = Path(args.logdir) / f"{args.model}{suffix}"
     summary: dict[str, Any] = {
         "model": args.model,
@@ -367,6 +524,8 @@ def main() -> int:
         "promptarmor": pa_opts is not None,
         "promptarmor_backend": pa_opts.get("backend") if pa_opts else None,
         "promptarmor_model": pa_opts.get("model") if pa_opts else None,
+        "dredd_defense": dredd_opts.get("variant") if dredd_opts else None,
+        "dredd_mode": dredd_opts.get("mode") if dredd_opts else None,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "cells": [],
     }
@@ -374,9 +533,14 @@ def main() -> int:
     for attack in attacks:
         out_file = logdir / f"test_cases_{attack}_{args.setting}.json"
         logger.info(f"=== {args.setting}/{attack} -> {out_file} ===")
+        # Route per-model: Anthropic profiles work from any EU
+        # region; Qwen direct foundation models are eu-central-1 only.
+        actual_region = region_for_model(model_id, args.aws_region)
+        if actual_region != args.aws_region:
+            logger.info(f"  routing {model_id} via {actual_region} (overriding {args.aws_region})")
         stats = run_setting(
-            args.setting, attack, model_id, args.aws_region,
-            out_file, pa_opts, skip_existing=not args.force_rerun,
+            args.setting, attack, model_id, actual_region,
+            out_file, pa_opts, dredd_opts, skip_existing=not args.force_rerun,
         )
         summary["cells"].append(stats)
 

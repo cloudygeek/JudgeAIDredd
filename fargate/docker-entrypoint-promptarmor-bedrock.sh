@@ -132,6 +132,13 @@ run_cell() {
       ;;
     B7|B7.1|standard)
       args+=(--defense "$defence")
+      # Force autonomous mode for the Dredd judge — interactive
+      # mode (the hook's CONFIG default) skips drift-deny and falls
+      # back to single-goal anyway when no stack is populated. The
+      # benchmark expects autonomous semantics; not setting this
+      # was the bug that produced weak B7/B7.1 numbers in earlier
+      # bedt3/bedt4 runs.
+      args+=(--dredd-mode "${DREDD_MODE:-autonomous}")
       ;;
     promptarmor)
       args+=(--promptarmor-backend "$PROMPTARMOR_BACKEND")

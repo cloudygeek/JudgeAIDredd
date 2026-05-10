@@ -211,6 +211,7 @@ def build_pipeline(
     promptarmor_run_id: str | None = None,
     promptarmor_api_key: str | None = None,
     promptarmor_verify_tls: bool = True,
+    dredd_mode: str = "autonomous",
 ) -> AgentPipeline:
     """Build an AgentPipeline with optional Judge Dredd defense and/or PromptArmor.
 
@@ -263,6 +264,7 @@ def build_pipeline(
             prompt_variant=defense,
             api_key=dredd_api_key,
             verify_tls=dredd_verify_tls,
+            mode=dredd_mode,
         ))
     loop_elements.append(ToolsExecutor(tool_result_to_str))
     if promptarmor:
@@ -387,6 +389,11 @@ def main():
                         help="Disable TLS certificate verification on /screen calls. "
                              "Required for internal CKO ALBs whose self-signed CA "
                              "chain isn't in the container's trust store.")
+    parser.add_argument("--dredd-mode", choices=["interactive", "autonomous", "learn"],
+                        default="autonomous",
+                        help="Trust mode for Dredd /intent and /evaluate calls. "
+                             "Autonomous (default) is the right config for benchmark "
+                             "scoring: drift-deny enabled, single-goal, no stack.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -425,6 +432,7 @@ def main():
         promptarmor_run_id=args.promptarmor_run_id,
         promptarmor_api_key=promptarmor_api_key,
         promptarmor_verify_tls=not args.promptarmor_no_verify_tls,
+        dredd_mode=args.dredd_mode,
     )
 
     all_summaries = []

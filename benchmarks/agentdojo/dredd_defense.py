@@ -46,8 +46,12 @@ class JudgeDreddDefense(BasePipelineElement):
         prompt_variant: str = "B7.1",
         api_key: str | None = None,
         verify_tls: bool = True,
+        mode: str = "autonomous",
     ) -> None:
+        if mode not in ("interactive", "autonomous", "learn"):
+            raise ValueError(f"mode must be interactive|autonomous|learn, got {mode!r}")
         self.dredd_url = dredd_url.rstrip("/")
+        self.mode = mode
         # Keep the original base separately so reset_session() can mint
         # `${BASE}-${count}` each time rather than appending to whatever
         # the previous reset produced. Without this, session_id grew by
@@ -90,6 +94,7 @@ class JudgeDreddDefense(BasePipelineElement):
                 json={
                     "session_id": self.session_id,
                     "prompt": intent,
+                    "mode": self.mode,
                 },
                 headers=self._headers(),
                 timeout=10,
@@ -131,6 +136,7 @@ class JudgeDreddDefense(BasePipelineElement):
                 "session_id": self.session_id,
                 "tool_name": tool_name,
                 "tool_input": tool_input,
+                "mode": self.mode,
             }
             resp = requests.post(
                 f"{self.dredd_url}/evaluate",
