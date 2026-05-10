@@ -29,6 +29,18 @@ import time
 from pathlib import Path
 from typing import Any
 
+# Silence urllib3 InsecureRequestWarning once at module load. The
+# /screen and /evaluate calls hit the AI Sandbox internal ALB whose
+# self-signed CA chain isn't in the container trust store; verify=False
+# is the deployed pattern (matches dredd_defense.py / promptarmor_defense.py).
+# Per-case repetition was producing thousands of identical warning
+# blocks in the run logs.
+try:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
+
 # Allow running as `python3 -m injecagent.run_benchmark` from anywhere
 # in /app/benchmarks/, or as `python3 benchmarks/injecagent/run_benchmark.py`
 # from the project root.
