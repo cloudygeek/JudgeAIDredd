@@ -410,15 +410,33 @@ export class PreToolInterceptor {
       currentAction += `\n\nFILE CONTEXT (files written during this session):\n${fileContext}`;
     }
 
-    // In interactive/learn mode with an active stack, pass the full
-    // contextual prompt list to the judge so it authorises tool calls
-    // against ALL active goals (the LLM combines queued prompts at
-    // generation time). Falls back to s.originalTask if the stack is
-    // empty — preserves autonomous behaviour and the pre-stack defaults.
-    const judgeIntent: string | string[] =
-      activeIntents && activeIntents.length > 0
-        ? activeIntents.map((e) => e.contextual)
-        : s.originalTask;
+    // In interactive/learn mode with an active stack, pass the
+    // contextual prompts of only the live (non-resolved) entries to
+    // the judge so it authorises tool calls against the goals that
+    // are actually still in play. Resolved entries are kept on the
+    // stack for context (drift comparisons, analytics) but
+    // including them in the judge's prompt drowns the current goal
+    // in stale ones. If everything is resolved, fall back to the
+    // freshest (last) entry — better than s.originalTask, which on
+    // long-lived sessions is the turn-1 prompt and may be wildly
+    // out of date. As a final fallback, use s.originalTask.
+    let judgeIntent: string | string[];
+    if (activeIntents && activeIntents.length > 0) {
+      const liveContextuals = activeIntents
+        .filter((e) => !e.resolved)
+        .map((e) => e.contextual);
+      if (liveContextuals.length > 0) {
+        judgeIntent = liveContextuals;
+      } else {
+        // Everything resolved (Stop fired, no follow-up intent yet).
+        // Use the most recent stack entry rather than s.originalTask
+        // so the judge sees the user's latest goal rather than the
+        // session-defining turn-1 one.
+        judgeIntent = activeIntents[activeIntents.length - 1].contextual;
+      }
+    } else {
+      judgeIntent = s.originalTask;
+    }
 
     const judgeVerdict = await this.judge.evaluate(
       judgeIntent,
