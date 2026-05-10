@@ -1048,20 +1048,29 @@ export async function applyIntentStackUpdate(
     return { kind: "confirmation", turnState, stack, driftToStackTop: 0 };
   }
 
-  // Compute drift to the closest non-resolved stack entry — the action
-  // is "near" the active intent set if it's near any of them.
+  // Compute drift to the most recent live stack entry — the variable
+  // name has always been driftToStackTop, but the implementation took
+  // max-over-entire-stack similarity, which monotonically converges to
+  // 1 (drift -> 0) as the stack grows. In long sessions every new
+  // CS-development prompt was similar to *something* in a 5+ entry
+  // stack, so new-task could never fire. Switch to genuine
+  // top-of-live-stack: only compare against the latest non-resolved
+  // entry. If nothing is live, fall back to the most recent existing
+  // entry so we keep some signal.
   const promptEmbedding = (await embedAny(prompt, embeddingModel))[0];
   const liveEntries = existing.filter((e) => !e.resolved);
-  // If everything is resolved, fall back to comparing against the whole
-  // stack so we don't lose the signal.
   const compareSet = liveEntries.length > 0 ? liveEntries : existing;
-  let maxSim = -Infinity;
-  for (const e of compareSet) {
-    if (!e.embedding || e.embedding.length === 0) continue;
-    const s = cosineSimilarity(e.embedding, promptEmbedding);
-    if (s > maxSim) maxSim = s;
+  // Top of stack = most recently registered entry. compareSet is in
+  // registration order, so the last element is the freshest.
+  let topSim: number | null = null;
+  for (let i = compareSet.length - 1; i >= 0; i--) {
+    const e = compareSet[i];
+    if (e.embedding && e.embedding.length > 0) {
+      topSim = cosineSimilarity(e.embedding, promptEmbedding);
+      break;
+    }
   }
-  const driftToStackTop = maxSim === -Infinity ? null : 1 - maxSim;
+  const driftToStackTop = topSim === null ? null : 1 - topSim;
 
   let kind: IntentEntry["kind"];
   let stack = [...existing];
