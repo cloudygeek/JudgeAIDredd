@@ -284,10 +284,17 @@ function extractCommitMessageSubstitutions(command: string): string[] {
     for (const sub of body.matchAll(/`([^`]*)`/g)) out.push(sub[1]);
   }
   // Heredoc-fed messages: `git commit -F - <<EOF … EOF` or
-  // `-m "$(cat <<EOF … EOF)"`. Substitutions inside heredoc bodies also
-  // execute at shell expansion time.
+  // `-m "$(cat <<EOF … EOF)"`. Substitutions inside heredoc bodies
+  // execute at shell expansion time UNLESS the tag is quoted (single
+  // or double): `<<'EOF'` and `<<"EOF"` both disable expansion, so
+  // `$(...)` and `` `...` `` in those bodies are literal text. Skip
+  // the extraction for quoted tags — otherwise the policy false-
+  // positives on commit-message prose that uses backticks for code
+  // markdown formatting (a common pattern).
   const heredocs = command.matchAll(/<<-?\s*(['"]?)(\w+)\1\s*\n([\s\S]*?)\n\s*\2(?=\s|$)/g);
   for (const h of heredocs) {
+    const tagQuote = h[1];
+    if (tagQuote === "'" || tagQuote === '"') continue;
     const body = h[3];
     for (const sub of body.matchAll(/\$\(([^()]*)\)/g)) out.push(sub[1]);
     for (const sub of body.matchAll(/`([^`]*)`/g)) out.push(sub[1]);
