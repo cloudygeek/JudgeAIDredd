@@ -273,6 +273,15 @@ export class CachedSessionStore implements SessionStore {
     return result;
   }
 
+  async replaceOriginalIntent(sessionId: string, prompt: string): Promise<void> {
+    await this.backend.replaceOriginalIntent(sessionId, prompt);
+    // Same drop-and-reload pattern as registerIntent — the backend
+    // mutates originalIntent + originalEmbedding + turnMetrics in
+    // ways the cache must re-read.
+    this.drop(sessionId);
+    await this.getOrLoad(sessionId);
+  }
+
   async getSessionContext(sessionId: string): Promise<{
     originalTask: string | null;
     currentTurn: number;

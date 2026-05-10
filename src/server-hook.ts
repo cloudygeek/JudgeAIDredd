@@ -43,6 +43,7 @@ import {
   applyIntentStackUpdate,
   buildSessionLogShape,
   flushLogs,
+  NEW_TASK_DRIFT_MIN,
   type TrustMode,
 } from "./server-core.js";
 import type { ImageBlock } from "./session-store.js";
@@ -236,6 +237,30 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   if (result.isOriginal && !registeredSessions.has(session_id)) {
     await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
     registeredSessions.add(session_id);
+  }
+
+  // Autonomous-mode topic-switch handling. Without this, the
+  // interceptor's per-session originalTask is set once on first
+  // registerIntent and never updates — long-lived sessions stay
+  // anchored to a stale turn-1 goal even after the user has
+  // explicitly pivoted. Mirror what the interactive path does on
+  // new-task: re-register the goal so the judge sees the right
+  // anchor. Skip on confirmations (those don't carry a new goal)
+  // and on the first prompt of the session (already handled above).
+  if (
+    mode === "autonomous" &&
+    !isConfirmation &&
+    !result.isOriginal &&
+    result.driftFromOriginal !== null &&
+    result.driftFromOriginal > NEW_TASK_DRIFT_MIN
+  ) {
+    console.log(
+      `  [${session_id.substring(0, 8)}] [INTENT] autonomous topic switch ` +
+      `(drift=${result.driftFromOriginal.toFixed(3)} > ${NEW_TASK_DRIFT_MIN}) — ` +
+      `re-registering goal`
+    );
+    await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
+    await tracker.replaceOriginalIntent(session_id, prompt);
   }
 
   // Hoisted so the feed entry below can include the classification —

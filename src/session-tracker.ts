@@ -503,6 +503,35 @@ export class InMemorySessionStore implements SessionStore {
   }
 
   /**
+   * Replace the session's originalIntent with a new prompt. Used by
+   * autonomous-mode topic-switch detection so the judge sees the
+   * user's current goal rather than the turn-1 prompt forever. The
+   * existing originalIntent is overwritten in place; the new
+   * embedding seeds the drift detector so subsequent turns are
+   * measured against the fresh goal.
+   *
+   * Interactive-mode sessions don't call this — they use the intent
+   * stack instead, which tracks pivots more granularly.
+   */
+  async replaceOriginalIntent(sessionId: string, prompt: string): Promise<void> {
+    const session = this.getSession(sessionId);
+    const promptEmbedding = (await embedAny(prompt, this.embeddingModel))[0];
+    const newOriginal: TurnIntent = {
+      turnNumber: session.currentTurn,
+      timestamp: new Date().toISOString(),
+      prompt,
+      embedding: promptEmbedding,
+      isConfirmation: false,
+    };
+    session.originalIntent = newOriginal;
+    session.originalEmbedding = promptEmbedding;
+    await session.driftDetector.registerGoal(prompt);
+    // Reset turn metrics — drift-from-original measurements after the
+    // pivot should accumulate against the new goal, not the old one.
+    session.turnMetrics = [];
+  }
+
+  /**
    * Called from PreToolUse hook.
    * Returns the session state needed for tool evaluation.
    */

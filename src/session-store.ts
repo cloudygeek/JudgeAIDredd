@@ -155,6 +155,18 @@ export interface SessionStore {
     driftFromPrevious: number | null;
   }>;
 
+  /**
+   * Overwrite the session's original intent. Called from autonomous-
+   * mode topic-switch detection so the judge's anchor moves when the
+   * user genuinely pivots topics. Resets the drift detector and
+   * clears accumulated turnMetrics so subsequent measurements are
+   * against the new goal, not the old one.
+   *
+   * Interactive-mode sessions don't use this — the intent stack does
+   * the equivalent work via setActiveIntents.
+   */
+  replaceOriginalIntent(sessionId: string, prompt: string): Promise<void>;
+
   getSessionContext(sessionId: string): Promise<{
     originalTask: string | null;
     currentTurn: number;

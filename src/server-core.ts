@@ -895,8 +895,8 @@ ${sanitisedUser}
 // keep the prior intent visible to the judge so a follow-up that turns
 // out to BE the prior task isn't suddenly judged in isolation.
 
-const CONTINUATION_DRIFT_MAX = 0.30;
-const NEW_TASK_DRIFT_MIN = 0.50;
+export const CONTINUATION_DRIFT_MAX = 0.30;
+export const NEW_TASK_DRIFT_MIN = 0.50;
 
 export type TurnState = "open" | "draining" | "closed";
 

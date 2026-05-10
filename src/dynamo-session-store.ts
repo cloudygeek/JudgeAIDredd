@@ -691,6 +691,38 @@ export class DynamoSessionStore implements SessionStore {
     });
   }
 
+  async replaceOriginalIntent(sessionId: string, prompt: string): Promise<void> {
+    const promptEmbedding = (await embedAny(prompt, this.embeddingModel))[0];
+    const storedPrompt = truncString(prompt, MAX_PROMPT_BYTES);
+    const meta = await this.getMeta(sessionId);
+    const turnNumber = (meta?.currentTurn as number | undefined) ?? 0;
+    const newOriginal: TurnIntent = {
+      turnNumber,
+      timestamp: new Date().toISOString(),
+      prompt: storedPrompt,
+      embedding: promptEmbedding,
+      isConfirmation: false,
+    };
+    await this.updateMeta(sessionId, {
+      originalIntent: newOriginal,
+      originalEmbedding: promptEmbedding,
+    });
+    // Re-seed the in-process drift detector so the next /evaluate
+    // measures against the new goal. Container failover would
+    // otherwise leave it pointing at the old embedding until the
+    // next loadSession round-trip.
+    const eph = this.ephemeral.get(sessionId);
+    if (eph?.driftDetector) {
+      await eph.driftDetector.registerGoal(prompt);
+    }
+    // We deliberately don't clear turnMetrics in Dynamo here —
+    // metrics live as separate sk=METRIC# items and clearing them
+    // is a Query + BatchWriteItem dance. They're analytics-side
+    // (the judge doesn't read them), so leaving the pre-pivot
+    // metrics in place is harmless. The InMemorySessionStore impl
+    // does clear them because in-memory state is cheap to mutate.
+  }
+
   async getActiveIntents(sessionId: string): Promise<IntentEntry[]> {
     const meta = await this.getMeta(sessionId);
     return (meta?.activeIntents as IntentEntry[] | undefined) ?? [];
