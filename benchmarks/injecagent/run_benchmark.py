@@ -64,11 +64,18 @@ def call_bedrock(system_prompt: str, user_prompt: str, model_id: str, region: st
     """
     import boto3
     client = boto3.client("bedrock-runtime", region_name=region)
+    # Opus 4.7 rejects `temperature` with ValidationException — same
+    # gotcha bedrock-client.ts handles. Drop it on opus-4-7; keep it
+    # on every other model so determinism stays in place where the
+    # API allows.
+    inference_config: dict[str, Any] = {"maxTokens": 4096}
+    if "opus-4-7" not in model_id:
+        inference_config["temperature"] = 0
     resp = client.converse(
         modelId=model_id,
         system=[{"text": system_prompt}],
         messages=[{"role": "user", "content": [{"text": user_prompt}]}],
-        inferenceConfig={"temperature": 0, "maxTokens": 4096},
+        inferenceConfig=inference_config,
     )
     blocks = resp.get("output", {}).get("message", {}).get("content", []) or []
     return "".join(b.get("text", "") for b in blocks if "text" in b)
