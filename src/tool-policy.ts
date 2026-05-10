@@ -790,6 +790,32 @@ export function evaluateToolPolicy(
       }
     }
 
+    // Carve-out checks come first in the unchained path so that narrow
+    // exceptions (rm -rf /tmp/..., rm -f literal-file) can short-circuit
+    // before the deny list sees the raw `rm -rf` substring. Otherwise
+    // `rm -rf /tmp/foo` matches the destructive-rm deny rule and never
+    // reaches isRmLimitedToTmp. The chained path doesn't have this issue
+    // because evaluateSingleBashCommand runs the carve-outs first per
+    // segment.
+    if (unchained) {
+      if (isRmLimitedToTmp(command)) {
+        return {
+          decision: "allow",
+          tool,
+          reason: "rm under /tmp/",
+          matchedRule: "ALLOW:Bash:rm-tmp",
+        };
+      }
+      if (isRmForceSingleLiteralFile(command)) {
+        return {
+          decision: "allow",
+          tool,
+          reason: "rm -f of a single literal file (non-recursive)",
+          matchedRule: "ALLOW:Bash:rm-f-literal",
+        };
+      }
+    }
+
     // Check deny list first against the FULL command (highest priority).
     // Use the sanitized view so git commit/tag message bodies don't trigger
     // deny rules on free-form descriptive text.
