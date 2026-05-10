@@ -1081,10 +1081,14 @@ export async function applyIntentStackUpdate(
     kind = "open-followup";
   } else if (driftToStackTop !== null && driftToStackTop > NEW_TASK_DRIFT_MIN) {
     // Closed state, distant from any prior intent — true topic switch.
-    // Evict resolved entries; keep the original (it's the session-defining
-    // goal even if the user has long since moved on).
+    // Evict resolved entries entirely. We previously preserved the
+    // session's original entry on every new-task pivot ("session-
+    // defining goal"), but in practice that turned the first prompt
+    // into a poison pill: the judge kept anchoring to it for hours
+    // after the user had moved on. The original is no longer special;
+    // a true topic switch wipes resolved history including the original.
     kind = "new-task";
-    stack = stack.filter((e) => e.kind === "original" || !e.resolved);
+    stack = stack.filter((e) => !e.resolved);
   } else if (driftToStackTop !== null && driftToStackTop < CONTINUATION_DRIFT_MAX) {
     kind = "continuation";
   } else {
