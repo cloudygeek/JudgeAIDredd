@@ -318,34 +318,49 @@ function parseDetectorOutput(raw: string): ParseResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a regex that allows arbitrary characters between consecutive
- * non-whitespace tokens of `injection`, then strip the first match
- * from `content`. Returns the (possibly modified) content and a
- * `matched` flag.
+ * Walk `content` left-to-right looking for each whitespace-separated
+ * token of `injection` in order. The first match's span (from the
+ * first token's start to the last token's end) is removed. Returns
+ * the (possibly modified) content and a `matched` flag.
+ *
+ * Previously this used `tokens.join(".*?")` as a regex pattern. That
+ * was O(content^tokens) on adversarial input — every `.*?` is a
+ * backtracking choice point, and PromptArmor's "Yes / <injection>"
+ * detector output sometimes emits long token sequences whose prefixes
+ * appear repeatedly in the content, blowing up the regex engine.
+ * Production hang on 2026-05-10T17:01Z (CPU pinned at 1 full vCPU for
+ * 24h+) was traced to this regex. The forward-walking variant is
+ * O(content × tokens), case-insensitive via `toLowerCase()`, and uses
+ * no regex engine for the matching itself.
  */
 function fuzzyStrip(content: string, injection: string): { sanitised: string; matched: boolean } {
   const tokens = injection.split(/\s+/).filter((t) => t.length > 0);
   if (tokens.length === 0) return { sanitised: content, matched: false };
 
-  // Escape regex metacharacters in each token.
-  const escaped = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  // .*? between tokens; case-insensitive, DOTALL.
-  const pattern = escaped.join(".*?");
-  let re: RegExp;
-  try {
-    re = new RegExp(pattern, "is");
-  } catch {
-    return { sanitised: content, matched: false };
+  const haystack = content.toLowerCase();
+  const needles = tokens.map((t) => t.toLowerCase());
+
+  // First token: scan from position 0. Subsequent tokens: scan from
+  // where the previous token ended. If any token can't be found from
+  // its starting position, the fuzzy match fails entirely (matches
+  // the regex's "all tokens must appear in order" semantics).
+  const firstIdx = haystack.indexOf(needles[0]);
+  if (firstIdx === -1) return { sanitised: content, matched: false };
+
+  let cursor = firstIdx + needles[0].length;
+  let lastEnd = cursor;
+  for (let i = 1; i < needles.length; i++) {
+    const idx = haystack.indexOf(needles[i], cursor);
+    if (idx === -1) return { sanitised: content, matched: false };
+    cursor = idx + needles[i].length;
+    lastEnd = cursor;
   }
 
-  const m = re.exec(content);
-  if (!m) return { sanitised: content, matched: false };
-
-  // Replace the matched span with empty string. Trim consecutive
-  // newlines that now sit next to each other to avoid leaving an
-  // ugly gap.
-  const before = content.substring(0, m.index);
-  const after = content.substring(m.index + m[0].length);
+  // Strip everything from the first token's start to the last token's
+  // end (inclusive of the gaps between tokens — same effect the
+  // greedy `.*?` regex had).
+  const before = content.substring(0, firstIdx);
+  const after = content.substring(lastEnd);
   const stitched = (before + after).replace(/\n{3,}/g, "\n\n");
   return { sanitised: stitched, matched: true };
 }
