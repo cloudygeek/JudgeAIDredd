@@ -22,6 +22,12 @@
 #   RUN_ID                  defaults to phaseB-injecagent-<utc>
 #   PROMPTARMOR_MODEL       defaults to "eu.anthropic.claude-sonnet-4-6"
 #   PROMPTARMOR_BACKEND     defaults to "bedrock"
+#   OPENAI_API_KEY          required IF AGENT_MODELS contains a gpt-*
+#                           entry. Pass via the kick-off curl env vars;
+#                           the entrypoint forwards it to the runner.
+#                           Not stored in Secrets Manager.
+#   AGENT_BACKEND           override the default "bedrock" routing if the
+#                           gpt-* heuristic doesn't match (rare).
 #   AGENTDOJO_LOGDIR        defaults to /app/runs (kept name-compatible
 #                           with the bedt3/4 entrypoint so monitoring
 #                           tooling can grep the same paths)
@@ -109,9 +115,16 @@ log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × ${#DEFENCES_ARR[
 
 run_cell() {
   local model="$1" defence="$2" setting="$3"
+  # Route to the OpenAI branch when the model is GPT-family. Bare model
+  # ids (no dot) are OpenAI; vendor-prefixed ids (eu.anthropic.*, qwen.*)
+  # are Bedrock. AGENT_BACKEND overrides if needed.
+  local backend="${AGENT_BACKEND:-bedrock}"
+  case "$model" in
+    gpt-*) backend="openai" ;;
+  esac
   local args=(
     benchmarks/injecagent/run_benchmark.py
-    --backend bedrock
+    --backend "$backend"
     --model "$model"
     --setting "$setting"
     --attacks "$ATTACKS"

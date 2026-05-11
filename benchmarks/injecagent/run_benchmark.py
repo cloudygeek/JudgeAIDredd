@@ -71,6 +71,17 @@ BEDROCK_MODELS = {
     "qwen3-32b": "qwen.qwen3-32b-v1:0",
 }
 
+# OpenAI model registry — for cells where we need a non-Bedrock vendor
+# (e.g. C6 GPT-4o-mini × InjecAgent, testing whether the Qwen3-32B
+# finding generalises across vendor families). Requires OPENAI_API_KEY
+# in the environment; the Fargate entrypoint forwards whatever the
+# operator passes via the kick-off curl.
+OPENAI_MODELS = {
+    "gpt-4o-mini": "gpt-4o-mini",
+    "gpt-4o": "gpt-4o",
+    "gpt-4.1-mini": "gpt-4.1-mini",
+}
+
 # Region routing per model family. Anthropic inference profiles
 # (eu.anthropic.*) are served from any EU region; Qwen direct
 # foundation models live in eu-central-1 only.
@@ -78,6 +89,32 @@ def region_for_model(model_id: str, default_region: str) -> str:
     if model_id.startswith("qwen."):
         return "eu-central-1"
     return default_region
+
+
+def call_openai(system_prompt: str, user_prompt: str, model_id: str) -> str:
+    """Single OpenAI Chat Completions call. Returns the text completion.
+
+    Reads OPENAI_API_KEY from env. Failures bubble up the same way
+    call_bedrock failures do — one failed case is logged and the
+    aggregator continues; a missing key fails the whole cell early.
+    """
+    from openai import OpenAI
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY not set — required for OpenAI model. Pass "
+            "via the Fargate kick-off curl env vars."
+        )
+    client = OpenAI(api_key=api_key, organization=os.environ.get("OPENAI_ORGANIZATION"))
+    completion = client.chat.completions.create(
+        model=model_id,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0,
+    )
+    return completion.choices[0].message.content
 
 
 def call_bedrock(system_prompt: str, user_prompt: str, model_id: str, region: str) -> str:
@@ -152,6 +189,12 @@ def predict_one_case(
         available_tool_names=available_tool_names,
         agent_scratchpad=agent_scratchpad,
     )
+    # OpenAI model ids in this runner are bare ("gpt-4o-mini") whereas
+    # Bedrock ids carry a vendor prefix ("eu.anthropic.*", "qwen.*").
+    # Use that as the routing signal — keeps the runner backend-agnostic
+    # without threading args.backend down into every call site.
+    if "." not in model_id:
+        return call_openai(system_prompt, user_prompt_filled, model_id)
     return call_bedrock(system_prompt, user_prompt_filled, model_id, region)
 
 
@@ -179,7 +222,7 @@ def screen_via_promptarmor(text: str, task_context: str, opts: dict[str, Any]) -
             f"{opts['url'].rstrip('/')}/screen",
             json=body,
             headers=headers,
-            timeout=30,
+            timeout=90,
             verify=opts.get("verify_tls", True),
         )
         resp.raise_for_status()
@@ -460,9 +503,11 @@ def run_setting(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="InjecAgent runner with PromptArmor / Dredd defences")
-    parser.add_argument("--backend", choices=["bedrock"], default="bedrock",
-                        help="Only Bedrock supported for now.")
-    parser.add_argument("--model", choices=list(BEDROCK_MODELS.keys()), required=True)
+    parser.add_argument("--backend", choices=["bedrock", "openai"], default="bedrock",
+                        help="Agent backend. OpenAI requires OPENAI_API_KEY in env.")
+    parser.add_argument("--model",
+                        choices=list(BEDROCK_MODELS.keys()) + list(OPENAI_MODELS.keys()),
+                        required=True)
     parser.add_argument("--aws-region", default=os.environ.get("AWS_REGION", "eu-west-2"))
     parser.add_argument("--setting", choices=["base", "enhanced"], default="base",
                         help="InjecAgent: base = baseline injection, enhanced = harder.")
@@ -493,7 +538,14 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    model_id = BEDROCK_MODELS[args.model]
+    if args.backend == "openai":
+        if args.model not in OPENAI_MODELS:
+            parser.error(f"--model {args.model} is not in OPENAI_MODELS")
+        model_id = OPENAI_MODELS[args.model]
+    else:
+        if args.model not in BEDROCK_MODELS:
+            parser.error(f"--model {args.model} is not in BEDROCK_MODELS")
+        model_id = BEDROCK_MODELS[args.model]
     pa_opts: dict[str, Any] | None = None
     if args.promptarmor_backend:
         if not args.promptarmor_model:

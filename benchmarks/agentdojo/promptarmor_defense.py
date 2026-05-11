@@ -56,9 +56,11 @@ class PromptArmorDefense(BasePipelineElement):
         api_key: Bearer token for the hook server's auth gate.
             If unset, requests are sent without an Authorization header
             (works when DREDD_AUTH_MODE=off or =optional).
-        timeout: Per-call HTTP timeout in seconds; default 30 to cover
-            slow Bedrock judges. The /screen endpoint internally caps
-            content size at 32 KB.
+        timeout: Per-call HTTP timeout in seconds; default 90. Sized to
+            cover Bedrock Sonnet latency tails when multiple AgentDojo
+            runners hit the same hook container concurrently — 30s
+            fail-opened on Phase B PromptArmor cells. The /screen
+            endpoint internally caps content size at 32 KB.
     """
 
     name = "promptarmor"
@@ -70,7 +72,7 @@ class PromptArmorDefense(BasePipelineElement):
         model: str = "eu.anthropic.claude-sonnet-4-6",
         run_id: str | None = None,
         api_key: str | None = None,
-        timeout: float = 30.0,
+        timeout: float = 90.0,
         verify_tls: bool = True,
     ) -> None:
         if backend not in ("openai", "bedrock"):
