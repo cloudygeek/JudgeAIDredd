@@ -29,6 +29,8 @@ import requests
 
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.functions_runtime import EmptyEnv, Env, FunctionsRuntime
+
+from dredd_defense import DreddUnavailableError, _DreddFailureGate
 from agentdojo.types import (
     ChatMessage,
     text_content_block_from_string,
@@ -133,6 +135,7 @@ class PromptArmorDefense(BasePipelineElement):
             )
             resp.raise_for_status()
             result = resp.json()
+            _DreddFailureGate.record_success()
             elapsed_ms = (time.time() - start) * 1000
             self.stats["total_latency_ms"] += elapsed_ms
             self.stats["screened"] += 1
@@ -146,9 +149,12 @@ class PromptArmorDefense(BasePipelineElement):
             elif verdict == "parse_error":
                 self.stats["parse_error"] += 1
             return result
+        except DreddUnavailableError:
+            raise
         except Exception as e:
             self.stats["errors"] += 1
             logger.warning(f"PromptArmor /screen failed: {e}")
+            _DreddFailureGate.record_failure("/screen", str(e))
             # Fail-open: pass the original content through. This matches
             # the PromptArmorBaseline class's behaviour on a backend
             # network error and keeps the run unblocked. Dropped from

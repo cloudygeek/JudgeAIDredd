@@ -57,6 +57,44 @@ else:
 
 logger = logging.getLogger(__name__)
 
+
+class DreddUnavailableError(RuntimeError):
+    """Raised when consecutive Dredd hook calls have failed past the gate.
+
+    Phase C (2026-05-11) discovered that a hung production hook would
+    silently fail-open every /screen and /evaluate call, producing a
+    cell of bare-agent ASR with the defence label still attached. The
+    gate aborts the cell cleanly so the operator can triage instead of
+    the runner happily reporting junk numbers hours later.
+    """
+
+
+# Per-cell error tracker — reset by run_setting() at the start of each
+# cell so a previous cell's outage doesn't carry forward. The gate is
+# checked inside screen_via_promptarmor() and evaluate_via_dredd();
+# after MAX_DREDD_FAILURES consecutive failures, raise
+# DreddUnavailableError and the cell aborts. Default 5 — short enough
+# to catch a complete outage fast (5 failed cases × ~15s = <2 min) but
+# long enough to absorb a single transient ALB hiccup.
+MAX_DREDD_FAILURES = int(os.environ.get("MAX_DREDD_FAILURES", "5"))
+_consecutive_dredd_failures = 0
+
+
+def _record_dredd_failure(endpoint: str, err: str) -> None:
+    global _consecutive_dredd_failures
+    _consecutive_dredd_failures += 1
+    if _consecutive_dredd_failures >= MAX_DREDD_FAILURES:
+        raise DreddUnavailableError(
+            f"{_consecutive_dredd_failures} consecutive Dredd "
+            f"{endpoint} failures (last: {err}); aborting cell. "
+            f"Triage the hook before re-running."
+        )
+
+
+def _record_dredd_success() -> None:
+    global _consecutive_dredd_failures
+    _consecutive_dredd_failures = 0
+
 # Bedrock model registry — matches the AgentDojo runner's keys so the
 # entrypoint can pass through the same --model values.
 BEDROCK_MODELS = {
@@ -227,14 +265,18 @@ def screen_via_promptarmor(text: str, task_context: str, opts: dict[str, Any]) -
         )
         resp.raise_for_status()
         result = resp.json()
+        _record_dredd_success()
         return result.get("sanitised", text), {
             "verdict": result.get("verdict", "clean"),
             "latency_ms": result.get("latency_ms"),
             "tokens": result.get("tokens"),
             "sanitisation_failed": result.get("sanitisation_failed", False),
         }
+    except DreddUnavailableError:
+        raise
     except Exception as e:
         logger.warning(f"PromptArmor /screen failed: {e}")
+        _record_dredd_failure("/screen", str(e))
         return text, {"verdict": "error", "error": str(e)}
 
 
@@ -287,6 +329,7 @@ def evaluate_via_dredd(user_instruction: str, tool_name: str, tool_input: dict[s
         )
         r2.raise_for_status()
         result = r2.json()
+        _record_dredd_success()
         meta = result.get("_meta", {})
         hook_output = result.get("hookSpecificOutput", {})
         return {
@@ -296,8 +339,11 @@ def evaluate_via_dredd(user_instruction: str, tool_name: str, tool_input: dict[s
             "judgeVerdict": meta.get("judgeVerdict"),
             "evaluationMs": meta.get("evaluationMs"),
         }
+    except DreddUnavailableError:
+        raise
     except Exception as e:
         logger.warning(f"Dredd /evaluate failed: {e}")
+        _record_dredd_failure("/evaluate", str(e))
         return {"decision": "error", "reason": str(e), "stage": "error"}
 
 
@@ -319,6 +365,12 @@ def run_setting(
     test_file = HERE / "data" / f"test_cases_{attack}_{setting}.json"
     with open(test_file) as f:
         cases = json.load(f)
+
+    # Reset the per-cell Dredd error counter so a previous cell's
+    # transient outage doesn't carry forward — each cell gets its
+    # own MAX_DREDD_FAILURES budget.
+    global _consecutive_dredd_failures
+    _consecutive_dredd_failures = 0
 
     system_prompt, user_prompt = PROMPT_DICT["InjecAgent"]
     tool_dict = get_tool_dict()
@@ -494,6 +546,11 @@ def run_setting(
                         f"succ={stats['succ']} unsucc={stats['unsucc']} "
                         f"invalid={stats['invalid']}"
                     )
+            except DreddUnavailableError:
+                # Hook outage — fail the whole cell loudly so the
+                # operator triages instead of getting a cell of
+                # fail-open junk.
+                raise
             except Exception as e:
                 logger.warning(f"  case {i} failed: {e}")
                 continue
@@ -602,10 +659,24 @@ def main() -> int:
         actual_region = region_for_model(model_id, args.aws_region)
         if actual_region != args.aws_region:
             logger.info(f"  routing {model_id} via {actual_region} (overriding {args.aws_region})")
-        stats = run_setting(
-            args.setting, attack, model_id, actual_region,
-            out_file, pa_opts, dredd_opts, skip_existing=not args.force_rerun,
-        )
+        try:
+            stats = run_setting(
+                args.setting, attack, model_id, actual_region,
+                out_file, pa_opts, dredd_opts, skip_existing=not args.force_rerun,
+            )
+        except DreddUnavailableError as e:
+            logger.error(f"ABORTING cell — {e}")
+            summary["aborted"] = {
+                "reason": "dredd_unavailable",
+                "message": str(e),
+                "attack": attack,
+            }
+            # Persist the partial summary so the operator has the
+            # cell shape on disk even when the run died mid-cell.
+            summary_path = logdir / f"summary_{args.setting}.json"
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_path.write_text(json.dumps(summary, indent=2))
+            return 2
         summary["cells"].append(stats)
 
     # Aggregate score using upstream's get_score (expects dh + ds files).

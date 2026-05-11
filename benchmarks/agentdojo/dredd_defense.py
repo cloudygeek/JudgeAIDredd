@@ -25,6 +25,43 @@ from agentdojo.types import (
 logger = logging.getLogger(__name__)
 
 
+class DreddUnavailableError(RuntimeError):
+    """Raised after MAX_DREDD_FAILURES consecutive Dredd hook failures.
+
+    Prevents a hung production hook from silently fail-opening every
+    /evaluate or /screen call and returning bare-agent ASR with a
+    defence label — the bug that bit Phase C C6 on 2026-05-11.
+
+    AgentDojo doesn't have a per-cell entry point we can wrap, so the
+    exception bubbles all the way up — caller (the entrypoint script)
+    sees a non-zero exit and can triage.
+    """
+
+
+class _DreddFailureGate:
+    """Per-process consecutive-failure tracker shared between
+    JudgeDreddDefense and PromptArmorDefense. A success on either path
+    resets the count, since both are signals the hook is alive."""
+
+    import os
+    _max = int(os.environ.get("MAX_DREDD_FAILURES", "5"))
+    _consecutive = 0
+
+    @classmethod
+    def record_failure(cls, endpoint: str, err: str) -> None:
+        cls._consecutive += 1
+        if cls._consecutive >= cls._max:
+            raise DreddUnavailableError(
+                f"{cls._consecutive} consecutive Dredd {endpoint} "
+                f"failures (last: {err}); aborting cell. Triage the "
+                f"hook before re-running."
+            )
+
+    @classmethod
+    def record_success(cls) -> None:
+        cls._consecutive = 0
+
+
 class JudgeDreddDefense(BasePipelineElement):
     """PreToolUse defense that calls Judge Dredd's HTTP API.
 
@@ -147,6 +184,7 @@ class JudgeDreddDefense(BasePipelineElement):
             )
             resp.raise_for_status()
             result = resp.json()
+            _DreddFailureGate.record_success()
             elapsed_ms = (time.time() - start) * 1000
             self.stats["total_latency_ms"] += elapsed_ms
             self.stats["evaluated"] += 1
@@ -161,9 +199,12 @@ class JudgeDreddDefense(BasePipelineElement):
                 "judgeVerdict": meta.get("judgeVerdict"),
                 "evaluationMs": meta.get("evaluationMs"),
             }
+        except DreddUnavailableError:
+            raise
         except Exception as e:
             self.stats["errors"] += 1
             logger.warning(f"Dredd evaluation failed for {tool_name}: {e}")
+            _DreddFailureGate.record_failure("/evaluate", str(e))
             return {"permissionDecision": "allow", "reason": str(e), "stage": "error"}
 
     def query(
