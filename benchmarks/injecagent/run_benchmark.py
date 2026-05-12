@@ -107,6 +107,12 @@ BEDROCK_MODELS = {
     # defence effectiveness. Direct foundation model on Bedrock
     # eu-central-1 (no inference profile prefix).
     "qwen3-32b": "qwen.qwen3-32b-v1:0",
+    # Qwen3-235B (A22B 2507) — larger Qwen for the within-Qwen-family
+    # scale generalisation test. Same eu-central-1 region as 32B.
+    # Model id matches archive/tests/executor-converse.ts and
+    # archive/tests/runner-agentlab.ts so we stay consistent across
+    # the codebase's existing references.
+    "qwen3-235b": "qwen.qwen3-235b-a22b-2507-v1:0",
 }
 
 # OpenAI model registry — for cells where we need a non-Bedrock vendor
