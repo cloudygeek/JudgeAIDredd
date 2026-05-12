@@ -252,6 +252,20 @@ Session logs only survive container restart if `$DATA_DIR` is backed by a real v
 
 The sandbox server's **IAM task role and Fargate task definition live in the CKO AI Sandbox platform's IaC**, not in this repo.
 
+## Trust modes — decision semantics on `permissionDecision`
+
+When the three-stage pipeline returns `!allowed`, the response shape depends on the trust mode:
+
+| Mode | `permissionDecision` | Effect | Use case |
+|---|---|---|---|
+| **autonomous** | `deny` | Hard-block — the agent gets a rejection it must work around | No human in the loop; Dredd enforces |
+| **interactive** | `ask` | Surfaced to the user as a permission prompt with Dredd's reasoning | Human-in-the-loop; Dredd warns, user adjudicates |
+| **learn** | (no decision returned) | Claude Code falls back to user permission config; Dredd logs only | Shadow mode for measurement |
+
+The `ask` decision in interactive mode reads `permissionDecisionReason` as a user-facing warning (e.g. "this tool call looks suspicious. Similarity 0.07 < threshold 0.15. Review and approve only if this matches your intent.").
+
+The catastrophic case (session-locked after N consecutive hijack verdicts) hard-denies in *all* modes — at that point Dredd no longer trusts the session at all and the user must explicitly flip the per-session mode to learn or autonomous via the dashboard.
+
 ## Drift thresholds
 
 Configurable in tracker: `<0.2` on-task, `0.2–0.3` scope-creep (inject reminder), `0.3–0.5` drifting (escalate to judge), `>0.5` hijacked (block).

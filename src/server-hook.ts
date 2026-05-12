@@ -688,11 +688,18 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
           ? "backfill from transcript file failed"
           : "no transcript provided";
       if (policyOnly.decision === "deny" && !isLearn) {
+        // Interactive mode surfaces as "ask" (user adjudicates),
+        // autonomous mode hard-denies. Same advisory-vs-enforcing
+        // split as the main /evaluate path below.
+        const decision = mode === "interactive" ? "ask" : "deny";
+        const reason = mode === "interactive"
+          ? `${DREDD_TAG} (no goal yet, ${noGoalDetail}): policy flagged this as ${policyOnly.reason}. Approve only if this matches your intent.`
+          : `${DREDD_TAG} (no goal, ${noGoalDetail}): ${policyOnly.reason}`;
         return json(res, 200, {
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
-            permissionDecision: "deny",
-            permissionDecisionReason: `${DREDD_TAG} (no goal, ${noGoalDetail}): ${policyOnly.reason}`,
+            permissionDecision: decision,
+            permissionDecisionReason: reason,
           },
           _meta: { allowed: false, stage: "policy-deny", reason: policyOnly.reason, noGoalDetail },
         });
@@ -867,6 +874,25 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   if (isLearn) {
     // Shadow mode — no decision. Claude Code uses user permissions config.
   } else if (!result.allowed) {
+    // Decision shape varies by trust mode:
+    //
+    //   autonomous → permissionDecision: "deny" — Dredd unilaterally
+    //     blocks. The agent has no human in the loop, so a verdict
+    //     of "this is suspicious" must be enforced.
+    //
+    //   interactive → permissionDecision: "ask" — surface the verdict
+    //     to the user as a permission dialog with Dredd's reasoning.
+    //     The user adjudicates: allow once / always / block. This
+    //     respects the "human in the loop" contract of interactive
+    //     mode — Dredd warns, the user decides. (Per contribution-3
+    //     of the Springer revision: interactive mode is advisory,
+    //     autonomous is enforcing.)
+    //
+    //   The session-locked path (justLocked) still hard-denies
+    //   because that's the catastrophic case — N consecutive judge
+    //   hijack verdicts means we no longer trust this session at all.
+    //   In interactive mode the user could still flip the
+    //   per-session mode to learn or autonomous via the dashboard.
     if (lockState?.justLocked) {
       hookResponse.hookSpecificOutput = {
         hookEventName: "PreToolUse",
@@ -874,7 +900,22 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
         permissionDecisionReason: `${DREDD_TAG}: ${LOCKED_MESSAGE}`,
       };
       hookResponse.systemMessage = LOCKED_MESSAGE;
+    } else if (mode === "interactive") {
+      // Surface as an "ask" — Claude Code shows the user a
+      // permission prompt with our reason. The reason text is
+      // user-facing, so phrase it accordingly: lead with the
+      // suspicion, end with what to check.
+      const askReason =
+        `${DREDD_TAG}: this tool call looks suspicious. ${result.reason}. ` +
+        `Review and approve only if this matches your intent.`;
+      hookResponse.hookSpecificOutput = {
+        hookEventName: "PreToolUse",
+        permissionDecision: "ask",
+        permissionDecisionReason: askReason,
+      };
     } else {
+      // Autonomous (or any other non-interactive non-learn mode):
+      // hard-deny with a system message the agent can read.
       const currentGoal = interceptor.getCurrentGoal(session_id)
         || (await tracker.getSessionContext(session_id)).originalTask
         || "unknown";
