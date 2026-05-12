@@ -337,13 +337,31 @@ export type FeedEntry = {
   /**
    * Interactive/learn intent stack classification for this turn —
    * "original" / "queued" / "confirmation" / "new-task" / "continuation"
-   * / "open-followup". Absent on autonomous-mode entries. Lets the
-   * dashboard live feed mark each /intent with a badge showing whether
-   * the goal was appended or replaced.
+   * / "open-followup" / "sub-task" / "replacement" / "revisit". Absent
+   * on autonomous-mode entries. Lets the dashboard live feed mark each
+   * /intent with a badge showing whether the goal was appended or
+   * replaced.
    */
   intentKind?: string;
   /** Stack length after this update, when applicable. */
   intentStackSize?: number;
+  /** Step 4 telemetry (history-active model). Set on type="intent-classify"
+   *  entries that record the embedding-fallback verdict and on
+   *  type="intent-classify-llm" entries that record the async LLM verdict
+   *  + whether it overrode the embedding decision.
+   *
+   *  classifierSource — which classifier produced this entry's kind.
+   *  classifierConfidence — LLM's stated confidence; absent for embedding.
+   *  classifierLatencyMs — round-trip time for the LLM call.
+   *  classifierOverridden — true when the LLM overruled the embedding.
+   *  classifierEmbeddingKind — what the embedding fallback said (only
+   *    set when LLM disagreed, so the dashboard can show before/after).
+   */
+  classifierSource?: "embedding" | "llm" | "llm-confirmed" | "embedding-fallback-timeout";
+  classifierConfidence?: "high" | "medium" | "low";
+  classifierLatencyMs?: number;
+  classifierOverridden?: boolean;
+  classifierEmbeddingKind?: string;
 };
 
 export const feed: FeedEntry[] = [];

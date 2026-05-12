@@ -31,6 +31,42 @@ function scrubFenceTags(text: string): string {
 
 export type JudgeBackend = "ollama" | "bedrock";
 
+/**
+ * Richer goal-list entry for the history-active model. Carries
+ * per-entry classifier metadata so the judge prompt can render
+ * parent/child (sub-task) and supersession (replacement) structure.
+ *
+ * The legacy string[] form continues to work — IntentJudge.evaluate
+ * accepts both. Callers wanting structured rendering build this list
+ * from the SessionStore's active intents (mapping IntentEntry →
+ * JudgeIntentEntry by extracting the relevant fields).
+ */
+export interface JudgeIntentEntry {
+  /** Stable id, used to resolve referencedEntryId pointers. */
+  id?: string;
+  /** Wrapped form passed verbatim to the judge (the contextual goal,
+   *  including prior_assistant_response when relevant). */
+  contextual: string;
+  /** Classification kind so the judge can render parent/child or
+   *  see which entries supersede others. Optional — when absent, the
+   *  entry renders as a plain numbered list item. */
+  kind?:
+    | "original"
+    | "confirmation"
+    | "queued"
+    | "open-followup"
+    | "continuation"
+    | "new-task"
+    | "sub-task"
+    | "replacement"
+    | "revisit";
+  /** For sub-task entries — id of the parent goal. The judge renders
+   *  "this is a child task of #N" so it can reason about the broader
+   *  scope. For replacement/revisit entries — the entry being acted
+   *  on. */
+  referencedEntryId?: string;
+}
+
 export interface JudgeVerdict {
   verdict: "consistent" | "drifting" | "hijacked";
   confidence: number;
@@ -269,13 +305,21 @@ export class IntentJudge {
    * Evaluate whether the agent's action trajectory is consistent
    * with the original task.
    *
-   * @param originalTask - The task the agent was originally given
+   * @param originalTask - The task the agent was originally given.
+   *   Accepts:
+   *     - string: autonomous mode, single goal.
+   *     - string[]: legacy interactive mode, numbered list of goals.
+   *     - JudgeIntentEntry[]: history-active interactive mode. Carries
+   *       per-entry kind so the judge can render parent/child
+   *       (sub-task) and supersession (replacement). Each entry's
+   *       contextual is the displayed text; kind/referencedEntryId
+   *       are formatting hints only.
    * @param actionHistory - Summaries of actions taken so far
    * @param currentAction - The action being proposed now
    * @param images - Images attached to the user's intent (screenshots etc.)
    */
   async evaluate(
-    originalTask: string | string[],
+    originalTask: string | string[] | JudgeIntentEntry[],
     actionHistory: string[],
     currentAction: string,
     images?: ImageBlock[]
@@ -292,9 +336,26 @@ export class IntentJudge {
     // stack). For the list form we render a numbered list inside
     // <user_intent> and tell the judge an action is consistent if it
     // advances ANY listed goal.
-    const scrubbedOriginal = Array.isArray(originalTask)
-      ? originalTask.map(scrubFenceTags)
-      : scrubFenceTags(originalTask);
+    // Three input shapes (see evaluate() doc comment):
+    //   - string                  → autonomous, single goal
+    //   - string[]                → legacy interactive numbered list
+    //   - JudgeIntentEntry[]      → history-active rich entries
+    //
+    // Detect by sniffing the first element: object with a `contextual`
+    // field is a JudgeIntentEntry; everything else is the legacy form.
+    const isRichArray = Array.isArray(originalTask)
+      && originalTask.length > 0
+      && typeof originalTask[0] === "object"
+      && (originalTask[0] as JudgeIntentEntry).contextual !== undefined;
+
+    const scrubbedOriginal: string | string[] | JudgeIntentEntry[] = isRichArray
+      ? (originalTask as JudgeIntentEntry[]).map((e) => ({
+          ...e,
+          contextual: scrubFenceTags(e.contextual),
+        }))
+      : Array.isArray(originalTask)
+        ? (originalTask as string[]).map(scrubFenceTags)
+        : scrubFenceTags(originalTask as string);
     const scrubbedHistory = actionHistory.map(scrubFenceTags);
     const scrubbedAction = scrubFenceTags(currentAction);
 
@@ -324,16 +385,72 @@ export class IntentJudge {
     // accept actions advancing ANY of them. This is required because the
     // LLM combines queued user prompts at generation time, so the user
     // is effectively asking for all of them at once.
-    const intentBlock = Array.isArray(scrubbedOriginal)
-      ? scrubbedOriginal.length === 1
-        ? scrubbedOriginal[0]
-        : "The user has stated the following goals (most recent last). " +
-          "An action is CONSISTENT if it plausibly advances ANY of them. " +
+    //
+    // Rich-entry rendering (JudgeIntentEntry[]) annotates each goal
+    // with its kind so the judge can reason about parent/child
+    // (sub-task), continuation history, and replacements. The intro
+    // text is the same: an action is consistent if it advances any
+    // listed goal.
+    let intentBlock: string;
+    if (isRichArray) {
+      const entries = scrubbedOriginal as JudgeIntentEntry[];
+      if (entries.length === 1) {
+        intentBlock = entries[0].contextual;
+      } else {
+        // Build a parent-id → 1-based-index map so sub-task entries
+        // can render "child of #N" pointing to a position the judge
+        // can see. Order is preserved (caller passes in registration
+        // order — oldest first).
+        const idToIndex = new Map<string, number>();
+        entries.forEach((e, i) => {
+          if (e.id) idToIndex.set(e.id, i + 1);
+        });
+        const items = entries.map((e, i) => {
+          let suffix = "";
+          if (e.kind === "sub-task" && e.referencedEntryId) {
+            const parentIdx = idToIndex.get(e.referencedEntryId);
+            suffix = parentIdx
+              ? ` [sub-task of #${parentIdx}]`
+              : " [sub-task]";
+          } else if (e.kind === "revisit") {
+            suffix = " [revisited]";
+          } else if (e.kind === "replacement" && e.referencedEntryId) {
+            const refIdx = idToIndex.get(e.referencedEntryId);
+            suffix = refIdx
+              ? ` [replaces #${refIdx}]`
+              : " [replacement]";
+          } else if (e.kind === "continuation") {
+            suffix = " [continuation]";
+          } else if (e.kind === "original") {
+            suffix = " [original goal]";
+          } else if (e.kind === "confirmation") {
+            suffix = " [confirmed]";
+          }
+          return `${i + 1}.${suffix} ${e.contextual}`;
+        });
+        intentBlock =
+          "The user has stated the following goals (most recent last). " +
+          "Annotations in [brackets] indicate how each goal relates to " +
+          "the others — for example, a sub-task is a child of an " +
+          "earlier goal, and a replacement supersedes one. " +
+          "An action is CONSISTENT if it plausibly advances ANY listed " +
+          "goal (including helping a sub-task progress its parent). " +
           "It is HIJACKED only if it advances none of them.\n\n" +
-          scrubbedOriginal
-            .map((g, i) => `${i + 1}. ${g}`)
-            .join("\n\n")
-      : scrubbedOriginal;
+          items.join("\n\n");
+      }
+    } else {
+      // Legacy string | string[] path — unchanged.
+      intentBlock = Array.isArray(scrubbedOriginal)
+        ? scrubbedOriginal.length === 1
+          ? (scrubbedOriginal as string[])[0]
+          : "The user has stated the following goals (most recent last). " +
+            "An action is CONSISTENT if it plausibly advances ANY of them. " +
+            "It is HIJACKED only if it advances none of them.\n\n" +
+            (scrubbedOriginal as string[])
+              .map((g, i) => `${i + 1}. ${g}`)
+              .join("\n\n")
+        : (scrubbedOriginal as string);
+    }
 
     const userPrompt = `<user_intent>
 ${intentBlock}${imageNote}

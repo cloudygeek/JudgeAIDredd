@@ -377,6 +377,20 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
       `stack=${stackUpdate.stack.length}: ${stackPrompts})`
     );
 
+    // Telemetry: emit one feed entry per /intent recording the
+    // embedding-fallback verdict. The async LLM override (below)
+    // emits a follow-up entry with classifierOverridden flag set.
+    addFeed({
+      timestamp: new Date().toISOString(),
+      type: "intent-classify",
+      sessionId: session_id,
+      ownerSub: identity.ownerSub,
+      authStage: authStageForFeed(identity),
+      intentKind: stackUpdate.kind,
+      intentStackSize: stackUpdate.stack.length,
+      classifierSource: "embedding",
+    });
+
     // Async LLM classifier override. Spawn a Bedrock call to second-
     // guess the embedding fallback. /intent has already returned to
     // the caller; this happens in the background. /evaluate awaits
@@ -402,6 +416,8 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
       const newEntryId = stackUpdate.newEntryId;
       const embeddingKind = stackUpdate.kind;
       const turnState = stackUpdate.turnState;
+      const ownerSub = identity.ownerSub;
+      const authStageForLater = authStageForFeed(identity);
       const classifierPromise = (async () => {
         const active = await tracker.getActiveIntents(session_id);
         const history = await tracker.getIntentHistory(session_id);
@@ -424,6 +440,35 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
             `conf=${verdict.confidence} (${verdict.durationMs}ms) overridden=${result.overridden} ` +
             `(${result.reason})`,
           );
+          // Telemetry: record what the LLM said and whether it changed the
+          // active set. Dashboards aggregate by classifierOverridden to
+          // measure the embedding-vs-LLM disagreement rate.
+          addFeed({
+            timestamp: new Date().toISOString(),
+            type: "intent-classify-llm",
+            sessionId: session_id,
+            ownerSub,
+            authStage: authStageForLater,
+            intentKind: verdict.kind,
+            classifierSource: result.overridden ? "llm" : "llm-confirmed",
+            classifierConfidence: verdict.confidence,
+            classifierLatencyMs: verdict.durationMs,
+            classifierOverridden: result.overridden,
+            classifierEmbeddingKind: result.overridden ? embeddingKind : undefined,
+          });
+        } else {
+          // LLM never returned (timeout, parse error, Bedrock outage).
+          // Embedding fallback persists; record the failure for telemetry.
+          addFeed({
+            timestamp: new Date().toISOString(),
+            type: "intent-classify-llm",
+            sessionId: session_id,
+            ownerSub,
+            authStage: authStageForLater,
+            intentKind: embeddingKind,
+            classifierSource: "embedding-fallback-timeout",
+            classifierOverridden: false,
+          });
         }
         return verdict;
       })();

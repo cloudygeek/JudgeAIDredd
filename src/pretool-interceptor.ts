@@ -420,13 +420,20 @@ export class PreToolInterceptor {
     // freshest (last) entry — better than s.originalTask, which on
     // long-lived sessions is the turn-1 prompt and may be wildly
     // out of date. As a final fallback, use s.originalTask.
-    let judgeIntent: string | string[];
+    let judgeIntent: string | string[] | import("./intent-judge.js").JudgeIntentEntry[];
     if (activeIntents && activeIntents.length > 0) {
-      const liveContextuals = activeIntents
-        .filter((e) => !e.resolved)
-        .map((e) => e.contextual);
-      if (liveContextuals.length > 0) {
-        judgeIntent = liveContextuals;
+      const liveEntries = activeIntents.filter((e) => !e.resolved);
+      if (liveEntries.length > 0) {
+        // Rich rendering: pass kind + parent pointers so the judge
+        // can render sub-task / replacement / revisit annotations.
+        // Falls back to plain numbered-list when these fields are
+        // absent (legacy entries pre history-active migration).
+        judgeIntent = liveEntries.map((e) => ({
+          id: e.id,
+          contextual: e.contextual,
+          kind: e.kind,
+          referencedEntryId: e.referencedEntryId,
+        }));
       } else {
         // Everything resolved (Stop fired, no follow-up intent yet).
         // Use the most recent stack entry rather than s.originalTask
