@@ -198,13 +198,16 @@ data "aws_iam_policy_document" "dashboard_task" {
     ]
   }
 
-  // Dashboard mints, lists, revokes API keys.
+  // Dashboard mints, lists, revokes API keys. Scan is required for the
+  // admin "all users' keys" view in /api/keys — without it, admins fall
+  // back to listByOwner and only see their own keys.
   statement {
     sid    = "ApiKeysTableReadWrite"
     effect = "Allow"
     actions = [
       "dynamodb:GetItem",
       "dynamodb:Query",
+      "dynamodb:Scan",
       "dynamodb:PutItem",
       "dynamodb:UpdateItem",
       "dynamodb:DeleteItem",

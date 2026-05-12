@@ -522,9 +522,22 @@ export class DynamoSessionStore implements SessionStore {
     if (meta?.originalIntent?.prompt && !eph.driftDetector) {
       eph.driftDetector = new DriftDetector(this.embeddingModel);
     }
-    if (meta?.originalIntent?.prompt) {
-      // Re-register the goal so getHistory() has a sane starting point.
-      await eph.driftDetector.registerGoal(meta.originalIntent.prompt as string);
+    // Warm the goal embedding so the next PreToolUse on a cold container
+    // has a baseline to compare against. Skipped on the dashboard role —
+    // it only reads sessions for rendering and never calls into drift
+    // evaluation, so the Bedrock embed would be pure waste (and its IAM
+    // role deliberately lacks bedrock:InvokeModel). Best-effort on the
+    // hook too: a transient embed failure shouldn't break loadSession;
+    // the drift detector just stays unprimed until the next /intent.
+    if (meta?.originalIntent?.prompt && process.env.DREDD_ROLE !== "dashboard") {
+      try {
+        await eph.driftDetector.registerGoal(meta.originalIntent.prompt as string);
+      } catch (err) {
+        console.warn(
+          `[loadSession] registerGoal failed for ${sessionId} — drift detector unprimed:`,
+          (err as Error)?.message ?? err,
+        );
+      }
     }
 
     const toolHistory: ToolCallRecord[] = tools.map((t) => ({

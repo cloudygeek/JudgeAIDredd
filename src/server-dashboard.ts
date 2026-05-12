@@ -344,6 +344,10 @@ const server = createServer(async (req, res) => {
       const principal = await requireClerkAuth(req, res);
       if (!principal) return;
       if (req.method === "GET") {
+        // TODO: replace the Scan with a Query against a dedicated GSI
+        // (e.g. gsi2pk = "KEY") so the admin view scales as the table
+        // grows. Scan cost is linear in table size and we'll feel it
+        // once api-keys gets past a few thousand rows.
         // Admin view tries Scan; if the task role lacks dynamodb:Scan
         // (deliberately, in least-privilege deployments) we fall back
         // to listByOwner — admins still see their own keys, just not
