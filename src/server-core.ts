@@ -1257,6 +1257,26 @@ export function classifyIntentByEmbedding(
 }
 
 /**
+ * Downgrade a history-active classifier verdict to a legacy-compatible
+ * kind. Used when INTENT_HISTORY_MODE=legacy (the default) so the
+ * new sub-task / replacement / revisit kinds don't leak into the
+ * write path or the judge prompt for sessions on legacy. The mapping
+ * is conservative: each new kind collapses to whichever legacy kind
+ * produces the closest active-set behaviour.
+ */
+function downgradeKindForLegacy(
+  v: EmbeddingClassifierVerdict,
+): EmbeddingClassifierVerdict {
+  if (v.kind === "sub-task" || v.kind === "replacement") {
+    return { kind: "continuation", reason: `[legacy mode] downgraded from ${v.kind}` };
+  }
+  if (v.kind === "revisit") {
+    return { kind: "new-task", reason: `[legacy mode] downgraded from revisit` };
+  }
+  return v;
+}
+
+/**
  * History-active equivalent of trimStack. Operates on the resolved
  * active set (entries already materialised from history+activeIntentIds)
  * and decides which to keep:
@@ -1338,6 +1358,14 @@ export interface IntentStackUpdateResult {
  * @param prevTimings        markers BEFORE we noted this UserPromptSubmit
  * @param embeddingModel     CONFIG.embeddingModel
  * @param images             attached images, if any
+ * @param historyActiveMode  when true (INTENT_HISTORY_MODE=history-active),
+ *                            the embedding classifier may produce
+ *                            sub-task / replacement / revisit kinds.
+ *                            When false (default legacy), only the
+ *                            original / continuation / new-task /
+ *                            queued / open-followup / confirmation
+ *                            kinds are emitted — preserves existing
+ *                            production behaviour exactly.
  */
 export async function applyIntentStackUpdate(
   store: SessionStore,
@@ -1352,6 +1380,7 @@ export async function applyIntentStackUpdate(
   },
   embeddingModel: string,
   images?: ImageBlock[],
+  historyActiveMode: boolean = false,
 ): Promise<IntentStackUpdateResult> {
   const turnState = deriveTurnState(prevTimings);
   const existing = await store.getActiveIntents(sessionId);
@@ -1429,7 +1458,7 @@ export async function applyIntentStackUpdate(
   // classifier in parallel; if it disagrees at high confidence the
   // active set is updated on the next /evaluate.
   const history = await store.getIntentHistory(sessionId);
-  const verdict = classifyIntentByEmbedding(
+  const rawVerdict = classifyIntentByEmbedding(
     prompt,
     promptEmbedding,
     existing,
@@ -1437,6 +1466,21 @@ export async function applyIntentStackUpdate(
     driftToStackTop,
     turnState,
   );
+  // Step-6 rollout gate. In legacy mode (default) downgrade the new
+  // kinds to their legacy equivalents so observable behaviour matches
+  // the pre-history-active stack:
+  //   - sub-task    -> continuation (parent stays on stack via the
+  //                                   existing continuation path)
+  //   - revisit     -> new-task     (a high-drift prompt back to a
+  //                                   resolved goal looked like a
+  //                                   topic switch in the legacy model)
+  //   - replacement -> continuation (legacy didn't distinguish the
+  //                                   replaced active goal — same
+  //                                   net effect: append + LRU
+  //                                   eventually evicts)
+  const verdict = !historyActiveMode
+    ? downgradeKindForLegacy(rawVerdict)
+    : rawVerdict;
   const kind = verdict.kind;
 
   // Per-kind state transitions on the active set.

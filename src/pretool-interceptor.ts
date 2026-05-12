@@ -235,6 +235,12 @@ export class PreToolInterceptor {
      *  goals and treats actions advancing ANY as consistent. Autonomous
      *  mode passes undefined and gets the single-goal behaviour. */
     activeIntents?: IntentEntry[],
+    /** Step-6 rollout gate. When true, the judge sees rich
+     *  JudgeIntentEntry[] with kind annotations (sub-task / replacement
+     *  / parent pointers). When false (default legacy), the judge sees
+     *  the same plain string[] it always has. Step-5 telemetry runs
+     *  unchanged either way; this only affects judge prompt rendering. */
+    historyActiveJudgeRendering: boolean = false,
   ): Promise<InterceptionResult> {
     const start = Date.now();
     const s = this.getSession(sessionId);
@@ -424,16 +430,21 @@ export class PreToolInterceptor {
     if (activeIntents && activeIntents.length > 0) {
       const liveEntries = activeIntents.filter((e) => !e.resolved);
       if (liveEntries.length > 0) {
-        // Rich rendering: pass kind + parent pointers so the judge
-        // can render sub-task / replacement / revisit annotations.
-        // Falls back to plain numbered-list when these fields are
-        // absent (legacy entries pre history-active migration).
-        judgeIntent = liveEntries.map((e) => ({
-          id: e.id,
-          contextual: e.contextual,
-          kind: e.kind,
-          referencedEntryId: e.referencedEntryId,
-        }));
+        if (historyActiveJudgeRendering) {
+          // Rich rendering: pass kind + parent pointers so the judge
+          // can render sub-task / replacement / revisit annotations.
+          judgeIntent = liveEntries.map((e) => ({
+            id: e.id,
+            contextual: e.contextual,
+            kind: e.kind,
+            referencedEntryId: e.referencedEntryId,
+          }));
+        } else {
+          // Legacy rendering — plain numbered list of contextual
+          // strings. Same shape the judge has always seen for the
+          // interactive intent stack.
+          judgeIntent = liveEntries.map((e) => e.contextual);
+        }
       } else {
         // Everything resolved (Stop fired, no follow-up intent yet).
         // Use the most recent stack entry rather than s.originalTask

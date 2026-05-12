@@ -61,12 +61,35 @@ import {
 // from Claude Code hooks.
 const DASHBOARD_ORIGIN = process.env.DREDD_DASHBOARD_ORIGIN ?? "";
 
-// Async LLM intent classifier — feature-flagged so we can roll out
-// staged: schema first (already in production via main), then embedding
-// fallback (already in production), then async LLM. Default off until
-// step 6 telemetry validates the classifier prompt + override logic.
+// History-active model rollout — top-level flag gating the new
+// intent-classifier behaviour. Layered with INTENT_CLASSIFIER_LLM_ENABLED
+// so we can stage the rollout:
+//
+//   legacy (default):
+//     - Schema layer always runs (Steps 1-2 are behaviour-equivalent;
+//       existing call sites use getActiveIntents/setActiveIntents and
+//       see exactly the legacy stack).
+//     - The new sub-task / replacement / revisit kinds DO NOT fire.
+//     - Judge sees the legacy plain numbered list (no [annotation]
+//       suffixes).
+//     - The async LLM classifier never starts.
+//
+//   history-active:
+//     - The Step-3 embedding classifier produces the new kinds.
+//     - Judge prompt renders parent/child + replacement annotations.
+//     - LLM classifier may run if INTENT_CLASSIFIER_LLM_ENABLED is
+//       also true.
+//
+// Step-6 staged rollout: enable history-active first (cost-neutral —
+// just smarter classification + richer judge prompts). Once telemetry
+// confirms the classification rates look sensible, flip
+// INTENT_CLASSIFIER_LLM_ENABLED to add the LLM safety net.
+export const INTENT_HISTORY_MODE: "legacy" | "history-active" =
+  process.env.INTENT_HISTORY_MODE === "history-active" ? "history-active" : "legacy";
+
 const INTENT_CLASSIFIER_LLM_ENABLED =
-  process.env.INTENT_CLASSIFIER_LLM_ENABLED === "true";
+  process.env.INTENT_CLASSIFIER_LLM_ENABLED === "true"
+  && INTENT_HISTORY_MODE === "history-active";
 const intentClassifier = new IntentClassifier(
   (process.env.INTENT_CLASSIFIER_BACKEND as "bedrock" | "ollama" | undefined) ?? "bedrock",
   process.env.INTENT_CLASSIFIER_MODEL ?? "eu.anthropic.claude-sonnet-4-6",
@@ -343,6 +366,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
       prevTimings,
       CONFIG.embeddingModel,
       transcriptImages,
+      INTENT_HISTORY_MODE === "history-active",
     );
 
     // Re-seed the interceptor's per-session goal state from the stack.
@@ -710,6 +734,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     await tracker.getProjectRoot(session_id),
     mode,
     activeIntents,
+    INTENT_HISTORY_MODE === "history-active",
   );
 
   await tracker.recordToolCall(
@@ -1558,6 +1583,10 @@ export async function main() {
   console.log(`  Session logs:    ${CONFIG.logDir}`);
   console.log(`  Console logs:    ${CONFIG.consoleLogDir}`);
   console.log(`  Dashboard CORS:  ${DASHBOARD_ORIGIN || "(disabled — DREDD_DASHBOARD_ORIGIN unset)"}`);
+  console.log(`  Intent model:    ${INTENT_HISTORY_MODE}` +
+    (INTENT_HISTORY_MODE === "history-active"
+      ? ` (LLM classifier ${INTENT_CLASSIFIER_LLM_ENABLED ? "ON" : "OFF"})`
+      : ` (legacy single-stack — sub-task / replacement / revisit kinds disabled)`));
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`\n  Listening on http://0.0.0.0:${PORT}`);
