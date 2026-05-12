@@ -170,13 +170,24 @@ ANTHROPIC_MODELS = {
     "sonnet": "claude-sonnet-4-6-20250514",
 }
 
-# OpenAI model IDs (used when --backend=openai). Pinned to dated variants
-# to match AgentDojo's published baselines and avoid rolling-alias drift.
+# OpenAI model IDs (used when --backend=openai). The Phase C cross-vendor
+# cells use current rolling aliases (matching the InjecAgent runner
+# registry) so AgentDojo + InjecAgent results are comparable on the
+# same model snapshot. Original AgentDojo-baseline dated variants are
+# kept available under explicit -dated keys for reproducing the
+# published numbers.
+#
 # Qwen entries are served via Ollama's OpenAI-compatible endpoint when
 # OPENAI_BASE_URL points at a local Ollama instance.
 OPENAI_MODELS = {
-    "gpt-4o": "gpt-4o-2024-05-13",
-    "gpt-4o-mini": "gpt-4o-mini-2024-07-18",
+    "gpt-4o": "gpt-4o",
+    "gpt-4o-mini": "gpt-4o-mini",
+    "gpt-4.1-mini": "gpt-4.1-mini",
+    # Dated variants for AgentDojo-baseline reproduction.
+    "gpt-4o-dated": "gpt-4o-2024-05-13",
+    "gpt-4o-mini-dated": "gpt-4o-mini-2024-07-18",
+    # Local Ollama Qwen. Use --backend=bedrock-converse + qwen3-32b
+    # for the Bedrock-served Qwen models in benchmarks.
     "qwen3.5": "qwen3.5:35b",
     "qwen3.6": "qwen3.6:35b",
 }
@@ -345,7 +356,8 @@ def main():
     parser = argparse.ArgumentParser(description="Run AgentDojo benchmark with Judge Dredd defense")
     parser.add_argument("--model", choices=[
         "haiku", "sonnet", "opus", "opus-4-7",
-        "gpt-4o", "gpt-4o-mini",
+        "gpt-4o", "gpt-4o-mini", "gpt-4.1-mini",
+        "gpt-4o-dated", "gpt-4o-mini-dated",
         "qwen3.5", "qwen3.6",
         "qwen3-32b", "qwen3-235b",
     ], default="sonnet")
