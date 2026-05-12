@@ -999,6 +999,18 @@ const server = createServer(async (req, res) => {
   li code { color: #d29922; }
   a { color: #58a6ff; }
   .muted { color: #8b949e; font-size: 12px; margin-top: 24px; line-height: 1.6; }
+  .mode-select {
+    background: #0d1117; color: #c9d1d9;
+    border: 1px solid #30363d; border-radius: 6px;
+    padding: 2px 8px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .mode-select:hover { border-color: #8b949e; }
+  .mode-select.mode-interactive { background: #d29922; color: #000; border-color: #d29922; }
+  .mode-select.mode-autonomous { background: #f85149; color: #fff; border-color: #f85149; }
+  .mode-select.mode-learn { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+  #mode-status { color: #8b949e; font-size: 11px; margin-left: 8px; }
+  #mode-status.err { color: #f85149; }
+  #mode-status.ok { color: #3fb950; }
 </style>
 </head>
 <body>
@@ -1009,7 +1021,14 @@ const server = createServer(async (req, res) => {
   <div class="grid">
     <div class="k">Version</div><div class="v">${pkg.version}</div>
     <div class="k">Status</div><div class="v green">ok</div>
-    <div class="k">Mode</div><div class="v">${CONFIG.mode}</div>
+    <div class="k">Mode</div><div class="v">
+      <select id="mode-select" class="mode-select mode-${CONFIG.mode}" onchange="switchMode(this.value)" title="Flip the global trust mode for this hook container">
+        <option value="interactive"${CONFIG.mode === "interactive" ? " selected" : ""}>interactive</option>
+        <option value="autonomous"${CONFIG.mode === "autonomous" ? " selected" : ""}>autonomous</option>
+        <option value="learn"${CONFIG.mode === "learn" ? " selected" : ""}>learn</option>
+      </select>
+      <span id="mode-status"></span>
+    </div>
     <div class="k">Backend</div><div class="v">${CONFIG.judgeBackend}</div>
     <div class="k">Judge model</div><div class="v">${CONFIG.judgeModel}</div>
     <div class="k">Embedding</div><div class="v">${CONFIG.embeddingModel}</div>
@@ -1035,6 +1054,34 @@ const server = createServer(async (req, res) => {
     <br>To install the hook in your project, run <code>curl -O ${"https://" + (req.headers["x-forwarded-host"] || req.headers.host || "localhost")}/api/integration-bundle</code> from the dashboard.
   </div>
 </div>
+<script>
+async function switchMode(next) {
+  const select = document.getElementById('mode-select');
+  const status = document.getElementById('mode-status');
+  const prev = select.dataset.current || select.value;
+  status.className = '';
+  status.textContent = 'switching…';
+  try {
+    const resp = await fetch('/api/mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: next }),
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    select.className = 'mode-select mode-' + data.mode;
+    select.dataset.current = data.mode;
+    status.className = 'ok';
+    status.textContent = 'switched (' + data.previous + ' → ' + data.mode + ')';
+    setTimeout(() => { status.textContent = ''; status.className = ''; }, 4000);
+  } catch (err) {
+    select.value = prev;
+    status.className = 'err';
+    status.textContent = 'failed: ' + err.message;
+  }
+}
+document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG.mode)};
+</script>
 </body>
 </html>`;
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
