@@ -955,8 +955,24 @@ async function makeIntentEntry(
  * Trim the stack:
  *   - drop resolved entries older than RESOLVED_INTENT_TTL_MS,
  *   - cap total length at MAX_INTENT_STACK by popping the OLDEST
- *     non-original entry (the original is sticky — it's the
- *     session-defining goal).
+ *     entry regardless of kind.
+ *
+ * Historical note: the original entry used to be sticky — preserved
+ * across trims and re-prepended to the stack — on the rationale that
+ * it was the "session-defining goal". In practice that turned the
+ * very first prompt into a poison pill: long sessions where the user
+ * had clearly moved on continued to anchor the judge on turn 1 ("review
+ * the markdown plan") because trimStack kept reinserting it. Worse,
+ * the new-task branch had already been updated (b60aee13) to evict
+ * the original on a true topic switch — but trimStack contradicted
+ * that by reanchoring it on the next overflow. The two were silently
+ * fighting and trimStack was winning whenever new-task didn't fire
+ * (i.e. when each prompt drifts incrementally from the previous, not
+ * from the original — the common case in a working session).
+ *
+ * Drop the carve-out. The original is just an entry; if the user has
+ * moved on enough that the stack overflows past the original's age,
+ * it gets popped like anything else.
  */
 function trimStack(stack: IntentEntry[]): IntentEntry[] {
   const now = Date.now();
@@ -964,14 +980,8 @@ function trimStack(stack: IntentEntry[]): IntentEntry[] {
     (e) => !e.resolved || now - e.registeredAt < RESOLVED_INTENT_TTL_MS,
   );
   if (fresh.length <= MAX_INTENT_STACK) return fresh;
-
-  // Over cap. Keep the original (kind === "original") + the most recent
-  // (MAX_INTENT_STACK - 1) entries.
-  const original = fresh.find((e) => e.kind === "original");
-  const tail = fresh
-    .filter((e) => e.kind !== "original")
-    .slice(-(MAX_INTENT_STACK - (original ? 1 : 0)));
-  return original ? [original, ...tail] : tail;
+  // Keep the most recent MAX_INTENT_STACK entries in registration order.
+  return fresh.slice(-MAX_INTENT_STACK);
 }
 
 export interface IntentStackUpdateResult {
