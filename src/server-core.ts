@@ -21,6 +21,7 @@ import { type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
 import {
+  appendFileSync,
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -365,11 +366,46 @@ export type FeedEntry = {
 };
 
 export const feed: FeedEntry[] = [];
-const MAX_FEED = 200;
+/**
+ * In-memory feed ring buffer. Holds the most recent N events for the
+ * dashboard's live view. Bumped from 200 to 2000 (~1MB at typical
+ * entry size) so a busy session — multi-turn agent with frequent
+ * /evaluate calls — doesn't push intent events off the buffer
+ * before an operator can investigate.
+ */
+const MAX_FEED = 2000;
+
+/**
+ * Per-day on-disk feed log. Every addFeed call appends one JSONL line
+ * to dredd-feed-YYYY-MM-DD.log alongside the existing console log,
+ * so the operator can query historical events that have rolled out
+ * of the in-memory ring. Best-effort; a write failure is logged once
+ * per day to avoid spam but does not block the in-memory append.
+ */
+function feedLogPath(): string {
+  const date = new Date().toISOString().slice(0, 10);
+  return join(LOG_DIR, `dredd-feed-${date}.log`);
+}
+let feedLogWriteFailedToday = "";
+function persistFeedEntry(entry: FeedEntry): void {
+  try {
+    appendFileSync(feedLogPath(), JSON.stringify(entry) + "\n");
+  } catch (err) {
+    const date = new Date().toISOString().slice(0, 10);
+    if (feedLogWriteFailedToday !== date) {
+      feedLogWriteFailedToday = date;
+      console.warn(
+        `[feed-log] failed to append to ${feedLogPath()}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+}
 
 export function addFeed(entry: FeedEntry) {
-  feed.push({ ...entry, timestamp: entry.timestamp ?? new Date().toISOString() });
+  const stamped = { ...entry, timestamp: entry.timestamp ?? new Date().toISOString() };
+  feed.push(stamped);
   if (feed.length > MAX_FEED) feed.splice(0, feed.length - MAX_FEED);
+  persistFeedEntry(stamped);
 }
 
 // ============================================================================

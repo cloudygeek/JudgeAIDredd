@@ -339,18 +339,23 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     //       the same session_id. SessionStore still has originalIntent
     //       (TTL 30d).
     //
-    // In BOTH cases the right goal to register with the interceptor
-    // is the PERSISTED original intent, not the current prompt. The
-    // current prompt is a follow-up turn, not a new goal — registering
-    // it as the goal would silently rebase the judge on a continuation
-    // ("now add tests") instead of the actual project ("build the
-    // auth service"). Pull the stored original from the tracker.
-    const persisted = await tracker.loadSession(session_id);
-    const goalToRegister = persisted?.originalIntent?.prompt ?? contextualGoal;
+    // Prefer the LIVE active set over originalIntent — see /evaluate's
+    // rehydration block for the same fix. Originalintent is potentially
+    // stale on long-running sessions; the active set is what the
+    // classifier most recently decided was live.
+    const persistedActive = await tracker.getActiveIntents(session_id);
+    let goalToRegister: string;
+    if (persistedActive.length > 0) {
+      const freshest = persistedActive[persistedActive.length - 1];
+      goalToRegister = freshest.contextual;
+    } else {
+      const persisted = await tracker.loadSession(session_id);
+      goalToRegister = persisted?.originalIntent?.prompt ?? contextualGoal;
+    }
     await interceptor.registerGoal(session_id, goalToRegister, transcriptImages);
     registeredSessions.add(session_id);
     console.log(
-      `  [${session_id.substring(0, 8)}] [REHYDRATE] continuation/redeploy — restored goal: "${goalToRegister.substring(0, 60)}..."`
+      `  [${session_id.substring(0, 8)}] [REHYDRATE] continuation/redeploy — restored goal: "${goalToRegister.substring(0, 60)}..." (active=${persistedActive.length})`,
     );
   }
 
@@ -629,15 +634,43 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     // history persisted. Without this, every /evaluate after a hook
     // redeploy lands in no-goal-allow despite the session being
     // registered as far as Dynamo is concerned. (2026-05-12 incident.)
+    //
+    // Use the LIVE active set, not the literal originalIntent. On a
+    // long-running session the originalIntent is the turn-1 prompt,
+    // potentially weeks old and topic-irrelevant. The active set is
+    // what the classifier last decided was current. Falling back to
+    // originalIntent only when no active entries are persisted —
+    // covers the legacy-schema migration path. (2026-05-12 #2: session
+    // anchored on stale "review markdown" goal because rehydration
+    // ignored the live stack.)
     const persisted = await tracker.loadSession(session_id);
-    if (persisted?.originalIntent) {
-      // Re-prime the interceptor with the stored goal — its in-memory
-      // map is per-process too, so we have to teach it the goal again.
+    const persistedActive = await tracker.getActiveIntents(session_id);
+    if (persistedActive.length > 0) {
+      // Live active set found in Dynamo. The interceptor's drift
+      // detector reads goal embeddings from the live stack via
+      // setGoalEmbeddings (already done by the SessionStore on the
+      // fetch path). Register the most recent active entry's goal
+      // with the interceptor as a fallback for autonomous mode; the
+      // interactive path will pull the full activeIntents list on
+      // /evaluate via getActiveIntents below.
+      const freshest = persistedActive[persistedActive.length - 1];
+      await interceptor.registerGoal(session_id, freshest.contextual);
+      registeredSessions.add(session_id);
+      console.log(
+        `  [${session_id.substring(0, 8)}] [REHYDRATE] restored ${persistedActive.length} active intent(s); freshest: "${freshest.prompt.substring(0, 60)}..."`,
+      );
+    } else if (persisted?.originalIntent) {
+      // No active entries (legacy session pre-history-active migration,
+      // or a session whose stack was wiped via /api/mode flip). Fall
+      // back to the persisted originalIntent — better than nothing,
+      // but flag that we're using a stale anchor so the operator can
+      // see it in the logs.
       const contextual = persisted.originalIntent.prompt;
       await interceptor.registerGoal(session_id, contextual);
       registeredSessions.add(session_id);
+      const ageMin = Math.round((Date.now() - new Date(persisted.originalIntent.timestamp).getTime()) / 60000);
       console.log(
-        `  [${session_id.substring(0, 8)}] [REHYDRATE] restored goal from store: "${contextual.substring(0, 60)}..."`
+        `  [${session_id.substring(0, 8)}] [REHYDRATE] no active set; falling back to originalIntent (${ageMin}m old): "${contextual.substring(0, 60)}..."`,
       );
     } else if (transcriptContent) {
       await backfillFromTranscript(session_id, transcriptContent, true);

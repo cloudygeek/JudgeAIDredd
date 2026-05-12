@@ -164,9 +164,28 @@ case "$HOOK_EVENT" in
     # Full transcript — the server replays every user turn into the tracker
     # so resumed sessions (`claude --continue`) retain their complete intent
     # history, not just first + last prompt.
+    #
+    # Server-side cap is BODY_LIMIT_TRANSCRIPT (20 MB on production). JSON
+    # encoding doubles every quote / backslash / newline so the on-disk
+    # transcript can be much smaller than the encoded body. Cap defensively
+    # at 12 MB raw to keep encoded payload under the server limit; if the
+    # transcript is larger, drop it entirely (server backfills from
+    # transcript_path on next /evaluate as a fallback). We log the
+    # truncation to a debug file the operator can grep — UserPromptSubmit
+    # silently failing was the cause of long sessions losing intent
+    # registration on 2026-05-12.
     TRANSCRIPT_CONTENT=$(read_transcript_content "$TRANSCRIPT_PATH" 0)
     CLAUDEMD_CONTENT=$(read_claudemd_content "$CWD")
+    TC_SIZE=${#TRANSCRIPT_CONTENT}
+    DREDD_DEBUG_LOG="${DREDD_DEBUG_LOG:-$HOME/.claude/dredd/hook-debug.log}"
+    if [ "$TC_SIZE" -gt 12582912 ]; then
+      printf '[%s] %s — transcript %d bytes exceeds 12MB cap, dropping for /intent (session=%s)\n' \
+        "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "UserPromptSubmit" "$TC_SIZE" "${SESSION_ID:0:8}" \
+        >>"$DREDD_DEBUG_LOG" 2>/dev/null || true
+      TRANSCRIPT_CONTENT=""
+    fi
 
+    HTTP_STATUS=$(mktemp -t dredd-intent-status)
     RESPONSE=$(curl -s -X POST "$DREDD_URL/intent" \
       "${DREDD_CURL_ARGS[@]}" \
       -H "Content-Type: application/json" \
@@ -185,10 +204,25 @@ case "$HOOK_EVENT" in
           claudemd_content: (if $cm == "" then null else $cm end),
           mode: (if $mode == "" then null else $mode end)
         }')" \
-      --connect-timeout 5 --max-time 30)
-
-    # Extract just the hook fields (systemMessage etc), strip _meta
-    echo "$RESPONSE" | jq 'del(._meta)' 2>/dev/null || echo '{}'
+      -o /dev/stdout \
+      -w '%{http_code}' \
+      --connect-timeout 5 --max-time 30 > /tmp/dredd-intent-out.$$ 2>/dev/null)
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE:0:${#RESPONSE}-3}"
+    if [ "$HTTP_CODE" != "200" ]; then
+      printf '[%s] %s — /intent HTTP %s (session=%s, body_size=~%d): %.200s\n' \
+        "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "UserPromptSubmit" "$HTTP_CODE" "${SESSION_ID:0:8}" \
+        "$TC_SIZE" "$BODY" \
+        >>"$DREDD_DEBUG_LOG" 2>/dev/null || true
+      # Don't return the error body to Claude Code — emit empty hook
+      # output so the prompt still goes through. Server-side state is
+      # recoverable via /evaluate's rehydration path.
+      echo '{}'
+    else
+      # Extract just the hook fields (systemMessage etc), strip _meta
+      echo "$BODY" | jq 'del(._meta)' 2>/dev/null || echo '{}'
+    fi
+    rm -f /tmp/dredd-intent-out.$$ "$HTTP_STATUS" 2>/dev/null || true
     ;;
 
   "PreToolUse")
