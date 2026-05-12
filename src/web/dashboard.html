@@ -76,6 +76,8 @@
       background: var(--card); border: 1px solid var(--border);
       border-radius: 8px; padding: 16px;
     }
+    .stat.clickable { cursor: pointer; transition: background 0.1s, border-color 0.1s; }
+    .stat.clickable:hover { background: rgba(255,255,255,0.03); border-color: var(--muted); }
     .stat-value { font-size: 32px; font-weight: 700; line-height: 1; }
     .stat-label { font-size: 12px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
     .stat-value.green { color: var(--green); }
@@ -629,15 +631,18 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       <div id="detail-feed"><div class="empty">No feed events for this session yet</div></div>
     </div>
 
-    <div class="detail-section">
-      <h3>Tool Calls</h3>
+    <div class="detail-section" id="detail-section-tools">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:12px;flex-wrap:wrap">
+        <h3 style="margin:0">Tool Calls <span id="detail-tools-filter-chip"></span></h3>
+        <div id="detail-tools-pager" style="display:flex;align-items:center;gap:8px;font-size:13px"></div>
+      </div>
       <table>
-        <thead><tr><th>Turn</th><th>Tool</th><th>Decision</th><th>Similarity</th><th>Input</th></tr></thead>
+        <thead><tr><th>Turn</th><th>Time</th><th>Tool</th><th>Decision</th><th>Similarity</th><th>Input</th></tr></thead>
         <tbody id="detail-tools"></tbody>
       </table>
     </div>
 
-    <div class="detail-section">
+    <div class="detail-section" id="detail-section-turns">
       <h3>Turn Metrics</h3>
       <table>
         <thead><tr><th>Turn</th><th>Time</th><th>Classification</th><th>Drift</th><th>Tools</th><th>Denied</th><th>Anchor</th></tr></thead>
@@ -655,7 +660,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       <div id="detail-intents"></div>
     </div>
 
-    <div class="detail-section">
+    <div class="detail-section" id="detail-section-files">
       <h3>Files Written</h3>
       <div id="detail-files"></div>
     </div>
@@ -698,6 +703,18 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     let currentDetailSessionId = null;
     let dreddPrincipal = null; // { userId, email, isAdmin }
     let refreshTimer = null;
+    // Detail-page tool-call filter. null = show all. "allow" / "deny"
+    // narrow the Tool Calls table; clicking the matching stat card on
+    // the detail header sets this. The filter chip above the table
+    // shows current state and offers a Clear button.
+    let detailToolFilter = null;
+    // Cached per-detail-page data so filter changes don't re-fetch.
+    let detailToolsCache = [];
+    // Page-state for the Tool Calls table. Newest-first; page 0 is
+    // most recent. Reset on each detail page open so reopening a
+    // session starts at "now".
+    const TOOL_PAGE_SIZE = 25;
+    let detailToolPage = 0;
 
     // ------------------------------------------------------------------
     // Clerk authentication. The page renders a sign-in card overlay
@@ -1282,32 +1299,39 @@ mv .claude/settings.json .claude/settings.json.dredd-off
             : filtered.map(f => renderFeedRow(f, { showSessionId: false })).reverse().join('');
         } catch {}
 
-        // Stats
+        // Stats — clickable. Each card maps to the action labelled on
+        // its hover tooltip. Allowed/Denied filter the Tool Calls
+        // table; Tool Calls clears the filter and scrolls to the
+        // table; Files / Turns scroll to their sections.
         const s = data.summary ?? {};
+        const allowed = (s.toolCalls ?? 0) - (s.denied ?? 0);
         document.getElementById('detail-stats').innerHTML = `
-          <div class="stat"><div class="stat-value">${s.turns ?? 0}</div><div class="stat-label">Turns</div></div>
-          <div class="stat"><div class="stat-value">${s.toolCalls ?? 0}</div><div class="stat-label">Tool Calls</div></div>
-          <div class="stat"><div class="stat-value green">${(s.toolCalls ?? 0) - (s.denied ?? 0)}</div><div class="stat-label">Allowed</div></div>
-          <div class="stat"><div class="stat-value red">${s.denied ?? 0}</div><div class="stat-label">Denied</div></div>
-          <div class="stat"><div class="stat-value">${s.filesWritten ?? 0}</div><div class="stat-label">Files</div></div>
-          <div class="stat"><div class="stat-value">${s.envVarsSet ?? 0}</div><div class="stat-label">Env Vars</div></div>
+          <div class="stat clickable" onclick="scrollToSection('detail-section-turns')" title="Jump to Turn Metrics">
+            <div class="stat-value">${s.turns ?? 0}</div><div class="stat-label">Turns</div>
+          </div>
+          <div class="stat clickable" onclick="setToolFilter(null)" title="Show all tool calls">
+            <div class="stat-value">${s.toolCalls ?? 0}</div><div class="stat-label">Tool Calls</div>
+          </div>
+          <div class="stat clickable" onclick="setToolFilter('allow')" title="Filter Tool Calls to allowed">
+            <div class="stat-value green">${allowed}</div><div class="stat-label">Allowed</div>
+          </div>
+          <div class="stat clickable" onclick="setToolFilter('deny')" title="Filter Tool Calls to denied">
+            <div class="stat-value red">${s.denied ?? 0}</div><div class="stat-label">Denied</div>
+          </div>
+          <div class="stat clickable" onclick="scrollToSection('detail-section-files')" title="Jump to Files Written">
+            <div class="stat-value">${s.filesWritten ?? 0}</div><div class="stat-label">Files</div>
+          </div>
+          <div class="stat" title="No dedicated section; count only">
+            <div class="stat-value">${s.envVarsSet ?? 0}</div><div class="stat-label">Env Vars</div>
+          </div>
         `;
 
-        // Tool calls table
-        const tools = data.toolHistory ?? data.interceptorLog ?? [];
-        document.getElementById('detail-tools').innerHTML = tools.length === 0
-          ? '<tr><td colspan="5" class="empty">No tool calls recorded</td></tr>'
-          : tools.map(t => {
-              const decision = t.decision ?? (t.allowed ? 'allow' : 'deny');
-              const badgeCls = t.decision === 'deny' || t.allowed === false ? 'deny' : 'allow';
-              return `<tr>
-                <td>${esc(t.turn ?? t.turnNumber ?? '-')}</td>
-                <td class="mono">${esc(t.tool)}</td>
-                <td><span class="badge badge-${esc(badgeCls)}">${esc(decision)}</span> ${t.stage ? `<span class="muted">${esc(t.stage)}</span>` : ''}</td>
-                <td class="mono">${t.similarity !== null && t.similarity !== undefined ? t.similarity.toFixed(3) : '-'}</td>
-                <td class="mono muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(JSON.stringify(t.input ?? '').substring(0, 80))}</td>
-              </tr>`;
-            }).join('');
+        // Tool calls table — paginated. Cache the full list so filter /
+        // page changes don't re-fetch.
+        detailToolsCache = data.toolHistory ?? data.interceptorLog ?? [];
+        detailToolFilter = null;  // reset on session open
+        detailToolPage = 0;
+        renderDetailTools();
 
         // Turn metrics
         const turns = data.turnMetrics ?? data.summary?.turnMetrics ?? [];
@@ -1414,6 +1438,98 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       } catch (err) {
         alert('Failed to load session: ' + err.message);
       }
+    }
+
+    // ------------------------------------------------------------------
+    // Detail-page tool-table render + pagination + filter helpers.
+    // Stats cards on the detail header call setToolFilter / scrollToSection
+    // to drive these.
+    // ------------------------------------------------------------------
+
+    function setToolFilter(decision) {
+      // null clears, "allow" / "deny" narrows the table.
+      detailToolFilter = decision;
+      detailToolPage = 0;  // reset to most-recent on filter change
+      renderDetailTools();
+      scrollToSection('detail-section-tools');
+    }
+
+    function scrollToSection(id) {
+      const el = document.getElementById(id);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function detailToolsTurnTime(t) {
+      // Tool entries don't always carry a timestamp directly; fall back
+      // to the matching turn's metric timestamp when possible.
+      return t.timestamp ?? t.ts ?? null;
+    }
+
+    function renderDetailTools() {
+      // Filter by decision (null = no filter), then sort newest-first
+      // (toolHistory is registration-order) and paginate.
+      const all = detailToolsCache;
+      const filtered = !detailToolFilter ? all : all.filter(t => {
+        const decision = t.decision ?? (t.allowed ? 'allow' : 'deny');
+        return decision === detailToolFilter;
+      });
+      // newest first — last in array is most recent
+      const ordered = [...filtered].reverse();
+      const totalPages = Math.max(1, Math.ceil(ordered.length / TOOL_PAGE_SIZE));
+      if (detailToolPage >= totalPages) detailToolPage = totalPages - 1;
+      const start = detailToolPage * TOOL_PAGE_SIZE;
+      const slice = ordered.slice(start, start + TOOL_PAGE_SIZE);
+
+      // Filter chip
+      const chip = document.getElementById('detail-tools-filter-chip');
+      if (!detailToolFilter) {
+        chip.innerHTML = '';
+      } else {
+        const cls = detailToolFilter === 'deny' ? 'badge-deny' : 'badge-allow';
+        chip.innerHTML = ` <span class="badge ${cls}">${esc(detailToolFilter)}</span>` +
+          ` <a href="#" onclick="event.preventDefault();setToolFilter(null)" style="font-size:0.85em;margin-left:6px">clear</a>`;
+      }
+
+      // Pager. Hidden when ≤1 page.
+      const pager = document.getElementById('detail-tools-pager');
+      if (ordered.length <= TOOL_PAGE_SIZE) {
+        pager.innerHTML = ordered.length === 0
+          ? ''
+          : `<span class="muted">${ordered.length} call${ordered.length === 1 ? '' : 's'}</span>`;
+      } else {
+        const prevDisabled = detailToolPage >= totalPages - 1 ? 'disabled' : '';
+        const nextDisabled = detailToolPage <= 0 ? 'disabled' : '';
+        // "Prev" goes to OLDER entries (higher page index = further back).
+        // "Next" goes to NEWER. Labels match the visual direction users
+        // expect when reading newest-first.
+        pager.innerHTML = `
+          <button class="refresh-btn" onclick="detailToolPage++; renderDetailTools()" ${prevDisabled} aria-label="Older">&larr; Older</button>
+          <span class="muted">${start + 1}–${Math.min(start + TOOL_PAGE_SIZE, ordered.length)} of ${ordered.length}</span>
+          <button class="refresh-btn" onclick="detailToolPage--; renderDetailTools()" ${nextDisabled} aria-label="Newer">Newer &rarr;</button>
+        `;
+      }
+
+      const body = document.getElementById('detail-tools');
+      if (slice.length === 0) {
+        body.innerHTML = `<tr><td colspan="6" class="empty">${detailToolFilter ? `No ${detailToolFilter}ed tool calls` : 'No tool calls recorded'}</td></tr>`;
+        return;
+      }
+      body.innerHTML = slice.map(t => {
+        const decision = t.decision ?? (t.allowed ? 'allow' : 'deny');
+        const badgeCls = decision === 'deny' ? 'deny' : 'allow';
+        const ts = detailToolsTurnTime(t);
+        const tsCell = ts
+          ? `<span class="mono muted">${esc(new Date(ts).toLocaleString())}</span>`
+          : '<span class="muted">-</span>';
+        return `<tr>
+          <td>${esc(t.turn ?? t.turnNumber ?? '-')}</td>
+          <td>${tsCell}</td>
+          <td class="mono">${esc(t.tool)}</td>
+          <td><span class="badge badge-${esc(badgeCls)}">${esc(decision)}</span> ${t.stage ? `<span class="muted">${esc(t.stage)}</span>` : ''}</td>
+          <td class="mono">${t.similarity !== null && t.similarity !== undefined ? t.similarity.toFixed(3) : '-'}</td>
+          <td class="mono muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(JSON.stringify(t.input ?? '').substring(0, 80))}</td>
+        </tr>`;
+      }).join('');
     }
 
     function showMain(opts) {
