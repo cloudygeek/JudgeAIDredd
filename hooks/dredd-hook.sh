@@ -185,10 +185,16 @@ case "$HOOK_EVENT" in
       TRANSCRIPT_CONTENT=""
     fi
 
-    HTTP_STATUS=$(mktemp -t dredd-intent-status)
-    RESPONSE=$(curl -s -X POST "$DREDD_URL/intent" \
+    # Capture body to a temp file and HTTP code separately. Avoids
+    # bash substring math (broke earlier on empty / short responses
+    # with "substring expression < 0") and keeps a large response
+    # body out of shell variables.
+    INTENT_BODY_FILE=$(mktemp -t dredd-intent.XXXXXX)
+    HTTP_CODE=$(curl -s -X POST "$DREDD_URL/intent" \
       "${DREDD_CURL_ARGS[@]}" \
       -H "Content-Type: application/json" \
+      -o "$INTENT_BODY_FILE" \
+      -w '%{http_code}' \
       -d "$(jq -n \
         --arg sid "$SESSION_ID" \
         --arg prompt "$PROMPT" \
@@ -204,25 +210,22 @@ case "$HOOK_EVENT" in
           claudemd_content: (if $cm == "" then null else $cm end),
           mode: (if $mode == "" then null else $mode end)
         }')" \
-      -o /dev/stdout \
-      -w '%{http_code}' \
-      --connect-timeout 5 --max-time 30 > /tmp/dredd-intent-out.$$ 2>/dev/null)
-    HTTP_CODE="${RESPONSE: -3}"
-    BODY="${RESPONSE:0:${#RESPONSE}-3}"
+      --connect-timeout 5 --max-time 30 2>/dev/null)
+    HTTP_CODE="${HTTP_CODE:-000}"
     if [ "$HTTP_CODE" != "200" ]; then
-      printf '[%s] %s — /intent HTTP %s (session=%s, body_size=~%d): %.200s\n' \
+      BODY_PREVIEW=$(head -c 200 "$INTENT_BODY_FILE" 2>/dev/null || echo "")
+      printf '[%s] %s — /intent HTTP %s (session=%s, transcript_bytes=%d): %s\n' \
         "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "UserPromptSubmit" "$HTTP_CODE" "${SESSION_ID:0:8}" \
-        "$TC_SIZE" "$BODY" \
+        "$TC_SIZE" "$BODY_PREVIEW" \
         >>"$DREDD_DEBUG_LOG" 2>/dev/null || true
-      # Don't return the error body to Claude Code — emit empty hook
-      # output so the prompt still goes through. Server-side state is
-      # recoverable via /evaluate's rehydration path.
+      # Emit empty hook output so the prompt still goes through.
+      # Server-side state is recoverable via /evaluate's rehydration.
       echo '{}'
     else
-      # Extract just the hook fields (systemMessage etc), strip _meta
-      echo "$BODY" | jq 'del(._meta)' 2>/dev/null || echo '{}'
+      # Extract just the hook fields (systemMessage etc), strip _meta.
+      jq 'del(._meta)' "$INTENT_BODY_FILE" 2>/dev/null || echo '{}'
     fi
-    rm -f /tmp/dredd-intent-out.$$ "$HTTP_STATUS" 2>/dev/null || true
+    rm -f "$INTENT_BODY_FILE" 2>/dev/null || true
     ;;
 
   "PreToolUse")
