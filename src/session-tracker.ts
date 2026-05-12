@@ -18,6 +18,7 @@
  * `CachedSessionStore`) instead — see `session-store.ts`.
  */
 
+import { randomUUID } from "node:crypto";
 import { DriftDetector } from "./drift-detector.js";
 import { embedAny, cosineSimilarity } from "./ollama-client.js";
 import type { SessionStore, DriftClassification } from "./session-store.js";
@@ -76,6 +77,13 @@ export interface TurnIntent {
  * we evict everything resolved.
  */
 export interface IntentEntry {
+  /** Stable ID. Used by intentHistory + activeIntentIds in the
+   *  history-active model so an entry can be referenced from outside
+   *  its array position. Optional for backwards compatibility — the
+   *  legacy single-stack model didn't have ids. Step 1 of the
+   *  history-active migration generates synthesised ids on read for
+   *  legacy entries; new entries always get a UUID. */
+  id?: string;
   /** Plain user prompt as it arrived (after fence-tag scrub). */
   prompt: string;
   /** Wrapped form passed to judge (may include prior_assistant_response). */
@@ -84,13 +92,37 @@ export interface IntentEntry {
   embedding: number[];
   /** Epoch ms when this entry was pushed. */
   registeredAt: number;
+  /** Epoch ms when this entry was last materialised into the active
+   *  set for /evaluate. Updated on every /evaluate that includes this
+   *  entry. Drives LRU eviction of the active set in the history-active
+   *  model. Optional for backwards compatibility — defaults to
+   *  registeredAt for legacy entries. */
+  lastActiveAt?: number;
+  /** Which classifier produced the kind. "embedding" = synchronous
+   *  embedding-fallback; "llm" = async LLM classifier overruled the
+   *  embedding; "llm-confirmed" = LLM agreed with embedding;
+   *  "embedding-fallback-timeout" = LLM never returned within the soft
+   *  cap. Optional for backwards compatibility — undefined for legacy
+   *  entries, treated as "embedding". */
+  classifierSource?: "embedding" | "llm" | "llm-confirmed" | "embedding-fallback-timeout";
+  /** ID of an existing entry this one references. Set when kind is
+   *  "revisit" (the historical entry being resumed) or "replacement"
+   *  (the entry being superseded). Used by the active-set update
+   *  logic to know which existing entry to revive or mark resolved. */
+  referencedEntryId?: string;
   kind:
     | "original"
     | "confirmation"
     | "queued"
     | "open-followup"
     | "continuation"
-    | "new-task";
+    | "new-task"
+    /** Step-3 additions: child of an active goal (parent stays live). */
+    | "sub-task"
+    /** Step-3 additions: supersedes referencedEntryId (mark it resolved). */
+    | "replacement"
+    /** Step-3 additions: user returned to a historical entry; revive it. */
+    | "revisit";
   /** Set true on Stop. Resolved entries are evicted on the next new-task push. */
   resolved: boolean;
   /** Images attached to the originating prompt, if any. */
@@ -205,11 +237,31 @@ export interface SessionState {
    * the last Stop, not just the most recent. Empty in autonomous mode
    * (overwrite-on-every-turn semantics there).
    *
-   * Capped at MAX_INTENT_STACK to keep judge prompts bounded; oldest
-   * non-original entries are popped on overflow. The original intent
-   * is never popped — it's the session-defining goal.
+   * Capped at MAX_INTENT_STACK in the legacy model. In the
+   * history-active model this is a derived view (entries from
+   * intentHistory whose ids are in activeIntentIds, ordered by
+   * registeredAt asc) — but we keep this field as the single source
+   * of truth during Step 1+2 for backwards compatibility, and write
+   * to BOTH sides on each setActiveIntents call.
    */
   activeIntents: IntentEntry[];
+  /**
+   * Append-only ledger of every intent ever registered for this
+   * session. Bounded by MAX_INTENT_HISTORY + Dynamo TTL. Step-1
+   * addition: written by appendToHistory; populated lazily from
+   * activeIntents when reading a legacy session that doesn't have
+   * a history field yet.
+   */
+  intentHistory: IntentEntry[];
+  /**
+   * Subset of intentHistory by id that is currently live for the
+   * judge. In Step 1 of the history-active migration this is kept
+   * in sync with activeIntents (one-to-one). Steps 3+ allow the
+   * active set to diverge from "the most recent N entries"
+   * (revisits revive older entries, replacements drop specific
+   * entries, etc).
+   */
+  activeIntentIds: string[];
   /**
    * Epoch ms of the last UserPromptSubmit. Combined with
    * lastPreToolUseAt and lastStopAt, gives us the turn state when the
@@ -241,6 +293,24 @@ export interface SessionState {
  * is sticky.
  */
 export const MAX_INTENT_STACK = 5;
+
+/**
+ * Maximum number of entries kept LIVE in the history-active model's
+ * active set. Distinct from MAX_INTENT_STACK (which is the legacy
+ * single-stack cap). Set to 5 starting value — enough headroom for
+ * nested sub-tasks (parent + intermediate + leaf) without diluting
+ * the judge's anchor across too many goals. LRU-evicted on overflow.
+ */
+export const MAX_ACTIVE_INTENTS = 5;
+
+/**
+ * Maximum number of entries retained in the per-session intent
+ * history (the append-only ledger). Bounded mostly by Dynamo's 30d
+ * TTL; this cap is a safety valve for pathological sessions that
+ * fire UserPromptSubmit thousands of times. Picking 500 = ~25 days
+ * at one prompt every 70 minutes, well past normal session length.
+ */
+export const MAX_INTENT_HISTORY = 500;
 
 /**
  * How long after Stop a resolved entry stays on the stack before being
@@ -309,6 +379,8 @@ export class InMemorySessionStore implements SessionStore {
         ownerSub: null,
         ownerEmail: null,
         activeIntents: [],
+        intentHistory: [],
+        activeIntentIds: [],
         lastUserPromptAt: 0,
         lastPreToolUseAt: 0,
         lastStopAt: 0,
@@ -1096,10 +1168,112 @@ export class InMemorySessionStore implements SessionStore {
 
   async setActiveIntents(sessionId: string, entries: IntentEntry[]): Promise<void> {
     const s = this.getSession(sessionId);
-    s.activeIntents = entries;
+    // Step 1 of the history-active migration: ensure every entry has
+    // an id. Legacy callers pass entries without ids; synthesise one
+    // here so the history list and active id list have valid keys.
+    const entriesWithIds = entries.map((e) =>
+      e.id ? e : { ...e, id: randomUUID() },
+    );
+    s.activeIntents = entriesWithIds;
+    s.activeIntentIds = entriesWithIds.map((e) => e.id!);
+
+    // Keep history in sync with the active stack: every entry currently
+    // active also belongs to history. Append any new ones that aren't
+    // there yet (matched by id).
+    const seen = new Set(s.intentHistory.map((e) => e.id));
+    for (const e of entriesWithIds) {
+      if (!seen.has(e.id)) s.intentHistory.push(e);
+    }
+    // Bound history at MAX_INTENT_HISTORY (in-memory hygiene; Dynamo
+    // has its own TTL). Drop oldest first.
+    if (s.intentHistory.length > MAX_INTENT_HISTORY) {
+      s.intentHistory = s.intentHistory.slice(-MAX_INTENT_HISTORY);
+    }
+
     // Keep the drift detector in sync — it consults
     // goalEmbeddings on every evaluate() and we want min-over-stack.
-    s.driftDetector.setGoalEmbeddings(entries.map((e) => e.embedding));
+    s.driftDetector.setGoalEmbeddings(entriesWithIds.map((e) => e.embedding));
+  }
+
+  // ---- intent history + active set (history-active model) ----------------
+
+  async appendToHistory(sessionId: string, entry: IntentEntry): Promise<string> {
+    const s = this.getSession(sessionId);
+    const id = entry.id ?? randomUUID();
+    const stored: IntentEntry = { ...entry, id };
+    s.intentHistory.push(stored);
+    if (s.intentHistory.length > MAX_INTENT_HISTORY) {
+      s.intentHistory = s.intentHistory.slice(-MAX_INTENT_HISTORY);
+    }
+    return id;
+  }
+
+  async getIntentHistory(sessionId: string, limit?: number): Promise<IntentEntry[]> {
+    const s = this.getSession(sessionId);
+    if (limit === undefined || limit >= s.intentHistory.length) {
+      return s.intentHistory;
+    }
+    return s.intentHistory.slice(-limit);
+  }
+
+  async markIntentResolved(sessionId: string, entryIds: string[]): Promise<void> {
+    if (entryIds.length === 0) return;
+    const s = this.getSession(sessionId);
+    const idSet = new Set(entryIds);
+    for (const e of s.intentHistory) {
+      if (e.id && idSet.has(e.id)) e.resolved = true;
+    }
+    // Drop from active id list AND active intents view.
+    s.activeIntentIds = s.activeIntentIds.filter((id) => !idSet.has(id));
+    s.activeIntents = s.activeIntents.filter((e) => !e.id || !idSet.has(e.id));
+    s.driftDetector.setGoalEmbeddings(s.activeIntents.map((e) => e.embedding));
+  }
+
+  async activateIntent(sessionId: string, entryId: string): Promise<void> {
+    const s = this.getSession(sessionId);
+    const entry = s.intentHistory.find((e) => e.id === entryId);
+    if (!entry) {
+      // Unknown id — bail rather than corrupt state.
+      console.warn(`  [SESSION ${sessionId.substring(0, 8)}] activateIntent: unknown entry id ${entryId}`);
+      return;
+    }
+    entry.resolved = false;
+    entry.lastActiveAt = Date.now();
+    // Avoid duplicate ids in the active list.
+    if (!s.activeIntentIds.includes(entryId)) {
+      s.activeIntentIds.push(entryId);
+    }
+    // Cap with LRU eviction — drop the entry whose lastActiveAt (or
+    // registeredAt fallback) is oldest. Equivalent under append-only
+    // semantics but explicit about the eviction policy.
+    if (s.activeIntentIds.length > MAX_ACTIVE_INTENTS) {
+      const idToEntry = new Map(s.intentHistory.map((e) => [e.id, e] as const));
+      const sorted = [...s.activeIntentIds].sort((a, b) => {
+        const ea = idToEntry.get(a);
+        const eb = idToEntry.get(b);
+        const ta = ea?.lastActiveAt ?? ea?.registeredAt ?? 0;
+        const tb = eb?.lastActiveAt ?? eb?.registeredAt ?? 0;
+        return ta - tb;
+      });
+      const evict = sorted.slice(0, sorted.length - MAX_ACTIVE_INTENTS);
+      const evictSet = new Set(evict);
+      s.activeIntentIds = s.activeIntentIds.filter((id) => !evictSet.has(id));
+      for (const e of s.intentHistory) {
+        if (e.id && evictSet.has(e.id)) e.resolved = true;
+      }
+    }
+    // Rebuild the materialised activeIntents view from active ids.
+    const idToEntry = new Map(s.intentHistory.map((e) => [e.id, e] as const));
+    s.activeIntents = s.activeIntentIds
+      .map((id) => idToEntry.get(id))
+      .filter((e): e is IntentEntry => Boolean(e));
+    s.driftDetector.setGoalEmbeddings(s.activeIntents.map((e) => e.embedding));
+  }
+
+  async touchActiveIntent(sessionId: string, entryId: string): Promise<void> {
+    const s = this.getSession(sessionId);
+    const entry = s.intentHistory.find((e) => e.id === entryId);
+    if (entry) entry.lastActiveAt = Date.now();
   }
 }
 

@@ -125,14 +125,63 @@ export interface SessionStore {
    * Read-only access to the active intent stack — used by the judge
    * pipeline to render multi-goal context and by drift evaluation to
    * sync the DriftDetector's goalEmbeddings.
+   *
+   * In the legacy single-stack model, this returns the stored stack
+   * directly. In the history-active model (Step 1+ of the
+   * intent-history-active migration), this resolves activeIntentIds
+   * against intentHistory and returns the materialised entries.
+   * Either way, the caller-facing contract is unchanged.
    */
   getActiveIntents(sessionId: string): Promise<IntentEntry[]>;
   /**
    * Replace the intent stack and re-seed the DriftDetector's goal
    * embeddings to match. Used by the hook on every UserPromptSubmit
    * after applyIntentStackUpdate has decided the new shape.
+   *
+   * @deprecated New code should use appendToHistory + activateIntent
+   *   + markIntentResolved. setActiveIntents stays for the mode-flip
+   *   path (clears the active set) and as the migration shim's write
+   *   path during Steps 1-2 of the history-active rollout.
    */
   setActiveIntents(sessionId: string, entries: IntentEntry[]): Promise<void>;
+
+  // ---- intent history + active set (history-active model) ----------------
+  /**
+   * Append a new entry to the session's intent history. Returns the
+   * entry's id (generated if absent). History is append-only and
+   * bounded only by MAX_INTENT_HISTORY + Dynamo TTL — entries are NOT
+   * deleted as a side effect of new prompts arriving. Used by
+   * applyIntentStackUpdate to record every intent the session ever
+   * had, regardless of whether it ends up live.
+   */
+  appendToHistory(sessionId: string, entry: IntentEntry): Promise<string>;
+  /**
+   * Read the full intent history for a session, newest-last. Used by
+   * the LLM classifier to decide revisit/replacement and by the
+   * dashboard to render the session timeline. Optional limit caps
+   * the returned size to the most recent N entries.
+   */
+  getIntentHistory(sessionId: string, limit?: number): Promise<IntentEntry[]>;
+  /**
+   * Mark a set of history entry ids as resolved (kept in history but
+   * removed from the active set). Used when a topic-switch /
+   * replacement / revisit causes prior actives to no longer be live.
+   */
+  markIntentResolved(sessionId: string, entryIds: string[]): Promise<void>;
+  /**
+   * Add a history entry id to the active set. Used by the classifier
+   * when promoting an entry to live (e.g. on revisit, where a
+   * previously-resolved entry is brought back). Caps active-set size
+   * at MAX_ACTIVE_INTENTS via LRU eviction (drops the oldest
+   * lastActiveAt entry first).
+   */
+  activateIntent(sessionId: string, entryId: string): Promise<void>;
+  /**
+   * Update the lastActiveAt timestamp for an entry. Called by
+   * /evaluate when an entry is materialised into the activeIntents
+   * passed to the interceptor. Drives LRU eviction in the active set.
+   */
+  touchActiveIntent(sessionId: string, entryId: string): Promise<void>;
 
   // ---- intent & drift -----------------------------------------------------
   registerIntent(

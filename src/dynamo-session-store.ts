@@ -70,8 +70,9 @@ import type {
   TurnMetrics,
   ImageBlock,
 } from "./session-store.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isSensitiveEnvVar } from "./sensitive-env.js";
+import { MAX_ACTIVE_INTENTS, MAX_INTENT_HISTORY } from "./session-tracker.js";
 
 // ---- constants --------------------------------------------------------------
 
@@ -194,6 +195,8 @@ export class DynamoSessionStore implements SessionStore {
       ownerSub: null,
       ownerEmail: null,
       activeIntents: [],
+      intentHistory: [],
+      activeIntentIds: [],
       lastUserPromptAt: 0,
       lastPreToolUseAt: 0,
       lastStopAt: 0,
@@ -490,6 +493,29 @@ export class DynamoSessionStore implements SessionStore {
       // miss / failover path reconstructs them correctly. Older sessions
       // pre-stack-feature read back as empty defaults.
       activeIntents: (meta?.activeIntents as any) ?? [],
+      // History-active migration shim. New sessions persist
+      // intentHistory + activeIntentIds; legacy ones don't have those
+      // fields, so derive them lazily from the legacy activeIntents:
+      // synthesise stable ids for entries that don't have them, then
+      // treat the entire stack as both history and active. Either
+      // branch produces a state that's behaviour-equivalent to the
+      // legacy single-stack model.
+      ...(() => {
+        if (meta?.intentHistory && meta?.activeIntentIds) {
+          return {
+            intentHistory: meta.intentHistory as IntentEntry[],
+            activeIntentIds: meta.activeIntentIds as string[],
+          };
+        }
+        const legacy = ((meta?.activeIntents as IntentEntry[] | undefined) ?? []);
+        const withIds = legacy.map((e) =>
+          e.id ? e : { ...e, id: randomUUID() },
+        );
+        return {
+          intentHistory: withIds,
+          activeIntentIds: withIds.map((e) => e.id!),
+        };
+      })(),
       lastUserPromptAt: meta?.lastUserPromptAt ?? 0,
       lastPreToolUseAt: meta?.lastPreToolUseAt ?? 0,
       lastStopAt: meta?.lastStopAt ?? 0,
@@ -725,7 +751,26 @@ export class DynamoSessionStore implements SessionStore {
 
   async getActiveIntents(sessionId: string): Promise<IntentEntry[]> {
     const meta = await this.getMeta(sessionId);
-    return (meta?.activeIntents as IntentEntry[] | undefined) ?? [];
+    if (!meta) return [];
+    // History-active path: if we have history + ids, materialise from
+    // those. Otherwise (legacy schema) fall back to the stored
+    // activeIntents directly.
+    const history = meta.intentHistory as IntentEntry[] | undefined;
+    const activeIds = meta.activeIntentIds as string[] | undefined;
+    if (history && activeIds) {
+      const idToEntry = new Map(history.filter((e) => e.id).map((e) => [e.id!, e] as const));
+      const materialised = activeIds
+        .map((id) => idToEntry.get(id))
+        .filter((e): e is IntentEntry => Boolean(e));
+      // If the materialised set is empty but legacy activeIntents has
+      // content, prefer the legacy field — defends against partial
+      // migrations during the rollout.
+      if (materialised.length === 0 && (meta.activeIntents as IntentEntry[] | undefined)?.length) {
+        return meta.activeIntents as IntentEntry[];
+      }
+      return materialised;
+    }
+    return (meta.activeIntents as IntentEntry[] | undefined) ?? [];
   }
 
   async setActiveIntents(sessionId: string, entries: IntentEntry[]): Promise<void> {
@@ -734,18 +779,160 @@ export class DynamoSessionStore implements SessionStore {
     // each = 20KB. Comfortably under. The judge sees the full prompt on
     // the in-flight request; the persisted form is only used for restart
     // recovery so a truncated copy is fine.
-    const persistable = entries.map((e) => ({
+    //
+    // History-active (Step 1): also write intentHistory + activeIntentIds
+    // alongside the legacy activeIntents field. Existing readers see the
+    // legacy field; new readers prefer the history+ids materialisation.
+    // Both can be populated safely until the legacy field is removed in
+    // Step 7 cleanup.
+    const withIds = entries.map((e) =>
+      e.id ? e : { ...e, id: randomUUID() },
+    );
+    const persistable = withIds.map((e) => ({
       ...e,
       prompt: truncString(e.prompt, 10_000),
       contextual: truncString(e.contextual, 10_000),
     }));
-    await this.updateMeta(sessionId, { activeIntents: persistable });
+    // Merge into the existing intentHistory rather than overwrite —
+    // append-only semantics mean we never drop entries that were
+    // recorded by appendToHistory but aren't currently active.
+    const existing = await this.getMeta(sessionId);
+    const existingHistory = (existing?.intentHistory as IntentEntry[] | undefined) ?? [];
+    const seen = new Set(existingHistory.map((e) => e.id));
+    const merged = [...existingHistory];
+    for (const e of persistable) {
+      if (!seen.has(e.id)) merged.push(e);
+    }
+    // Cap at MAX_INTENT_HISTORY to prevent runaway item size on
+    // pathological sessions. 30d Dynamo TTL is the real limit.
+    const trimmedHistory =
+      merged.length > MAX_INTENT_HISTORY ? merged.slice(-MAX_INTENT_HISTORY) : merged;
+    await this.updateMeta(sessionId, {
+      activeIntents: persistable,
+      intentHistory: trimmedHistory,
+      activeIntentIds: persistable.map((e) => e.id),
+    });
     // Keep the in-process drift detector in sync with the persisted
     // stack. Container failover loses this until the next loadSession,
     // which is acceptable — the cache layer above us re-warms on miss.
     this.eph(sessionId).driftDetector.setGoalEmbeddings(
-      entries.map((e) => e.embedding),
+      withIds.map((e) => e.embedding),
     );
+  }
+
+  // ---- intent history + active set (history-active model) ----------------
+
+  async appendToHistory(sessionId: string, entry: IntentEntry): Promise<string> {
+    const id = entry.id ?? randomUUID();
+    const stored: IntentEntry = {
+      ...entry,
+      id,
+      prompt: truncString(entry.prompt, 10_000),
+      contextual: truncString(entry.contextual, 10_000),
+    };
+    const meta = await this.getMeta(sessionId);
+    const history = ((meta?.intentHistory as IntentEntry[] | undefined) ?? []).slice();
+    history.push(stored);
+    const trimmed =
+      history.length > MAX_INTENT_HISTORY ? history.slice(-MAX_INTENT_HISTORY) : history;
+    await this.updateMeta(sessionId, { intentHistory: trimmed });
+    return id;
+  }
+
+  async getIntentHistory(sessionId: string, limit?: number): Promise<IntentEntry[]> {
+    const meta = await this.getMeta(sessionId);
+    const history = (meta?.intentHistory as IntentEntry[] | undefined) ?? [];
+    if (limit === undefined || limit >= history.length) return history;
+    return history.slice(-limit);
+  }
+
+  async markIntentResolved(sessionId: string, entryIds: string[]): Promise<void> {
+    if (entryIds.length === 0) return;
+    const idSet = new Set(entryIds);
+    const meta = await this.getMeta(sessionId);
+    const history = ((meta?.intentHistory as IntentEntry[] | undefined) ?? []).map((e) =>
+      e.id && idSet.has(e.id) ? { ...e, resolved: true } : e,
+    );
+    const activeIds = ((meta?.activeIntentIds as string[] | undefined) ?? []).filter(
+      (id) => !idSet.has(id),
+    );
+    // Mirror into the legacy activeIntents field so old readers see
+    // the same effective state.
+    const idToEntry = new Map(history.filter((e) => e.id).map((e) => [e.id!, e] as const));
+    const activeIntents = activeIds
+      .map((id) => idToEntry.get(id))
+      .filter((e): e is IntentEntry => Boolean(e));
+    await this.updateMeta(sessionId, {
+      intentHistory: history,
+      activeIntentIds: activeIds,
+      activeIntents,
+    });
+    this.eph(sessionId).driftDetector.setGoalEmbeddings(
+      activeIntents.map((e) => e.embedding),
+    );
+  }
+
+  async activateIntent(sessionId: string, entryId: string): Promise<void> {
+    const meta = await this.getMeta(sessionId);
+    const history = ((meta?.intentHistory as IntentEntry[] | undefined) ?? []).slice();
+    const idx = history.findIndex((e) => e.id === entryId);
+    if (idx === -1) {
+      console.warn(`  [SESSION ${sessionId.substring(0, 8)}] activateIntent: unknown entry id ${entryId}`);
+      return;
+    }
+    // Mark not-resolved and stamp lastActiveAt.
+    history[idx] = {
+      ...history[idx],
+      resolved: false,
+      lastActiveAt: Date.now(),
+    };
+    const activeIds = ((meta?.activeIntentIds as string[] | undefined) ?? []).slice();
+    if (!activeIds.includes(entryId)) activeIds.push(entryId);
+
+    // LRU evict if over MAX_ACTIVE_INTENTS. Pop the entry whose
+    // lastActiveAt (or registeredAt fallback) is oldest.
+    let finalActiveIds = activeIds;
+    if (activeIds.length > MAX_ACTIVE_INTENTS) {
+      const idToEntry = new Map(history.filter((e) => e.id).map((e) => [e.id!, e] as const));
+      const sorted = [...activeIds].sort((a, b) => {
+        const ea = idToEntry.get(a);
+        const eb = idToEntry.get(b);
+        const ta = ea?.lastActiveAt ?? ea?.registeredAt ?? 0;
+        const tb = eb?.lastActiveAt ?? eb?.registeredAt ?? 0;
+        return ta - tb;
+      });
+      const evict = new Set(sorted.slice(0, sorted.length - MAX_ACTIVE_INTENTS));
+      finalActiveIds = activeIds.filter((id) => !evict.has(id));
+      // Mark evicted entries resolved so a future revisit can revive them.
+      for (let i = 0; i < history.length; i++) {
+        if (history[i].id && evict.has(history[i].id!)) {
+          history[i] = { ...history[i], resolved: true };
+        }
+      }
+    }
+
+    const idToEntry = new Map(history.filter((e) => e.id).map((e) => [e.id!, e] as const));
+    const activeIntents = finalActiveIds
+      .map((id) => idToEntry.get(id))
+      .filter((e): e is IntentEntry => Boolean(e));
+
+    await this.updateMeta(sessionId, {
+      intentHistory: history,
+      activeIntentIds: finalActiveIds,
+      activeIntents,
+    });
+    this.eph(sessionId).driftDetector.setGoalEmbeddings(
+      activeIntents.map((e) => e.embedding),
+    );
+  }
+
+  async touchActiveIntent(sessionId: string, entryId: string): Promise<void> {
+    const meta = await this.getMeta(sessionId);
+    const history = ((meta?.intentHistory as IntentEntry[] | undefined) ?? []).slice();
+    const idx = history.findIndex((e) => e.id === entryId);
+    if (idx === -1) return;
+    history[idx] = { ...history[idx], lastActiveAt: Date.now() };
+    await this.updateMeta(sessionId, { intentHistory: history });
   }
 
   // ---- intent & drift -------------------------------------------------

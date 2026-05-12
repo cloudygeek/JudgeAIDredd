@@ -22,6 +22,7 @@
  * is durable; only cost/latency can be improved later.
  */
 
+import { randomUUID } from "node:crypto";
 import { DriftDetector } from "./drift-detector.js";
 import type {
   SessionStore,
@@ -116,6 +117,8 @@ export class CachedSessionStore implements SessionStore {
       ownerSub: null,
       ownerEmail: null,
       activeIntents: [],
+      intentHistory: [],
+      activeIntentIds: [],
       lastUserPromptAt: 0,
       lastPreToolUseAt: 0,
       lastStopAt: 0,
@@ -245,8 +248,75 @@ export class CachedSessionStore implements SessionStore {
     await this.backend.setActiveIntents(sessionId, entries);
     const cached = this.cache.get(sessionId);
     if (cached) {
-      cached.activeIntents = entries;
-      cached.driftDetector.setGoalEmbeddings(entries.map((e) => e.embedding));
+      // Mirror the in-memory tracker's behaviour: ensure ids exist,
+      // sync activeIntentIds, append-only into intentHistory.
+      const entriesWithIds = entries.map((e) =>
+        e.id ? e : { ...e, id: randomUUID() },
+      );
+      cached.activeIntents = entriesWithIds;
+      cached.activeIntentIds = entriesWithIds.map((e) => e.id!);
+      const seen = new Set(cached.intentHistory.map((e) => e.id));
+      for (const e of entriesWithIds) {
+        if (!seen.has(e.id)) cached.intentHistory.push(e);
+      }
+      cached.driftDetector.setGoalEmbeddings(entriesWithIds.map((e) => e.embedding));
+    }
+  }
+
+  // ---- intent history + active set (history-active model) ----------------
+
+  async appendToHistory(sessionId: string, entry: IntentEntry): Promise<string> {
+    const id = await this.backend.appendToHistory(sessionId, entry);
+    const cached = this.cache.get(sessionId);
+    if (cached) {
+      // Reflect the backend's id back into the cache.
+      const stored: IntentEntry = { ...entry, id };
+      cached.intentHistory.push(stored);
+    }
+    return id;
+  }
+
+  async getIntentHistory(sessionId: string, limit?: number): Promise<IntentEntry[]> {
+    const cached = this.cache.get(sessionId);
+    if (cached) {
+      if (limit === undefined || limit >= cached.intentHistory.length) {
+        return cached.intentHistory;
+      }
+      return cached.intentHistory.slice(-limit);
+    }
+    return this.backend.getIntentHistory(sessionId, limit);
+  }
+
+  async markIntentResolved(sessionId: string, entryIds: string[]): Promise<void> {
+    await this.backend.markIntentResolved(sessionId, entryIds);
+    const cached = this.cache.get(sessionId);
+    if (cached) {
+      const idSet = new Set(entryIds);
+      for (const e of cached.intentHistory) {
+        if (e.id && idSet.has(e.id)) e.resolved = true;
+      }
+      cached.activeIntentIds = cached.activeIntentIds.filter((id) => !idSet.has(id));
+      cached.activeIntents = cached.activeIntents.filter((e) => !e.id || !idSet.has(e.id));
+      cached.driftDetector.setGoalEmbeddings(cached.activeIntents.map((e) => e.embedding));
+    }
+  }
+
+  async activateIntent(sessionId: string, entryId: string): Promise<void> {
+    // Delegate the LRU + materialisation logic to the backend, then
+    // drop the cache entry so the next read pulls authoritative state.
+    // Keeping the cache in lock-step with the backend's internal LRU
+    // ordering would duplicate logic; this is rare-enough that a
+    // forced reload is fine.
+    await this.backend.activateIntent(sessionId, entryId);
+    this.drop(sessionId);
+  }
+
+  async touchActiveIntent(sessionId: string, entryId: string): Promise<void> {
+    await this.backend.touchActiveIntent(sessionId, entryId);
+    const cached = this.cache.get(sessionId);
+    if (cached) {
+      const entry = cached.intentHistory.find((e) => e.id === entryId);
+      if (entry) entry.lastActiveAt = Date.now();
     }
   }
 
