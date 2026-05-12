@@ -8,13 +8,22 @@
  *
  * Item shape (single table, composite key):
  *   pk = SESSION#<session_id>
- *   sk = META                          — session-level fields + GSI1 keys
+ *   sk = META                          — session-level scalars + GSI1 keys
+ *   sk = INTENT#<regAt:013>#<id>       — per-IntentEntry row (history + actives)
  *   sk = TURN#<turn:0000>              — per-turn intent + embedding
  *   sk = TOOL#<turn:0000>#<seq:0000>   — per-tool decision record
  *   sk = FILE#W#<pathHash>             — file written / edited (path keyed)
  *   sk = FILE#R#<seq:0000>             — file read (append-only)
  *   sk = ENV#<name>                    — env var mutation
  *   sk = METRIC#<turn:0000>            — per-turn metrics
+ *
+ * Intent rows: one row per IntentEntry, keyed by registeredAt (so a
+ * Query on `pk + begins_with(sk,"INTENT#")` returns history in
+ * chronological order). META.activeIntentIds is the small list of
+ * currently-live ids. Embeddings (~10KB each) live on the per-row
+ * Item, not on META — pre-split sessions concentrated 5-30 entries on
+ * a single META row and exceeded DynamoDB's 400KB item limit on long
+ * sessions, surfacing as ValidationException 500s on /intent.
  *
  * TTL: `ttl` attribute (epoch seconds), refreshed on every write, 30d default.
  *
@@ -160,6 +169,47 @@ function pk(sessionId: string): string {
 function hashPath(path: string): string {
   return createHash("sha1").update(path).digest("hex").substring(0, 16);
 }
+
+/**
+ * Build an IntentEntry from a DynamoDB Item retrieved via Get/Query
+ * on an INTENT# row. Strips the dynamo-specific (pk/sk/ttl) fields
+ * and coerces optional ones to their TS-typed defaults.
+ */
+function rowToIntentEntry(item: Record<string, any>): IntentEntry {
+  return {
+    id: item.id,
+    prompt: item.prompt ?? "",
+    contextual: item.contextual ?? "",
+    embedding: item.embedding ?? [],
+    registeredAt: item.registeredAt,
+    lastActiveAt: item.lastActiveAt,
+    classifierSource: item.classifierSource,
+    referencedEntryId: item.referencedEntryId,
+    kind: item.kind,
+    resolved: item.resolved ?? false,
+    images: item.images,
+  };
+}
+
+/**
+ * Sort key for an IntentEntry row. The registeredAt prefix makes a
+ * `begins_with(sk,"INTENT#")` query return entries in chronological
+ * order, which is what every reader of intentHistory expects. The id
+ * suffix disambiguates same-millisecond inserts (rare, but possible
+ * when a confirmation prompt and its parent share a timestamp).
+ *
+ * 13-digit zero-pad fits epoch-ms through year 2286.
+ */
+function intentSk(registeredAt: number, id: string): string {
+  return `INTENT#${String(registeredAt).padStart(13, "0")}#${id}`;
+}
+
+const INTENT_SK_PREFIX = "INTENT#";
+
+/** Per-IntentEntry persisted size budget. The serialised row carries
+ *  prompt + contextual + a 1024-d Cohere embedding (~10KB) + a few
+ *  small fields, comfortably under DynamoDB's 400KB hard limit. */
+const MAX_INTENT_ENTRY_FIELD_BYTES = 10_000;
 
 // ---- store ------------------------------------------------------------------
 
@@ -430,6 +480,9 @@ export class DynamoSessionStore implements SessionStore {
     const tools = items
       .filter((i) => typeof i.sk === "string" && i.sk.startsWith("TOOL#"))
       .sort((a, b) => (a.sk as string).localeCompare(b.sk as string));
+    const intentItems = items
+      .filter((i) => typeof i.sk === "string" && i.sk.startsWith(INTENT_SK_PREFIX))
+      .sort((a, b) => (a.sk as string).localeCompare(b.sk as string));
     const filesWrittenItems = items.filter(
       (i) => typeof i.sk === "string" && i.sk.startsWith("FILE#W#"),
     );
@@ -534,47 +587,83 @@ export class DynamoSessionStore implements SessionStore {
       lockedHijacked: meta?.lockedHijacked ?? false,
       ownerSub: meta?.ownerSub ?? null,
       ownerEmail: meta?.ownerEmail ?? null,
-      // Intent stack + turn-state markers. Stored on META so the cache
-      // miss / failover path reconstructs them correctly. Older sessions
-      // pre-stack-feature read back as empty defaults.
-      activeIntents: (meta?.activeIntents as any) ?? [],
-      // History-active migration shim. New sessions persist
-      // intentHistory + activeIntentIds; legacy ones don't have those
-      // fields, so derive them lazily from the legacy activeIntents:
-      // synthesise stable ids for entries that don't have them
-      // (deterministic = sha256 of prompt + registeredAt + position so
-      // any classifier-written referencedEntryId remains stable across
-      // re-reads), then treat the entire stack as both history and
-      // active. Either branch produces a state that's behaviour-
-      // equivalent to the legacy single-stack model.
+      // Intent stack + turn-state markers. Three input shapes are
+      // possible during the per-row migration window:
       //
-      // Step-6 review fix: deterministic ids replace per-read randomUUID
-      // so referencedEntryId pointers (sub-task parent / replacement
-      // target / revisit revival) stay stable. The legacy → history-active
-      // migration happens lazily on next setActiveIntents — no batch
-      // backfill needed.
+      //   (A) post-migration: META has activeIntentIds (small list)
+      //       and INTENT# rows hold the entries. Build intentHistory
+      //       from intentItems, materialise activeIntents by id.
+      //   (B) mid-migration: legacy META blobs exist alongside (or
+      //       instead of) INTENT# rows. Prefer rows where present,
+      //       fall back to blobs. Migration runs on the next write.
+      //   (C) pre-migration: only legacy blobs. Synthesise stable
+      //       ids and treat the stack as both history and active so
+      //       later writes can lazy-migrate.
       ...(() => {
-        if (meta?.intentHistory && meta?.activeIntentIds) {
+        const rowHistory = intentItems.map(rowToIntentEntry);
+        const activeIdsFromMeta = (meta?.activeIntentIds as string[] | undefined) ?? [];
+
+        if (rowHistory.length > 0) {
+          // Path (A) or (B): rows are authoritative.
+          const idToEntry = new Map(
+            rowHistory.filter((e) => e.id).map((e) => [e.id!, e] as const),
+          );
+          // If activeIntentIds is missing (very old META that
+          // pre-dates the active-id pointer), fall back to all rows.
+          const activeIdsResolved =
+            activeIdsFromMeta.length > 0
+              ? activeIdsFromMeta
+              : rowHistory.filter((e) => !e.resolved).map((e) => e.id!);
+          const activeIntents = activeIdsResolved
+            .map((id) => idToEntry.get(id))
+            .filter((e): e is IntentEntry => Boolean(e));
+          // Build intentLastActive from the per-row lastActiveAt.
+          const intentLastActive: Record<string, number> = {};
+          for (const e of rowHistory) {
+            if (e.id && typeof e.lastActiveAt === "number") {
+              intentLastActive[e.id] = e.lastActiveAt;
+            }
+          }
           return {
-            intentHistory: meta.intentHistory as IntentEntry[],
-            activeIntentIds: meta.activeIntentIds as string[],
+            intentHistory: rowHistory,
+            activeIntentIds: activeIdsResolved,
+            activeIntents,
+            intentLastActive,
           };
         }
+
+        // Path (C): only legacy META blobs. Synthesise ids so
+        // downstream classifier writes have stable referencedEntryId
+        // targets, and let the next write trigger the row migration.
         const legacy = ((meta?.activeIntents as IntentEntry[] | undefined) ?? []);
         const withIds = legacy.map((e, i) =>
           e.id ? e : { ...e, id: deterministicLegacyId(e, i) },
         );
         return {
-          intentHistory: withIds,
-          activeIntentIds: withIds.map((e) => e.id!),
+          intentHistory: (meta?.intentHistory as IntentEntry[] | undefined) ?? withIds,
+          activeIntentIds: activeIdsFromMeta.length > 0 ? activeIdsFromMeta : withIds.map((e) => e.id!),
+          activeIntents: withIds,
+          intentLastActive:
+            (meta?.intentLastActive as Record<string, number> | undefined) ?? {},
         };
       })(),
-      intentLastActive:
-        (meta?.intentLastActive as Record<string, number> | undefined) ?? {},
       lastUserPromptAt: meta?.lastUserPromptAt ?? 0,
       lastPreToolUseAt: meta?.lastPreToolUseAt ?? 0,
       lastStopAt: meta?.lastStopAt ?? 0,
     };
+
+    // Lazy migration trigger: if the legacy META blob is still
+    // present and we haven't yet written rows, run the migration.
+    // Runs in the background so loadSession's caller doesn't pay
+    // the cost — the next read will pick up the post-migration
+    // state from INTENT# rows.
+    if (meta?.intentHistory && intentItems.length === 0) {
+      this.migrateLegacyIntentRows(sessionId, meta).catch((err) => {
+        console.warn(
+          `[dynamo] lazy intent-row migration failed for ${sessionId.substring(0, 8)}: ${err}`,
+        );
+      });
+    }
 
     // Seed the tool-seq counter so future inserts don't collide with
     // existing items. Take the max seq per turn from the loaded tools.
@@ -682,7 +771,8 @@ export class DynamoSessionStore implements SessionStore {
       (i) =>
         i.sk.startsWith("TURN#") ||
         i.sk.startsWith("FILE#") ||
-        i.sk.startsWith("ENV#"),
+        i.sk.startsWith("ENV#") ||
+        i.sk.startsWith(INTENT_SK_PREFIX),
     );
 
     // BatchWrite is limited to 25 items at a time.
@@ -722,7 +812,12 @@ export class DynamoSessionStore implements SessionStore {
       // The interactive/learn intent stack and turn-state markers belong
       // to the task we're pivoting away from — wipe them so the next
       // /intent on this session is treated as a fresh first prompt.
+      // INTENT# rows themselves are deleted above; clear the pointer
+      // list and any legacy blob mirror for completeness.
+      activeIntentIds: [],
       activeIntents: [],
+      intentHistory: [],
+      intentLastActive: {},
       lastUserPromptAt: 0,
       lastPreToolUseAt: 0,
       lastStopAt: 0,
@@ -762,14 +857,24 @@ export class DynamoSessionStore implements SessionStore {
   }
 
   async noteStop(sessionId: string): Promise<void> {
+    // Mark every currently-active entry resolved=true on its own
+    // INTENT# row, so a subsequent "new-task" /intent will evict
+    // them. The earlier per-blob impl rewrote the entire
+    // activeIntents list; per-row UpdateItems are cheaper and don't
+    // touch the entries' embeddings or prompt text.
     const meta = await this.getMeta(sessionId);
-    const stack = ((meta?.activeIntents as IntentEntry[] | undefined) ?? []).map(
-      (e) => ({ ...e, resolved: true }),
-    );
-    await this.updateMeta(sessionId, {
-      lastStopAt: Date.now(),
-      activeIntents: stack,
-    });
+    const activeIds = (meta?.activeIntentIds as string[] | undefined) ?? [];
+    if (activeIds.length > 0) {
+      const all = await this.queryIntentRows(sessionId);
+      const byId = new Map(all.filter((e) => e.id).map((e) => [e.id!, e] as const));
+      for (const id of activeIds) {
+        const entry = byId.get(id);
+        if (entry) {
+          await this.updateIntentRow(sessionId, entry.registeredAt, id, { resolved: true });
+        }
+      }
+    }
+    await this.updateMeta(sessionId, { lastStopAt: Date.now() });
   }
 
   async replaceOriginalIntent(sessionId: string, prompt: string): Promise<void> {
@@ -784,6 +889,11 @@ export class DynamoSessionStore implements SessionStore {
       embedding: promptEmbedding,
       isConfirmation: false,
     };
+    // The originalIntent's embedding lives on this META row (it's a
+    // TurnIntent, not an IntentEntry). originalEmbedding is the
+    // historical name kept around for back-compat with existing
+    // readers and the SessionState shape. Both point at the same
+    // vector so /evaluate's drift check stays cheap.
     await this.updateMeta(sessionId, {
       originalIntent: newOriginal,
       originalEmbedding: promptEmbedding,
@@ -807,75 +917,55 @@ export class DynamoSessionStore implements SessionStore {
   async getActiveIntents(sessionId: string): Promise<IntentEntry[]> {
     const meta = await this.getMeta(sessionId);
     if (!meta) return [];
-    // History-active path: if we have history + ids, materialise from
-    // those. Otherwise (legacy schema) fall back to the stored
-    // activeIntents directly.
-    const history = meta.intentHistory as IntentEntry[] | undefined;
-    const activeIds = meta.activeIntentIds as string[] | undefined;
-    if (history && activeIds) {
-      const idToEntry = new Map(history.filter((e) => e.id).map((e) => [e.id!, e] as const));
-      const materialised = activeIds
-        .map((id) => idToEntry.get(id))
-        .filter((e): e is IntentEntry => Boolean(e));
-      // If the materialised set is empty but legacy activeIntents has
-      // content, prefer the legacy field — defends against partial
-      // migrations during the rollout.
-      if (materialised.length === 0 && (meta.activeIntents as IntentEntry[] | undefined)?.length) {
-        return meta.activeIntents as IntentEntry[];
-      }
-      return materialised;
+    // Legacy session that still has intentHistory on META — migrate
+    // first so subsequent reads land on the new path.
+    if (meta.intentHistory) {
+      await this.migrateLegacyIntentRows(sessionId, meta);
     }
-    return (meta.activeIntents as IntentEntry[] | undefined) ?? [];
+    const activeIds = (meta.activeIntentIds as string[] | undefined) ?? [];
+    if (activeIds.length === 0) return [];
+    // BatchGetItem on activeIntentIds. We'd need (registeredAt, id)
+    // pairs to BatchGetItem directly; instead Query the prefix and
+    // filter by id since the active set is small (≤MAX_ACTIVE_INTENTS).
+    // Cheaper than O(active) GetItems on a session with ≤MAX_ACTIVE_INTENTS
+    // rows in flight, and the consistent ordering simplifies LRU.
+    const all = await this.queryIntentRows(sessionId);
+    const idSet = new Set(activeIds);
+    const byId = new Map(all.filter((e) => e.id && idSet.has(e.id)).map((e) => [e.id!, e] as const));
+    return activeIds
+      .map((id) => byId.get(id))
+      .filter((e): e is IntentEntry => Boolean(e));
   }
 
   async setActiveIntents(sessionId: string, entries: IntentEntry[]): Promise<void> {
-    // Truncate prompt/contextual to avoid blowing the 400KB item limit.
-    // 10KB × 2 fields × 5 entries = 100KB max, plus 5 embeddings × ~4KB
-    // each = 20KB. Comfortably under. The judge sees the full prompt on
-    // the in-flight request; the persisted form is only used for restart
-    // recovery so a truncated copy is fine.
-    //
-    // History-active (Step 1): also write intentHistory + activeIntentIds
-    // alongside the legacy activeIntents field. Existing readers see the
-    // legacy field; new readers prefer the history+ids materialisation.
-    // Both can be populated safely until the legacy field is removed in
-    // Step 7 cleanup.
+    // Each entry becomes (or remains) its own INTENT# row. We then
+    // pin the active set on META as just a list of ids — small
+    // enough to never threaten the 400KB cap, large enough to keep
+    // the active-set ordering stable across restarts.
     const withIds = entries.map((e) =>
       e.id ? e : { ...e, id: randomUUID() },
     );
-    const persistable = withIds.map((e) => ({
-      ...e,
-      prompt: truncString(e.prompt, 10_000),
-      contextual: truncString(e.contextual, 10_000),
-    }));
-    // Merge into the existing intentHistory rather than overwrite —
-    // append-only semantics mean we never drop entries that were
-    // recorded by appendToHistory but aren't currently active.
-    //
-    // For entries that already exist in history, the caller's version
-    // wins (kind, classifierSource, resolved, etc. updates). Earlier
-    // versions skipped the update and silently lost classifier-override
-    // state on restart; replace-by-id keeps the in-memory and
-    // persisted views in agreement.
-    const existing = await this.getMeta(sessionId);
-    const existingHistory = (existing?.intentHistory as IntentEntry[] | undefined) ?? [];
-    const idToNew = new Map(persistable.map((e) => [e.id!, e]));
-    const merged: IntentEntry[] = existingHistory.map((e) =>
-      e.id && idToNew.has(e.id) ? idToNew.get(e.id)! : e,
-    );
-    const existingIds = new Set(existingHistory.map((e) => e.id));
-    for (const e of persistable) {
-      if (!existingIds.has(e.id)) merged.push(e);
+
+    // Persist each entry. PutItem is idempotent on (sessionId,
+    // registeredAt, id) — writing an entry that already exists
+    // overwrites in place, which is what we want when the caller
+    // refreshes resolved / lastActiveAt fields.
+    for (const entry of withIds) {
+      await this.putIntentEntry(sessionId, entry);
     }
-    // Cap at MAX_INTENT_HISTORY to prevent runaway item size on
-    // pathological sessions. 30d Dynamo TTL is the real limit.
-    const trimmedHistory =
-      merged.length > MAX_INTENT_HISTORY ? merged.slice(-MAX_INTENT_HISTORY) : merged;
+
+    // Replace the active pointer list. activeIntentIds drives both
+    // /evaluate's reads and LRU eviction; intentHistory is now the
+    // queried union of all INTENT# rows under this session.
     await this.updateMeta(sessionId, {
-      activeIntents: persistable,
-      intentHistory: trimmedHistory,
-      activeIntentIds: persistable.map((e) => e.id),
+      activeIntentIds: withIds.map((e) => e.id),
+      // Null out the legacy big-blob fields if they're still present
+      // on a partially-migrated session. updateMeta serialises null
+      // through to DynamoDB, which shrinks the META item.
+      intentHistory: null,
+      activeIntents: null,
     });
+
     // Keep the in-process drift detector in sync with the persisted
     // stack. Container failover loses this until the next loadSession,
     // which is acceptable — the cache layer above us re-warms on miss.
@@ -888,49 +978,50 @@ export class DynamoSessionStore implements SessionStore {
 
   async appendToHistory(sessionId: string, entry: IntentEntry): Promise<string> {
     const id = entry.id ?? randomUUID();
-    const stored: IntentEntry = {
-      ...entry,
-      id,
-      prompt: truncString(entry.prompt, 10_000),
-      contextual: truncString(entry.contextual, 10_000),
-    };
-    const meta = await this.getMeta(sessionId);
-    const history = ((meta?.intentHistory as IntentEntry[] | undefined) ?? []).slice();
-    history.push(stored);
-    const trimmed =
-      history.length > MAX_INTENT_HISTORY ? history.slice(-MAX_INTENT_HISTORY) : history;
-    await this.updateMeta(sessionId, { intentHistory: trimmed });
+    const stored: IntentEntry = { ...entry, id };
+    await this.putIntentEntry(sessionId, stored);
     return id;
   }
 
   async getIntentHistory(sessionId: string, limit?: number): Promise<IntentEntry[]> {
     const meta = await this.getMeta(sessionId);
-    const history = (meta?.intentHistory as IntentEntry[] | undefined) ?? [];
-    if (limit === undefined || limit >= history.length) return history;
-    return history.slice(-limit);
+    if (meta?.intentHistory) {
+      // Legacy fallback for sessions that still have the blob on
+      // META and haven't been read since the migration shipped.
+      // Triggers a one-shot migration so the next read goes via
+      // INTENT# rows.
+      await this.migrateLegacyIntentRows(sessionId, meta);
+    }
+    const all = await this.queryIntentRows(sessionId);
+    if (limit === undefined || limit >= all.length) return all;
+    return all.slice(-limit);
   }
 
   async markIntentResolved(sessionId: string, entryIds: string[]): Promise<void> {
     if (entryIds.length === 0) return;
+    // Targeted UpdateItem on each affected INTENT# row + a single
+    // META update to drop them from activeIntentIds. We need each
+    // row's registeredAt to build its sk; pull that from the rows
+    // we already have (cheap Query).
+    const all = await this.queryIntentRows(sessionId);
     const idSet = new Set(entryIds);
+    for (const e of all) {
+      if (e.id && idSet.has(e.id)) {
+        await this.updateIntentRow(sessionId, e.registeredAt, e.id, { resolved: true });
+      }
+    }
+
     const meta = await this.getMeta(sessionId);
-    const history = ((meta?.intentHistory as IntentEntry[] | undefined) ?? []).map((e) =>
-      e.id && idSet.has(e.id) ? { ...e, resolved: true } : e,
-    );
     const activeIds = ((meta?.activeIntentIds as string[] | undefined) ?? []).filter(
       (id) => !idSet.has(id),
     );
-    // Mirror into the legacy activeIntents field so old readers see
-    // the same effective state.
-    const idToEntry = new Map(history.filter((e) => e.id).map((e) => [e.id!, e] as const));
+    await this.updateMeta(sessionId, { activeIntentIds: activeIds });
+
+    // Re-sync drift detector against the now-shrunk active set.
+    const idToEntry = new Map(all.filter((e) => e.id).map((e) => [e.id!, e] as const));
     const activeIntents = activeIds
       .map((id) => idToEntry.get(id))
       .filter((e): e is IntentEntry => Boolean(e));
-    await this.updateMeta(sessionId, {
-      intentHistory: history,
-      activeIntentIds: activeIds,
-      activeIntents,
-    });
     this.eph(sessionId).driftDetector.setGoalEmbeddings(
       activeIntents.map((e) => e.embedding),
     );
@@ -938,57 +1029,60 @@ export class DynamoSessionStore implements SessionStore {
 
   async activateIntent(sessionId: string, entryId: string): Promise<void> {
     const meta = await this.getMeta(sessionId);
-    const history = ((meta?.intentHistory as IntentEntry[] | undefined) ?? []).slice();
-    const idx = history.findIndex((e) => e.id === entryId);
-    if (idx === -1) {
+    const all = await this.queryIntentRows(sessionId);
+    const target = all.find((e) => e.id === entryId);
+    if (!target) {
       console.warn(`  [SESSION ${sessionId.substring(0, 8)}] activateIntent: unknown entry id ${entryId}`);
       return;
     }
-    // Mark not-resolved and stamp lastActiveAt.
-    history[idx] = {
-      ...history[idx],
+
+    // Stamp the row: not-resolved, lastActiveAt = now.
+    const now = Date.now();
+    await this.updateIntentRow(sessionId, target.registeredAt, entryId, {
       resolved: false,
-      lastActiveAt: Date.now(),
-    };
+      lastActiveAt: now,
+    });
+
     const activeIds = ((meta?.activeIntentIds as string[] | undefined) ?? []).slice();
     if (!activeIds.includes(entryId)) activeIds.push(entryId);
 
-    // LRU evict if over MAX_ACTIVE_INTENTS. Pop the entry whose
-    // lastActiveAt (or registeredAt fallback) is oldest.
-    // Flush any buffered touches first so LRU sees the freshest data.
+    // LRU evict if over MAX_ACTIVE_INTENTS. Flush pending touches
+    // first so LRU sees the freshest lastActiveAt timestamps.
     await this.flushTouchBuffer(sessionId);
-    const lastActive: Record<string, number> =
-      ((meta?.intentLastActive as Record<string, number> | undefined) ?? {});
     let finalActiveIds = activeIds;
+    let evictedIds: string[] = [];
     if (activeIds.length > MAX_ACTIVE_INTENTS) {
-      const idToEntry = new Map(history.filter((e) => e.id).map((e) => [e.id!, e] as const));
+      // The fresh row above hasn't been re-read — rebuild a map from
+      // the queried rows + the activated entry's new lastActiveAt
+      // override.
+      const idToEntry = new Map(all.filter((e) => e.id).map((e) => [e.id!, e] as const));
       const sorted = [...activeIds].sort((a, b) => {
         const ea = idToEntry.get(a);
         const eb = idToEntry.get(b);
-        const ta = lastActive[a] ?? ea?.lastActiveAt ?? ea?.registeredAt ?? 0;
-        const tb = lastActive[b] ?? eb?.lastActiveAt ?? eb?.registeredAt ?? 0;
+        const ta = a === entryId ? now : ea?.lastActiveAt ?? ea?.registeredAt ?? 0;
+        const tb = b === entryId ? now : eb?.lastActiveAt ?? eb?.registeredAt ?? 0;
         return ta - tb;
       });
-      const evict = new Set(sorted.slice(0, sorted.length - MAX_ACTIVE_INTENTS));
+      evictedIds = sorted.slice(0, sorted.length - MAX_ACTIVE_INTENTS);
+      const evict = new Set(evictedIds);
       finalActiveIds = activeIds.filter((id) => !evict.has(id));
-      // Mark evicted entries resolved so a future revisit can revive them.
-      for (let i = 0; i < history.length; i++) {
-        if (history[i].id && evict.has(history[i].id!)) {
-          history[i] = { ...history[i], resolved: true };
-        }
-      }
     }
 
-    const idToEntry = new Map(history.filter((e) => e.id).map((e) => [e.id!, e] as const));
+    // Mark evicted entries resolved so a future revisit can revive them.
+    for (const id of evictedIds) {
+      const entry = all.find((e) => e.id === id);
+      if (entry) await this.updateIntentRow(sessionId, entry.registeredAt, id, { resolved: true });
+    }
+
+    await this.updateMeta(sessionId, { activeIntentIds: finalActiveIds });
+
+    // Re-sync the in-process drift detector. The activated row's
+    // embedding lives on its INTENT# item; we already have it in
+    // `all`, modulo our own update which only flipped scalar fields.
+    const idToEntry = new Map(all.filter((e) => e.id).map((e) => [e.id!, e] as const));
     const activeIntents = finalActiveIds
       .map((id) => idToEntry.get(id))
       .filter((e): e is IntentEntry => Boolean(e));
-
-    await this.updateMeta(sessionId, {
-      intentHistory: history,
-      activeIntentIds: finalActiveIds,
-      activeIntents,
-    });
     this.eph(sessionId).driftDetector.setGoalEmbeddings(
       activeIntents.map((e) => e.embedding),
     );
@@ -998,17 +1092,12 @@ export class DynamoSessionStore implements SessionStore {
    * Bump lastActiveAt for an entry. Used by /evaluate to drive LRU
    * eviction of the active set.
    *
-   * Earlier versions rewrote the entire intentHistory blob on every
-   * /evaluate (per-active-entry × tools-per-turn = ~150 full Dynamo
-   * writes per turn). Now we keep an `intentLastActive` map field on
-   * META (id → epoch ms) so the touch is a single map-key update,
-   * and we batch-update with a small in-process buffer flushed every
-   * TOUCH_FLUSH_MS so a burst of /evaluate calls collapses into one
-   * Dynamo write.
-   *
-   * Active-set LRU eviction reads this map alongside the per-entry
-   * lastActiveAt fallback, so legacy entries pre-migration still
-   * eviction-rank by their registeredAt.
+   * Per-row schema (post-split): lastActiveAt lives on the INTENT#
+   * item, not on a META map. Each touch is a tiny UpdateItem on that
+   * one row (~50 bytes), but a turn fires ~150 of them — so we still
+   * coalesce into a single per-entry write per TOUCH_FLUSH_MS window.
+   * A burst that touches the same entry 30 times collapses to one
+   * UpdateItem with the latest timestamp.
    */
   async touchActiveIntent(sessionId: string, entryId: string): Promise<void> {
     let buf = this.touchBuffer.get(sessionId);
@@ -1019,7 +1108,7 @@ export class DynamoSessionStore implements SessionStore {
     buf.pending.set(entryId, Date.now());
     if (buf.timer) return;
     // Schedule flush. Coalesces every touch in the next TOUCH_FLUSH_MS
-    // window into a single UPDATE call.
+    // window into per-entry UpdateItems.
     buf.timer = setTimeout(() => {
       this.flushTouchBuffer(sessionId).catch((err) => {
         console.warn(
@@ -1039,100 +1128,22 @@ export class DynamoSessionStore implements SessionStore {
     entryId: string,
     source: "embedding" | "llm" | "llm-confirmed" | "embedding-fallback-timeout",
   ): Promise<void> {
-    // Single-field UPDATE on the matching list element. Avoids
-    // rewriting the entire intentHistory blob just to flip one
-    // string field — the LLM-confirmed-tagging path runs on every
-    // /intent in steady state, so the savings matter.
+    // One UpdateItem on the row that owns this entry id. The previous
+    // implementation built a `SET intentHistory[3].classifierSource`
+    // expression against META, which paid the cost of META's whole
+    // item revalidation just to flip a string. Per-row, this is a
+    // ~30-byte UpdateItem.
     //
-    // The DynamoDB list-index update needs the index, so we read META,
-    // find the position, and emit a SET expression like
-    // `SET intentHistory[3].classifierSource = :src`. Per-item
-    // versioning (updateMeta's existing optimistic-concurrency check)
-    // still guards against concurrent writers.
-    const meta = await this.getMeta(sessionId);
-    const history = (meta?.intentHistory as IntentEntry[] | undefined) ?? [];
-    const idx = history.findIndex((e) => e.id === entryId);
-    if (idx === -1) return;
-    // Mirror in legacy activeIntents if the entry is present there too,
-    // so dashboards reading the old field see the same tag.
-    const activeIntents = (meta?.activeIntents as IntentEntry[] | undefined) ?? [];
-    const aIdx = activeIntents.findIndex((e) => e.id === entryId);
-    const update: Record<string, any> = {};
-    update[`__listSet:intentHistory[${idx}].classifierSource`] = source;
-    if (aIdx !== -1) {
-      update[`__listSet:activeIntents[${aIdx}].classifierSource`] = source;
-    }
-    await this.updateMetaListSet(sessionId, update);
-  }
-
-  /**
-   * Helper for list-element field updates. updateMeta only handles
-   * top-level scalar / map / list replacement; targeting a nested
-   * field inside a list element needs a different UpdateExpression
-   * shape (`SET intentHistory[3].classifierSource = :src`).
-   *
-   * Keys in `update` are formatted "__listSet:path[index].field" and
-   * the value is the new value. Rebuilds the full UpdateExpression
-   * with the same version-conditional semantics as updateMeta.
-   */
-  private async updateMetaListSet(
-    sessionId: string,
-    update: Record<string, any>,
-  ): Promise<void> {
-    const MAX_RETRIES = 5;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      const current = await this.getMeta(sessionId);
-      const expectedVersion = (current?.version as number | undefined) ?? 0;
-      const names: Record<string, string> = { "#ttl": "ttl", "#version": "version" };
-      const values: Record<string, any> = {
-        ":ttl": ttl(),
-        ":expectedVersion": expectedVersion,
-        ":one": 1,
-        ":zero": 0,
-      };
-      const sets: string[] = [
-        "#ttl = :ttl",
-        "#version = if_not_exists(#version, :zero) + :one",
-      ];
-      let n = 0;
-      for (const [k, v] of Object.entries(update)) {
-        if (!k.startsWith("__listSet:")) continue;
-        const path = k.slice("__listSet:".length);
-        // Path looks like "intentHistory[3].classifierSource".
-        const m = path.match(/^([a-zA-Z]+)\[(\d+)\]\.([a-zA-Z]+)$/);
-        if (!m) continue;
-        const [, listName, idx, field] = m;
-        const listAlias = `#L${n}`;
-        const fieldAlias = `#F${n}`;
-        const valAlias = `:v${n}`;
-        names[listAlias] = listName;
-        names[fieldAlias] = field;
-        values[valAlias] = v;
-        sets.push(`${listAlias}[${idx}].${fieldAlias} = ${valAlias}`);
-        n++;
-      }
-      if (n === 0) return;
-      try {
-        await this.client.send(
-          new UpdateCommand({
-            TableName: this.tableName,
-            Key: { pk: pk(sessionId), sk: "META" },
-            UpdateExpression: `SET ${sets.join(", ")}`,
-            ConditionExpression:
-              "attribute_not_exists(#version) OR #version = :expectedVersion",
-            ExpressionAttributeNames: names,
-            ExpressionAttributeValues: values,
-          }),
-        );
-        return;
-      } catch (err) {
-        if (err instanceof ConditionalCheckFailedException) {
-          if (attempt === MAX_RETRIES) throw err;
-          continue;
-        }
-        throw err;
-      }
-    }
+    // We still need (registeredAt, id) to address the row, so look it
+    // up from the existing rows. In steady state this read is served
+    // from the cache layer above — the expensive Query only happens
+    // on a cold session.
+    const all = await this.queryIntentRows(sessionId);
+    const target = all.find((e) => e.id === entryId);
+    if (!target) return;
+    await this.updateIntentRow(sessionId, target.registeredAt, entryId, {
+      classifierSource: source,
+    });
   }
 
   async getIntentLastActive(sessionId: string): Promise<Record<string, number>> {
@@ -1141,8 +1152,18 @@ export class DynamoSessionStore implements SessionStore {
     // running back-to-back with /evaluate could LRU-evict an entry
     // that's actually been touched in the buffer.
     await this.flushTouchBuffer(sessionId);
-    const meta = await this.getMeta(sessionId);
-    return ((meta?.intentLastActive as Record<string, number> | undefined) ?? {});
+    // Reconstruct the map from the per-entry rows. Pre-migration META
+    // sessions go through the legacy fallback in getActiveIntents
+    // already; if migration cleared the META blob, the per-row
+    // lastActiveAt fields are the source of truth.
+    const all = await this.queryIntentRows(sessionId);
+    const out: Record<string, number> = {};
+    for (const e of all) {
+      if (e.id && typeof e.lastActiveAt === "number") {
+        out[e.id] = e.lastActiveAt;
+      }
+    }
+    return out;
   }
 
   private async flushTouchBuffer(sessionId: string): Promise<void> {
@@ -1152,22 +1173,201 @@ export class DynamoSessionStore implements SessionStore {
     if (buf.timer) clearTimeout(buf.timer);
     if (buf.pending.size === 0) return;
 
-    const meta = await this.getMeta(sessionId);
-    const lastActive: Record<string, number> =
-      ((meta?.intentLastActive as Record<string, number> | undefined) ?? {});
-    let changed = false;
+    // We need each entry's registeredAt to address its row. Cheap
+    // when the cache above us has the rows hot; on cold paths this
+    // is the same Query the buffer would have done anyway via /evaluate.
+    const all = await this.queryIntentRows(sessionId);
+    const idToRegisteredAt = new Map(
+      all.filter((e) => e.id).map((e) => [e.id!, e.registeredAt] as const),
+    );
     for (const [id, ts] of buf.pending.entries()) {
-      const prev = lastActive[id];
-      // Only persist if the new timestamp is materially newer than
-      // the persisted one. Coalesced bursts within the same
-      // TOUCH_FLUSH_MS window produce a single write.
-      if (prev === undefined || ts > prev) {
-        lastActive[id] = ts;
-        changed = true;
-      }
+      const reg = idToRegisteredAt.get(id);
+      if (reg === undefined) continue;
+      // Per-row UpdateItem. Idempotent — re-touching with an older
+      // timestamp would harm LRU ordering, so guard with the buffer's
+      // own coalescing (already takes the latest ts via Map.set).
+      await this.updateIntentRow(sessionId, reg, id, { lastActiveAt: ts });
     }
-    if (!changed) return;
-    await this.updateMeta(sessionId, { intentLastActive: lastActive });
+  }
+
+  // ---- intent rows (per-IntentEntry) ----------------------------------
+
+  /**
+   * Write a single IntentEntry as its own DynamoDB item. Truncates
+   * prompt + contextual to MAX_INTENT_ENTRY_FIELD_BYTES so a giant
+   * pasted prompt can't break the per-item budget.
+   *
+   * Idempotent on (sessionId, registeredAt, id): re-writing the same
+   * entry is a PutItem that overwrites — used by activateIntent /
+   * markIntentResolved / setEntryClassifierSource to flip individual
+   * fields without rewriting any other entry.
+   */
+  private async putIntentEntry(sessionId: string, entry: IntentEntry): Promise<void> {
+    if (!entry.id) {
+      throw new Error("putIntentEntry requires entry.id");
+    }
+    const stored: IntentEntry = {
+      ...entry,
+      prompt: truncString(entry.prompt, MAX_INTENT_ENTRY_FIELD_BYTES),
+      contextual: truncString(entry.contextual, MAX_INTENT_ENTRY_FIELD_BYTES),
+    };
+    await this.client.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: {
+          pk: pk(sessionId),
+          sk: intentSk(stored.registeredAt, stored.id!),
+          ...stored,
+          ttl: ttl(),
+        },
+      }),
+    );
+  }
+
+  /**
+   * Read every INTENT# row for a session, newest-last (chronological).
+   * Used by getIntentHistory and by any path that needs to reconstruct
+   * the entry-id → embedding map for drift detection.
+   */
+  private async queryIntentRows(sessionId: string): Promise<IntentEntry[]> {
+    const items: Record<string, any>[] = [];
+    let cursor: Record<string, any> | undefined;
+    do {
+      const r = await this.client.send(
+        new QueryCommand({
+          TableName: this.tableName,
+          KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+          ExpressionAttributeValues: {
+            ":pk": pk(sessionId),
+            ":prefix": INTENT_SK_PREFIX,
+          },
+          ExclusiveStartKey: cursor,
+        }),
+      );
+      if (r.Items) items.push(...r.Items);
+      cursor = r.LastEvaluatedKey;
+    } while (cursor);
+    return items.map(rowToIntentEntry);
+  }
+
+  /**
+   * Targeted UpdateItem on a single INTENT# row. Used to flip
+   * resolved / lastActiveAt / classifierSource without rewriting the
+   * whole entry. The (registeredAt, id) tuple is the row's identity —
+   * callers must pass both because the sk is composite.
+   */
+  private async updateIntentRow(
+    sessionId: string,
+    registeredAt: number,
+    id: string,
+    fields: Record<string, any>,
+  ): Promise<void> {
+    const names: Record<string, string> = { "#ttl": "ttl" };
+    const values: Record<string, any> = { ":ttl": ttl() };
+    const sets: string[] = ["#ttl = :ttl"];
+    let i = 0;
+    for (const [k, v] of Object.entries(fields)) {
+      const nk = `#f${i}`;
+      const nv = `:f${i}`;
+      names[nk] = k;
+      values[nv] = v;
+      sets.push(`${nk} = ${nv}`);
+      i++;
+    }
+    if (i === 0) return;
+    try {
+      await this.client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: { pk: pk(sessionId), sk: intentSk(registeredAt, id) },
+          UpdateExpression: `SET ${sets.join(", ")}`,
+          ExpressionAttributeNames: names,
+          ExpressionAttributeValues: values,
+        }),
+      );
+    } catch (err) {
+      // The row may have been TTL-evicted, or the entry was never
+      // actually persisted (legacy path). Log and continue —
+      // dropping a metadata flip on a non-existent row is benign.
+      console.warn(
+        `[dynamo] updateIntentRow miss session=${sessionId.substring(0, 8)} id=${id}: ${err}`,
+      );
+    }
+  }
+
+  /**
+   * Migrate any META.intentHistory blob into per-row INTENT# items
+   * and clear the legacy fields. Idempotent: a session that's already
+   * been migrated has no intentHistory on META and this is a no-op.
+   *
+   * Runs lazily on the first read of a pre-migration session. Cost is
+   * one BatchWriteItem per 25 entries plus one UpdateMeta. Cheap
+   * relative to the read it's piggybacking on, and it permanently
+   * shrinks META so subsequent writes stop bumping into the 400KB
+   * limit.
+   */
+  private async migrateLegacyIntentRows(
+    sessionId: string,
+    meta: Record<string, any>,
+  ): Promise<void> {
+    const legacyHistory = meta.intentHistory as IntentEntry[] | undefined;
+    const legacyActive = meta.activeIntents as IntentEntry[] | undefined;
+    const legacyLastActive = meta.intentLastActive as Record<string, number> | undefined;
+    if (!legacyHistory || legacyHistory.length === 0) {
+      // Nothing to migrate. Still null out the duplicated
+      // originalEmbedding if it shadows originalIntent.embedding.
+      if (meta.originalEmbedding && meta.originalIntent?.embedding) {
+        await this.updateMeta(sessionId, { originalEmbedding: null });
+      }
+      return;
+    }
+
+    // Synthesise ids on entries that don't have them — same scheme
+    // loadSession used pre-migration so ids stay stable across
+    // migrations.
+    const withIds = legacyHistory.map((e, i) =>
+      e.id ? e : { ...e, id: deterministicLegacyId(e, i) },
+    );
+
+    // Apply per-entry lastActiveAt from the legacy intentLastActive
+    // map onto the row before persisting, so the LRU bookkeeping
+    // survives the migration.
+    const decorated = withIds.map((e) => {
+      const fromMap = legacyLastActive?.[e.id!];
+      return fromMap !== undefined && (e.lastActiveAt === undefined || fromMap > (e.lastActiveAt ?? 0))
+        ? { ...e, lastActiveAt: fromMap }
+        : e;
+    });
+
+    for (const entry of decorated) {
+      await this.putIntentEntry(sessionId, entry);
+    }
+
+    // Reconstruct activeIntentIds if the legacy field was missing —
+    // fall back to legacyActive's ids.
+    const activeIdsFromMeta = (meta.activeIntentIds as string[] | undefined) ?? [];
+    const activeIdsFromLegacy = (legacyActive ?? [])
+      .map((e) => e.id)
+      .filter((id): id is string => Boolean(id));
+    const activeIdsResolved =
+      activeIdsFromMeta.length > 0 ? activeIdsFromMeta : activeIdsFromLegacy;
+
+    await this.updateMeta(sessionId, {
+      activeIntentIds: activeIdsResolved,
+      // Null out the now-redundant blobs. DynamoDB SET to null is a
+      // valid attribute removal substitute when paired with the
+      // updateMeta SET semantics — and crucially it shrinks the item.
+      intentHistory: null,
+      activeIntents: null,
+      intentLastActive: null,
+      // originalEmbedding is now read off the originalIntent's row,
+      // so drop the duplicate too.
+      originalEmbedding: meta.originalIntent?.embedding ? null : meta.originalEmbedding,
+    });
+
+    console.log(
+      `  [SESSION ${sessionId.substring(0, 8)}] migrated ${decorated.length} intent entries to INTENT# rows`,
+    );
   }
 
   // ---- intent & drift -------------------------------------------------
