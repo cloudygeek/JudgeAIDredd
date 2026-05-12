@@ -292,15 +292,20 @@ def build_pipeline(
         # Slugify model id so file paths stay sane (Bedrock IDs contain dots/colons).
         slug = (promptarmor_model or "").replace(":", "_").replace(".", "_").replace("/", "_")
         defense_suffix += f"-promptarmor-{promptarmor_backend}-{slug}"
-    # Pipeline name must contain a key from MODEL_NAMES for attack crafting.
-    # Bedrock model IDs (eu.anthropic.claude-...) don't match — use a
-    # synthetic name that includes "claude-3-5-sonnet-20241022" or similar.
-    # OpenAI IDs (gpt-4o-2024-05-13 etc.) already exist in MODEL_NAMES, so
-    # they pass through unchanged.
+    # Pipeline name must contain a key from AgentDojo's MODEL_NAMES dict
+    # for the important_instructions attack template to find a match.
+    # MODEL_NAMES is a dict keyed by literal dated model ids (e.g.
+    # 'gpt-4o-mini-2024-07-18', 'claude-3-5-sonnet-20241022') →
+    # category prose ('GPT-4', 'Claude', etc.). The matching predicate
+    # is `full_name in pipeline.name` — a literal substring check.
+    #
+    # Rolling aliases like 'gpt-4o-mini' don't appear as keys in
+    # MODEL_NAMES, so we substitute the matching dated id when
+    # constructing the pipeline name. The actual LLM call still uses
+    # the rolling alias from OPENAI_MODELS — we're only manipulating
+    # the *label* AgentDojo uses to pick its attack template.
     friendly = model_id
-    if model_id.startswith("gpt-"):
-        pass  # already a valid MODEL_NAMES key
-    elif "haiku" in model_id:
+    if "haiku" in model_id:
         friendly = "claude-3-haiku-20240307"
     elif "sonnet" in model_id:
         friendly = "claude-3-5-sonnet-20241022"
@@ -311,6 +316,13 @@ def build_pipeline(
         # both consume the same OpenAI tool-call schema and follow similar
         # instruction-following conventions.
         friendly = "gpt-4o-2024-05-13"
+    elif model_id == "gpt-4o-mini" or model_id.startswith("gpt-4o-mini-"):
+        friendly = "gpt-4o-mini-2024-07-18"
+    elif model_id == "gpt-4o" or model_id.startswith("gpt-4o-"):
+        friendly = "gpt-4o-2024-05-13"
+    elif model_id.startswith("gpt-4.1") or model_id.startswith("gpt-4-"):
+        # gpt-4.1 / gpt-4-turbo families — use the dated GPT-4 entry.
+        friendly = "gpt-4-turbo-2024-04-09"
     pipeline.name = f"{friendly}{defense_suffix}"
 
     return pipeline
