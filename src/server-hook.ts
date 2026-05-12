@@ -198,6 +198,22 @@ function releaseScreenSlot(): void {
  * Apply CORS headers for endpoints the dashboard container calls. Returns
  * true and ends the response for OPTIONS preflight so the caller can bail.
  */
+/**
+ * Render process uptime as a compact human-readable string for the
+ * landing page. Three thresholds: <1m → "Ns", <1h → "Nm Ns",
+ * otherwise "Nh Nm". Days roll into hours so a 60h-old container
+ * shows "60h" rather than "2d 12h" — the operator usually wants to
+ * see "this is older than X" rather than the calendar split.
+ */
+function formatUptime(seconds: number): string {
+  const s = Math.floor(seconds);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 function applyCors(req: IncomingMessage, res: ServerResponse): boolean {
   if (!DASHBOARD_ORIGIN) return false;
   const origin = req.headers.origin;
@@ -1237,6 +1253,7 @@ const server = createServer(async (req, res) => {
   <div class="grid">
     <div class="k">Version</div><div class="v">${pkg.version}</div>
     <div class="k">Status</div><div class="v green">ok</div>
+    <div class="k">Uptime</div><div class="v">${formatUptime(process.uptime())}</div>
     <div class="k">Mode</div><div class="v">
       <select id="mode-select" class="mode-select mode-${CONFIG.mode}" onchange="switchMode(this.value)" title="Flip the global trust mode for this hook container">
         <option value="interactive"${CONFIG.mode === "interactive" ? " selected" : ""}>interactive</option>
@@ -1249,6 +1266,8 @@ const server = createServer(async (req, res) => {
     <div class="k">Judge model</div><div class="v">${CONFIG.judgeModel}</div>
     <div class="k">Embedding</div><div class="v">${CONFIG.embeddingModel}</div>
     <div class="k">Prompt variant</div><div class="v">${CONFIG.hardened || "standard"}</div>
+    <div class="k">Intent model</div><div class="v ${INTENT_HISTORY_MODE === "history-active" ? "green" : ""}">${INTENT_HISTORY_MODE}</div>
+    <div class="k">LLM classifier</div><div class="v ${INTENT_CLASSIFIER_LLM_ENABLED ? "green" : "amber"}">${INTENT_CLASSIFIER_LLM_ENABLED ? "enabled" : "disabled"}</div>
     <div class="k">Active sessions</div><div class="v">${registeredSessions.size}</div>
     <div class="k">Auth mode</div><div class="v ${process.env.DREDD_AUTH_MODE === "required" ? "green" : "amber"}">${process.env.DREDD_AUTH_MODE ?? "optional"}</div>
   </div>
@@ -1330,6 +1349,9 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
         role: "hook",
         config: CONFIG,
         activeSessions: registeredSessions.size,
+        uptimeSeconds: Math.floor(process.uptime()),
+        intentMode: INTENT_HISTORY_MODE,
+        intentClassifierLlmEnabled: INTENT_CLASSIFIER_LLM_ENABLED,
       });
     }
 
