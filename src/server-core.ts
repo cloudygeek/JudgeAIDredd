@@ -899,6 +899,97 @@ ${sanitisedUser}
 export const CONTINUATION_DRIFT_MAX = 0.30;
 export const NEW_TASK_DRIFT_MIN = 0.50;
 
+/**
+ * Drift threshold for suspecting a sub-task. When the drift to the
+ * top of the live stack is in the (CONTINUATION_DRIFT_MAX,
+ * SUB_TASK_DRIFT_MAX] range AND structural cues fire (phrasing
+ * pattern, parent-relation), classify as "sub-task" rather than
+ * "continuation". Below this we treat as continuation; above this we
+ * fall through to the topic-switch / replacement path.
+ *
+ * Empirically chosen at the midpoint between continuation (clearly
+ * the same goal) and new-task (clearly different); step 4 telemetry
+ * will tune.
+ */
+export const SUB_TASK_DRIFT_MAX = 0.40;
+
+/**
+ * Cosine *similarity* threshold used by the revisit classifier. When
+ * a non-active historical entry's embedding has similarity >= this
+ * value to the new prompt AND a phrasing pattern fires, classify as
+ * revisit. Set high (0.65) because false-positive revisits are
+ * expensive — we'd revive a stale goal and redirect the judge to it.
+ *
+ * Equivalent drift: 1 - 0.65 = 0.35. So the historical entry must be
+ * meaningfully closer than the CONTINUATION_DRIFT_MAX boundary; not
+ * just "vaguely similar topic", but "this looks like the same prior
+ * goal I'm being asked to resume".
+ */
+export const REVISIT_SIMILARITY_MIN = 0.65;
+
+/**
+ * Phrasing patterns that strongly signal the user is returning to a
+ * prior goal. The classifier requires BOTH a phrasing match AND a
+ * historical-entry similarity above REVISIT_SIMILARITY_MIN before
+ * classifying as revisit. Either signal alone is too weak: phrasing
+ * without historical context could be a new task ("let's go back to
+ * what we were saying — actually wait, do this instead"); high
+ * similarity without phrasing might just be coincidental topic
+ * overlap.
+ *
+ * Conservative starting set — step 4 telemetry will inform expansion.
+ */
+const REVISIT_PHRASING_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bgo\s+back\s+to\b/i,
+  /\breturn\s+to\b/i,
+  /\bback\s+to\s+(?:the|that|fixing|building|reviewing|working)\b/i,
+  /\blet'?s\s+(?:resume|finish|continue\s+with)\b/i,
+  /\bresume\s+(?:the|that|fixing|building)\b/i,
+  /\bnow\s+back\s+to\b/i,
+  /\bpick\s+up\s+(?:the|that|where)\b/i,
+];
+
+/**
+ * Phrasing patterns that signal the new prompt SUPERSEDES an existing
+ * active goal. "actually do X instead", "no wait, do Y" — the user is
+ * replacing what they were just doing rather than continuing or
+ * branching. Combined with mid-band drift to the top of the active
+ * stack, these promote a "continuation" to a "replacement" and mark
+ * the previous entry resolved.
+ */
+const REPLACEMENT_PHRASING_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bactually\s+(?:do|make|build|fix|use|try)\b/i,
+  /\binstead\s+of\b/i,
+  /\b(?:no|wait|cancel)\s*[,.]?\s+(?:do|let'?s|fix|make)\b/i,
+  /\bforget\s+(?:that|it)\b/i,
+  /\bnever\s+mind\b/i,
+  /\bscrap\s+(?:that|it)\b/i,
+  /\b(?:do|make|fix)\s+\S+\s+instead\b/i,
+];
+
+/**
+ * Phrasing patterns that signal a child task scoped under the active
+ * goal. "first add tests", "before that, fix X", "on the way, let's
+ * also Y". Combined with mid-band drift, these indicate sub-task
+ * rather than continuation: parent stays live, child is added.
+ */
+const SUB_TASK_PHRASING_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bfirst\s+(?:add|fix|build|let'?s|i'?ll|i\s+want|create)\b/i,
+  /\bbefore\s+(?:that|we)\b/i,
+  /\bon\s+the\s+way\b/i,
+  /\bquick(?:ly)?\s+(?:add|fix|do|tweak)\b/i,
+  /\bjust\s+(?:add|fix|do|tweak)\s+\S+\s+(?:then|first)\b/i,
+  /\bsmall\s+(?:thing|tweak|fix|change)\s+(?:first|before)\b/i,
+];
+
+/** Match any of a pattern set against a prompt. */
+function matchesAny(prompt: string, patterns: ReadonlyArray<RegExp>): boolean {
+  for (const re of patterns) {
+    if (re.test(prompt)) return true;
+  }
+  return false;
+}
+
 export type TurnState = "open" | "draining" | "closed";
 
 export function deriveTurnState(prev: {
@@ -998,6 +1089,153 @@ function trimStack(stack: IntentEntry[]): IntentEntry[] {
   if (fresh.length <= MAX_INTENT_STACK) return fresh;
   // Keep the most recent MAX_INTENT_STACK entries in registration order.
   return fresh.slice(-MAX_INTENT_STACK);
+}
+
+/**
+ * Embedding-fallback classifier. Decides which `kind` to assign to
+ * a fresh prompt without invoking an LLM, using only:
+ *   - drift to the top of the live stack
+ *   - similarity to non-active historical entries (revisit candidates)
+ *   - phrasing patterns
+ *   - turn state (open/draining/closed)
+ *
+ * Returns a verdict the caller applies via SessionStore methods.
+ *
+ * This is the synchronous fast path. Step 4 will spawn an async LLM
+ * classifier in parallel; if the LLM disagrees with this verdict at
+ * high confidence, it overrides on the next /evaluate. For now —
+ * embedding is the source of truth.
+ *
+ * Inputs:
+ *   prompt              — raw user prompt
+ *   promptEmbedding     — pre-computed (caller already needs it for drift)
+ *   active              — currently-active intents (from getActiveIntents)
+ *   history             — full session history (active + resolved entries)
+ *   driftToStackTop     — drift to last live entry, computed once by caller
+ *   turnState           — open/draining/closed
+ */
+export interface EmbeddingClassifierVerdict {
+  kind: IntentEntry["kind"];
+  /** For "revisit" / "replacement" — id of the entry being acted on. */
+  referencedEntryId?: string;
+  /** What signal drove the decision; used for telemetry. */
+  reason: string;
+}
+
+export function classifyIntentByEmbedding(
+  prompt: string,
+  promptEmbedding: number[],
+  active: IntentEntry[],
+  history: IntentEntry[],
+  driftToStackTop: number | null,
+  turnState: TurnState,
+): EmbeddingClassifierVerdict {
+  // Empty session — first prompt of the session, always original.
+  if (active.length === 0 && history.length === 0) {
+    return { kind: "original", reason: "empty session" };
+  }
+
+  // Turn-state preamble. These two states bind regardless of
+  // similarity: the LLM is mid-generation (queued) or hasn't drawn a
+  // turn boundary yet (open-followup). The user's prompt is going to
+  // be combined with what's already in flight, not treated as a fresh
+  // intent. Same as legacy.
+  if (turnState === "draining") {
+    return { kind: "queued", reason: "turn state draining" };
+  }
+  if (turnState === "open") {
+    return { kind: "open-followup", reason: "turn state open" };
+  }
+
+  // Closed turn state — we get to make a real decision based on drift.
+
+  // Revisit: phrasing pattern + a non-active historical entry strongly
+  // resembles this prompt. Check before topic-switch — phrasing like
+  // "go back to X" with high drift to current actives looks like a
+  // topic switch but is actually a revival.
+  if (matchesAny(prompt, REVISIT_PHRASING_PATTERNS)) {
+    const activeIds = new Set(active.map((e) => e.id).filter(Boolean));
+    let bestRevisit: { entry: IntentEntry; sim: number } | null = null;
+    for (const e of history) {
+      if (!e.id || activeIds.has(e.id)) continue; // not in active set
+      if (!e.embedding || e.embedding.length === 0) continue;
+      const sim = cosineSimilarity(e.embedding, promptEmbedding);
+      if (sim >= REVISIT_SIMILARITY_MIN && (!bestRevisit || sim > bestRevisit.sim)) {
+        bestRevisit = { entry: e, sim };
+      }
+    }
+    if (bestRevisit) {
+      return {
+        kind: "revisit",
+        referencedEntryId: bestRevisit.entry.id!,
+        reason: `revisit phrasing + similarity ${bestRevisit.sim.toFixed(3)} >= ${REVISIT_SIMILARITY_MIN}`,
+      };
+    }
+    // Phrasing matched but no historical anchor strong enough. Fall
+    // through; the LLM (step 4) might still detect a revisit we missed.
+  }
+
+  // No drift signal at all — defaults to continuation. Same as legacy.
+  if (driftToStackTop === null) {
+    return { kind: "continuation", reason: "no drift signal — default continuation" };
+  }
+
+  // Topic switch: high drift, no replacement-phrasing override below.
+  // The replacement check fires before this so "actually do Y instead"
+  // (mid-to-high drift, replaces the active goal) doesn't mis-fire as
+  // a topic switch that wipes the WHOLE stack.
+  if (driftToStackTop > NEW_TASK_DRIFT_MIN) {
+    return { kind: "new-task", reason: `drift ${driftToStackTop.toFixed(3)} > ${NEW_TASK_DRIFT_MIN}` };
+  }
+
+  // Replacement: phrasing match + the prompt is in the mid-band of
+  // drift relative to the top active. We're not so far off that it's
+  // a new task, not so close that it's a refinement — the user is
+  // pivoting one specific goal. The replaced entry is the top of the
+  // active stack (the freshest goal — what they were just doing).
+  if (matchesAny(prompt, REPLACEMENT_PHRASING_PATTERNS) && active.length > 0) {
+    const target = active[active.length - 1]; // most-recently registered active
+    if (target.id) {
+      return {
+        kind: "replacement",
+        referencedEntryId: target.id,
+        reason: `replacement phrasing + drift ${driftToStackTop.toFixed(3)}`,
+      };
+    }
+  }
+
+  // Sub-task: phrasing match in the mid-band of drift. Parent (top of
+  // active) stays live; the new entry is appended as a child.
+  // Distinct from continuation in two ways:
+  //   1. The judge sees both parent and child as live goals.
+  //   2. When the child is later marked resolved (via Stop), the
+  //      parent remains active — a continuation pop wouldn't preserve
+  //      that hierarchy.
+  if (
+    matchesAny(prompt, SUB_TASK_PHRASING_PATTERNS) &&
+    driftToStackTop <= SUB_TASK_DRIFT_MAX &&
+    active.length > 0
+  ) {
+    const parent = active[active.length - 1];
+    return {
+      kind: "sub-task",
+      referencedEntryId: parent.id,
+      reason: `sub-task phrasing + drift ${driftToStackTop.toFixed(3)} <= ${SUB_TASK_DRIFT_MAX}`,
+    };
+  }
+
+  // Continuation: low drift, no special phrasing.
+  if (driftToStackTop < CONTINUATION_DRIFT_MAX) {
+    return { kind: "continuation", reason: `drift ${driftToStackTop.toFixed(3)} < ${CONTINUATION_DRIFT_MAX}` };
+  }
+
+  // Ambiguous middle — default to continuation, conservative. Step 4's
+  // LLM classifier is most useful here, where embeddings aren't
+  // distinguishing.
+  return {
+    kind: "continuation",
+    reason: `ambiguous drift ${driftToStackTop.toFixed(3)} — default continuation`,
+  };
 }
 
 /**
@@ -1154,31 +1392,52 @@ export async function applyIntentStackUpdate(
   }
   const driftToStackTop = topSim === null ? null : 1 - topSim;
 
-  let kind: IntentEntry["kind"];
+  // Embedding-fallback classifier — synchronous decision based on
+  // drift, history, and phrasing. Step 4 will spawn an async LLM
+  // classifier in parallel; if it disagrees at high confidence the
+  // active set is updated on the next /evaluate.
+  const history = await store.getIntentHistory(sessionId);
+  const verdict = classifyIntentByEmbedding(
+    prompt,
+    promptEmbedding,
+    existing,
+    history,
+    driftToStackTop,
+    turnState,
+  );
+  const kind = verdict.kind;
+
+  // Per-kind state transitions on the active set.
   let baseStack = [...existing];
 
-  if (turnState === "draining") {
-    kind = "queued";
-  } else if (turnState === "open") {
-    kind = "open-followup";
-  } else if (driftToStackTop !== null && driftToStackTop > NEW_TASK_DRIFT_MIN) {
-    // Closed state, distant from any prior intent — true topic switch.
-    // Evict resolved entries entirely. The original is no longer
-    // special; a true topic switch wipes resolved history including
-    // the original.
-    kind = "new-task";
+  if (kind === "new-task") {
+    // True topic switch — wipe resolved entries (including the
+    // original) so the judge isn't anchored on a defunct goal.
     const toResolve = baseStack.filter((e) => e.resolved && e.id).map((e) => e.id!);
     if (toResolve.length > 0) {
       await store.markIntentResolved(sessionId, toResolve);
     }
     baseStack = baseStack.filter((e) => !e.resolved);
-  } else if (driftToStackTop !== null && driftToStackTop < CONTINUATION_DRIFT_MAX) {
-    kind = "continuation";
-  } else {
-    // Ambiguous middle. Default to continuation: append, keep prior
-    // entries. Conservative — we don't strip the user's earlier goals.
-    kind = "continuation";
+  } else if (kind === "replacement" && verdict.referencedEntryId) {
+    // Mark only the replaced entry resolved (kept in history). Other
+    // active goals stay live — the user is replacing one specific
+    // goal, not switching topics entirely.
+    await store.markIntentResolved(sessionId, [verdict.referencedEntryId]);
+    baseStack = baseStack.filter((e) => e.id !== verdict.referencedEntryId);
+  } else if (kind === "revisit" && verdict.referencedEntryId) {
+    // Bring the historical entry back into the active set. The
+    // SessionStore's activateIntent handles LRU eviction if the
+    // active set is already at capacity. Other active entries stay
+    // live in case the user is multi-tasking, but the new prompt
+    // anchors on the revived goal.
+    await store.activateIntent(sessionId, verdict.referencedEntryId);
+    // Re-read the active set so the freshly-revived entry is included.
+    baseStack = await store.getActiveIntents(sessionId);
   }
+  // continuation, sub-task, queued, open-followup: no eviction, just
+  // append the new entry. Sub-task is identical to continuation from
+  // an active-set perspective; the difference is the kind tag, which
+  // step 5 renders to the judge so it can distinguish parent/child.
 
   const entry: IntentEntry = {
     // Synthesise the id up-front so planActiveSetEviction can refer
@@ -1198,6 +1457,10 @@ export async function applyIntentStackUpdate(
     // LLM classifier; entries from the embedding-only path are tagged
     // explicitly so the dashboard + telemetry can count overrides.
     classifierSource: "embedding",
+    // referencedEntryId carried through for replacement/revisit/
+    // sub-task entries so the dashboard and step 5's judge prompt
+    // can render parent/child relationships.
+    referencedEntryId: verdict.referencedEntryId,
   };
   // LRU-evict to MAX_ACTIVE_INTENTS, marking evicted ids resolved (kept
   // in history). Replaces the old trimStack call.
@@ -1206,6 +1469,12 @@ export async function applyIntentStackUpdate(
     await store.markIntentResolved(sessionId, planned.resolveIds);
   }
   await store.setActiveIntents(sessionId, planned.keep);
+
+  console.log(
+    `  [SESSION ${sessionId.substring(0, 8)}] [INTENT-CLASSIFY] kind=${kind}` +
+    (verdict.referencedEntryId ? ` ref=${verdict.referencedEntryId.substring(0, 8)}` : "") +
+    ` drift=${driftToStackTop?.toFixed(3) ?? "n/a"} (${verdict.reason})`,
+  );
 
   return { kind, turnState, stack: planned.keep, driftToStackTop };
 }
