@@ -58,6 +58,7 @@ import {
   awaitPendingClassification,
   cancelPendingClassification,
 } from "./intent-classifier.js";
+import { CLERK_PUBLISHABLE_KEY } from "./clerk-auth.js";
 
 // CORS origin the dashboard container runs at. When unset, cross-origin
 // requests are rejected — same-origin only, which is what the hook gets
@@ -1328,6 +1329,7 @@ const server = createServer(async (req, res) => {
       const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
+<script>window.CLERK_PUBLISHABLE_KEY=${JSON.stringify(CLERK_PUBLISHABLE_KEY)};</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Judge AI Dredd — Hook API</title>
@@ -1360,12 +1362,51 @@ const server = createServer(async (req, res) => {
   #mode-status { color: #8b949e; font-size: 11px; margin-left: 8px; }
   #mode-status.err { color: #f85149; }
   #mode-status.ok { color: #3fb950; }
+  /* Sign-in overlay — mirrors dashboard.html's gate. */
+  .signin-overlay {
+    position: fixed; inset: 0; background: #0d1117;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 5000;
+  }
+  .signin-card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 32px 36px; max-width: 420px; text-align: center;
+  }
+  .signin-card h1 { font-size: 22px; margin-bottom: 4px; }
+  .signin-card p { color: #8b949e; font-size: 14px; margin: 12px 0 24px; }
+  .signin-btn {
+    background: #1f6feb; color: #fff; border: none;
+    border-radius: 6px; padding: 10px 18px; font-size: 14px;
+    font-weight: 600; cursor: pointer;
+  }
+  .signin-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .signout-btn {
+    background: transparent; color: #8b949e; border: 1px solid #30363d;
+    border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer;
+    font-family: inherit;
+  }
+  .signout-btn:hover { color: #c9d1d9; border-color: #8b949e; }
 </style>
 </head>
 <body>
-<div class="card">
-  <h1>Judge AI <span>Dredd</span> — Hook API</h1>
-  <div class="sub">PreToolUse defence service for Claude Code hooks. <span class="pill">role: hook</span></div>
+<div id="signin-overlay" class="signin-overlay">
+  <div class="signin-card">
+    <h1>Judge AI <span>Dredd</span></h1>
+    <p id="signin-msg">Loading sign-in…</p>
+    <button id="signin-btn" class="signin-btn" disabled onclick="dreddSignIn()">Sign in</button>
+  </div>
+</div>
+<div id="main-page" class="card" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
+    <div>
+      <h1>Judge AI <span>Dredd</span> — Hook API</h1>
+      <div class="sub">PreToolUse defence service for Claude Code hooks. <span class="pill">role: hook</span></div>
+    </div>
+    <div style="text-align:right;font-size:11px;color:#8b949e;white-space:nowrap">
+      <div id="signed-in-as" style="margin-bottom:6px"></div>
+      <button class="signout-btn" onclick="dreddSignOut()">Sign out</button>
+    </div>
+  </div>
 
   <div class="grid">
     <div class="k">Version</div><div class="v">${pkg.version}</div>
@@ -1407,6 +1448,96 @@ const server = createServer(async (req, res) => {
   </div>
 </div>
 <script>
+// ------------------------------------------------------------------
+// Clerk authentication gate. Mirrors the flow in src/web/dashboard.html:
+// load @clerk/clerk-js from the frontend API derived from the
+// publishable key, then reveal #main-page only after Clerk reports a
+// signed-in user. The hook API endpoints (/intent, /evaluate, /track,
+// /api/mode, etc.) are deliberately unchanged — they keep their
+// existing Bearer-API-key + CORS auth. This gate is presentation only.
+// ------------------------------------------------------------------
+const CLERK_PUBLISHABLE_KEY = window.CLERK_PUBLISHABLE_KEY || "";
+
+async function loadClerkSdk() {
+  if (!CLERK_PUBLISHABLE_KEY) {
+    document.getElementById('signin-msg').textContent =
+      'Hook UI auth not configured (CLERK_PUBLISHABLE_KEY missing on this container).';
+    return null;
+  }
+  const partsB64 = CLERK_PUBLISHABLE_KEY.split('_')[2] || '';
+  let frontendApi = '';
+  try {
+    frontendApi = atob(partsB64).replace(/\\$$/, '');
+  } catch {
+    document.getElementById('signin-msg').textContent =
+      'Could not parse CLERK_PUBLISHABLE_KEY.';
+    return null;
+  }
+  if (!frontendApi) {
+    document.getElementById('signin-msg').textContent =
+      'CLERK_PUBLISHABLE_KEY is malformed.';
+    return null;
+  }
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://' + frontendApi + '/npm/@clerk/clerk-js@5/dist/clerk.browser.js';
+    s.async = true;
+    s.crossOrigin = 'anonymous';
+    s.setAttribute('data-clerk-publishable-key', CLERK_PUBLISHABLE_KEY);
+    s.onload = () => resolve(window.Clerk);
+    s.onerror = () => reject(new Error('Failed to load Clerk SDK'));
+    document.head.appendChild(s);
+  });
+}
+
+async function bootstrapAuth() {
+  try {
+    const Clerk = await loadClerkSdk();
+    if (!Clerk) return;
+    await Clerk.load();
+    window.__dreddClerk = Clerk;
+    if (Clerk.user) {
+      onSignedIn(Clerk);
+    } else {
+      document.getElementById('signin-msg').textContent =
+        'Sign in to view the hook container status.';
+      const btn = document.getElementById('signin-btn');
+      btn.disabled = false;
+      btn.textContent = 'Sign in';
+      Clerk.addListener(({ user }) => {
+        if (user) onSignedIn(Clerk);
+      });
+    }
+  } catch (err) {
+    document.getElementById('signin-msg').textContent =
+      'Sign-in unavailable: ' + (err && err.message ? err.message : err);
+  }
+}
+
+function onSignedIn(Clerk) {
+  const user = Clerk.user;
+  const email =
+    (user && user.primaryEmailAddress && user.primaryEmailAddress.emailAddress) ||
+    (user && user.emailAddresses && user.emailAddresses[0] && user.emailAddresses[0].emailAddress) ||
+    (user && user.id) ||
+    'signed in';
+  document.getElementById('signed-in-as').textContent = email;
+  document.getElementById('signin-overlay').style.display = 'none';
+  document.getElementById('main-page').style.display = 'block';
+}
+
+function dreddSignIn() {
+  const Clerk = window.__dreddClerk;
+  if (Clerk) Clerk.openSignIn();
+}
+
+function dreddSignOut() {
+  const Clerk = window.__dreddClerk;
+  if (Clerk) Clerk.signOut().then(() => location.reload());
+}
+
+document.addEventListener('DOMContentLoaded', bootstrapAuth);
+
 async function switchMode(next) {
   const select = document.getElementById('mode-select');
   const status = document.getElementById('mode-status');

@@ -42,7 +42,7 @@ Routes called by the hook script:
 - `POST /end` ← Stop. Writes full session log to `results/`.
 - `POST /pivot` ← explicit user direction change.
 - `POST /compact` ← PreCompact notification.
-- `POST /notification` ← Notification hook. Increments per-session friction counter — fires every time Claude Code surfaces a permission/notification dialog to the user despite Dredd's PreToolUse decision. The only signal that Dredd allowed something but the user got prompted anyway. Counter is in-memory on the hook container (resets on Fargate task replacement); read it back via `GET /api/notifications/:id` immediately after a run while ALB stickiness still pins to the same task.
+- `POST /notification` ← Notification hook. Increments per-session friction counter — fires every time Claude Code surfaces a permission/notification dialog to the user despite Dredd's PreToolUse decision. The only signal that Dredd allowed something but the user got prompted anyway. Counter is in-memory on the hook container (resets on container restart); read it back via `GET /api/notifications/:id` immediately after a run while sticky-session routing still pins to the same task.
 - `GET /api/sessions`, `/api/session-log/:id`, `/api/feed`, `/api/policies` — feed the dashboard (`src/web/dashboard.html`).
 
 **Backfill**: if `/evaluate` fires before `/intent` (Dredd restarted mid-session), it parses `transcript_path` (Claude's JSONL) to reconstruct intent + recent tool calls. If that fails it falls back to policy-only mode.
@@ -59,26 +59,29 @@ The judge gets file-content context from `SessionTracker.getFileContextForJudge(
 
 Single bash script handling all hook events. Reads JSON from stdin, calls the right Dredd endpoint, prints JSON to stdout. **Fails open** if server is down (`permissionDecision: "ask"`). PostToolUse and Stop are fire-and-forget background curls so they don't block the agent. Install via `hooks/settings.json.example` — copy into `.claude/settings.json`.
 
-## Container image (AI Sandbox / Fargate)
+## Container images
 
-The AI Sandbox containers run the hook + dashboard servers in Fargate. The app is packaged into a zip that the platform's CodeBuild pipeline turns into a Docker image. Two zips, two services — see "Building the zips" below.
+The hook and dashboard run as two separate container images built from the same source tree. `DREDD_ROLE` (set by each image's entrypoint) selects which server boots. Designed to run on Fargate / ECS / any container runtime with an attached persistent volume for `$DATA_DIR` (`/data` by default — used for console logs and any disk fallback).
 
-**IMPORTANT:** Always commit before building the zip so the pre-commit hook bumps the version. The version prints on the sandbox status page — without a bump you can't tell old and new deployments apart. Do NOT include `node_modules/` in the zip — the Dockerfile runs `npm install` during the Docker build. Always delete the old zip before rebuilding (zip appends, it doesn't replace).
+**IMPORTANT:** Always commit before building so the pre-commit hook bumps the version. The version prints on the landing page and in `/api/health` — without a bump you can't tell old and new deployments apart. Do NOT include `node_modules/` in the zip — the Dockerfile runs `npm install` during the Docker build. Always delete the old zip before rebuilding (zip appends, it doesn't replace).
 
-**Deploying changes:** Code changes (server, dashboard, hooks, policy, etc.) are NOT picked up by running sandbox containers until a new zip is built AND redeployed through the CodeBuild pipeline. If you edit `src/`, `hooks/`, or any file that gets packaged, you must rebuild the zip (see below) and push it so CodeBuild produces a new image — otherwise sandbox containers keep serving the previous version.
+**Deploying changes:** Code changes (server, dashboard, hooks, policy, etc.) are NOT picked up by running containers until a new image is built and the running task definition is updated to it. If you edit `src/`, `hooks/`, or any file that gets packaged, rebuild the image and redeploy — containers keep serving the previous version otherwise.
 
 ### Building the zips
 
 There are **two role-specific zips** that share most of their content but
 ship different entrypoints/Dockerfiles. Each zip's entrypoint defaults
-`DREDD_ROLE` to its role so a Fargate task definition doesn't have to
-set the env var. Both zips package the same `src/` — the role only
-selects which server entry point boots.
+`DREDD_ROLE` to its role so a task definition doesn't have to set the
+env var. Both zips package the same `src/` — the role only selects
+which server entry point boots. The zip format is what container-build
+pipelines (CodeBuild, Cloud Build, etc.) commonly accept as a source
+artifact; if you're building locally with `docker build`, you can skip
+the zip step entirely.
 
-| Zip | Default `DREDD_ROLE` | Used by |
+| Zip | Default `DREDD_ROLE` | Image role |
 |---|---|---|
-| `judge-ai-dredd-hook.zip` | `hook` | the hook hot-path Fargate service |
-| `judge-ai-dredd-dashboard.zip` | `dashboard` | the dashboard Fargate service |
+| `judge-ai-dredd-hook.zip` | `hook` | hot-path service that Claude Code's hook script talks to |
+| `judge-ai-dredd-dashboard.zip` | `dashboard` | operator UI: sessions, logs, policies, API keys |
 
 Neither image installs the AWS CLI — both Bedrock and DynamoDB calls go
 through the AWS SDK (`@aws-sdk/client-bedrock-runtime`,
@@ -110,31 +113,29 @@ The zip layout is **flat** — `Dockerfile`, `docker-entrypoint.sh`,
 Filename inside the zip is always `docker-entrypoint.sh` regardless of
 role; the role-specific source lives at `fargate/docker-entrypoint-{hook,dashboard}.sh`.
 
-### Building the Docker image locally
+### Building the Docker images locally
 
 ```bash
-# Authenticate to the ECR pull-through cache first
-aws ecr get-login-password --region eu-west-1 | \
-  docker login --username AWS --password-stdin 891377407345.dkr.ecr.eu-west-1.amazonaws.com
-
-# Build from project root (uses fargate/Dockerfile.judge)
-docker build -f fargate/Dockerfile.judge \
+# Hook role
+docker build -f fargate/Dockerfile.hook-zip \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
   --build-arg GIT_DIRTY=$(if [ -n "$(git status --porcelain)" ]; then echo true; else echo false; fi) \
-  -t judge-ai-dredd-judge .
+  -t judge-ai-dredd-hook .
+
+# Dashboard role
+docker build -f fargate/Dockerfile.dashboard-zip \
+  --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
+  -t judge-ai-dredd-dashboard .
 ```
 
-## Standalone judge container (for vibe coders)
+### Combined single-role image
 
-Lightweight image (`fargate/Dockerfile.judge`) — just the HTTP server + dashboard, no Python/Playwright/test harness. Designed to run on EFS-backed Fargate with `/data` as a persistent volume.
-
-### Building and running
+`fargate/Dockerfile.judge` builds a single image that boots either role based on `DREDD_ROLE` at runtime — handy for self-hosted setups that want one image. Designed to run with `/data` mounted from a persistent volume (EFS, an EBS volume, or a local bind mount during development).
 
 ```bash
-# Build
 docker build -f fargate/Dockerfile.judge \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
-  -t judge-ai-dredd-judge .
+  -t judge-ai-dredd .
 
 # Run (all config via env vars)
 docker run -p 3000:3000 \
@@ -142,7 +143,7 @@ docker run -p 3000:3000 \
   -e MODE=interactive \
   -e BACKEND=bedrock \
   -e AWS_REGION=eu-west-2 \
-  judge-ai-dredd-judge
+  judge-ai-dredd
 ```
 
 ### Environment variables
@@ -158,7 +159,7 @@ docker run -p 3000:3000 \
 | `PORT` | `3000` | Server port |
 | `DATA_DIR` | `/data` | Base directory for sessions and logs |
 | `AWS_REGION` | `eu-west-2` | AWS region for Bedrock |
-| `STORE_BACKEND` | `dynamo` (sandbox) / `memory` (local) | Session state backend |
+| `STORE_BACKEND` | `memory` (default) — set to `dynamo` in production | Session state backend |
 | `DYNAMO_TABLE_NAME` | `jaid-sessions` | DynamoDB table for session state |
 | `DYNAMO_REGION` | `eu-west-1` | Region of the Dynamo table (distinct from Bedrock region) |
 | `DYNAMO_API_KEYS_TABLE_NAME` | `jaid-api-keys` | DynamoDB table for hook API keys |
@@ -167,10 +168,10 @@ docker run -p 3000:3000 \
 | `DREDD_DASHBOARD_ORIGIN` | (unset) | On the hook container, the CORS Origin the dashboard is served from |
 | `DREDD_AUTH_MODE` | `required` | `off` / `optional` / `required` — hook Bearer-key enforcement |
 | `CLERK_SECRET_KEY` | (unset) | **Dashboard role only.** Clerk secret used by `verifyToken` to validate session JWTs on every `/api/*` request. Without it the dashboard returns 503 on `/api/*` |
-| `CLERK_PUBLISHABLE_KEY` | (unset) | **Dashboard role only.** Clerk publishable key (`pk_test_…` / `pk_live_…`) injected into the dashboard HTML so the browser can bootstrap `@clerk/clerk-js`. `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is read as a fallback |
+| `CLERK_PUBLISHABLE_KEY` | (unset) | Clerk publishable key (`pk_test_…` / `pk_live_…`) injected into the dashboard HTML AND the hook container's landing page (`GET /`) so the browser can bootstrap `@clerk/clerk-js`. The hook page is gated on Clerk sign-in even though the hook's `/intent`, `/evaluate`, `/track`, etc. API endpoints remain on Bearer-API-key + CORS — the gate is presentation-only. `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is read as a fallback. If unset on a role, that role's HTML page stays gated with "auth not configured" |
 | `CLERK_JWT_PUBLIC_KEY` | (unset) | **Dashboard role only.** Static PEM (or JWK JSON) for Clerk's session-token signing key. When set, `verifyToken` skips the network JWKS fetch entirely — required when the container can't reach `api.clerk.com` / `*.clerk.dev` due to firewall rules. Get the JWKS from `https://<frontend-api>/.well-known/jwks.json`; paste either the JWK or its PEM export |
 
-Session logs: see the **Session storage** note below — Dynamo-backed for the shared sandbox deployment. Console logs (`dredd-YYYY-MM-DD.log`) still live on disk in `$DATA_DIR/logs/` and are viewable via the dashboard (Logs tab).
+Session logs: see the **Session storage** note below — Dynamo-backed when `STORE_BACKEND=dynamo`, otherwise in-process memory. Console logs (`dredd-YYYY-MM-DD.log`) still live on disk in `$DATA_DIR/logs/` and are viewable via the dashboard (Logs tab).
 
 ### Dashboard auth (Clerk)
 
@@ -187,12 +188,12 @@ Adding an admin requires a code change to `ADMIN_EMAILS` in `src/clerk-auth.ts` 
 
 ## Two-container architecture
 
-The sandbox runs **two Fargate services** that share the same image. `DREDD_ROLE` picks which role boots.
+Production deployments run **two services** behind separate URLs that share the same source. `DREDD_ROLE` picks which role boots.
 
-| Role | URL | What it does |
-|---|---|---|
-| `hook` (default) | `https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal/` | Hot path: `POST /intent`, `/evaluate`, `/track`, `/end`, `/pivot`, `/compact`, `/register`. Plus status: `/health`, `/api/health`, `/api/data-status`, `/api/whoami`. Plus runtime toggle: `POST /api/mode`. Plus the in-memory feed ring: `GET /api/feed`. Runs the Bedrock/Ollama preflight. Authenticates hook Bearer tokens. |
-| `dashboard` | `https://judge-ai-dredd.aisandbox.dev.ckotech.internal/` | UI: `GET /` (dashboard HTML), `/api/sessions`, `/api/session-log/:id`, `/api/policies`, `/api/logs*`, `/api/integration-bundle`, `/api/whoami`. Behind OIDC. No judge preflight. |
+| Role | What it does |
+|---|---|
+| `hook` (default) | Hot path: `POST /intent`, `/evaluate`, `/track`, `/end`, `/pivot`, `/compact`, `/register`. Plus status: `/health`, `/api/health`, `/api/data-status`, `/api/whoami`. Plus runtime toggle: `POST /api/mode`. Plus the in-memory feed ring: `GET /api/feed`. Runs the Bedrock/Ollama preflight. Authenticates hook Bearer tokens. Landing page at `GET /` (Clerk-gated). |
+| `dashboard` | UI: `GET /` (dashboard HTML), `/api/sessions`, `/api/session-log/:id`, `/api/policies`, `/api/logs*`, `/api/integration-bundle`, `/api/whoami`. Clerk-gated. No judge preflight. |
 
 Cross-container calls go **from the browser**:
 - Dashboard HTML → `$DREDD_HOOK_URL/api/feed` (live events)
@@ -201,7 +202,7 @@ Cross-container calls go **from the browser**:
 
 The hook container serves CORS headers scoped to `$DREDD_DASHBOARD_ORIGIN` on `/api/feed`, `/api/mode`, and `/api/health`.
 
-Why split: the dashboard's slow DynamoDB reads shouldn't share an event loop with the hook's hot path. Splitting also lets the dashboard live behind OIDC while hooks keep using Bearer keys. Single image; the entrypoint just sets `DREDD_ROLE`.
+Why split: the dashboard's slow DynamoDB reads shouldn't share an event loop with the hook's hot path. Splitting also lets the dashboard live behind its own auth boundary while the hook keeps using Bearer API keys for tool calls. Single image; the entrypoint just sets `DREDD_ROLE`.
 
 **Source files:**
 - `src/server.ts` — thin dispatcher, reads `DREDD_ROLE`
@@ -211,13 +212,13 @@ Why split: the dashboard's slow DynamoDB reads shouldn't share an event loop wit
 
 ## Session storage
 
-The shared sandbox server behind `https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal/` uses a **DynamoDB-backed `SessionStore`** (`src/dynamo-session-store.ts`) wrapped in a write-through LRU cache (`src/cached-session-store.ts`). Behaviour:
+When `STORE_BACKEND=dynamo`, the server uses a **DynamoDB-backed `SessionStore`** (`src/dynamo-session-store.ts`) wrapped in a write-through LRU cache (`src/cached-session-store.ts`). Behaviour:
 
-- **Every state mutation is persisted synchronously** to `jaid-sessions` in eu-west-1 — `/intent`, `/evaluate`, `/track`, `/pivot`, `/compact`, `/end` all write to Dynamo as part of the request.
+- **Every state mutation is persisted synchronously** to `jaid-sessions` (region `$DYNAMO_REGION`) — `/intent`, `/evaluate`, `/track`, `/pivot`, `/compact`, `/end` all write to Dynamo as part of the request.
 - **Reads hit the in-container cache first**; cache miss triggers a Query across all sort keys under `SESSION#<session_id>` to reconstruct full state.
-- **ALB sticky cookies** (wired into `hooks/dredd-hook.sh` via a per-session `~/.claude/dredd/cookies/<session_id>.jar`) pin a session to one container so the cache stays hot. Task replacement surfaces as a transparent cache miss + `loadSession()` round-trip — no loss of session state.
+- **Sticky-session cookies** (wired into `hooks/dredd-hook.sh` via a per-session `~/.claude/dredd/cookies/<session_id>.jar`) pin a session to one container so the cache stays hot. Task replacement surfaces as a transparent cache miss + `loadSession()` round-trip — no loss of session state.
 - **No more `results/*.json` on disk.** Dashboard endpoints (`/api/sessions`, `/api/session-log/:id`) assemble the old JSON shape from Dynamo on demand; legacy `results/*.json` files still surface as a fallback.
-- **Selection**: `STORE_BACKEND=dynamo` on sandbox containers (the entrypoint defaults to it). Local dev stays on `STORE_BACKEND=memory` (default) unless you export it.
+- **Selection**: `STORE_BACKEND=memory` (default) for local dev, `STORE_BACKEND=dynamo` in production. The entrypoint scripts set the production default for the hook and dashboard images.
 
 Per-session item shape:
 - `pk = SESSION#<session_id>`, `sk = META | TURN#<n> | TOOL#<turn>#<seq> | FILE#W#<pathHash> | FILE#R#<ts>#<seq> | ENV#<name> | METRIC#<n> | PIVOT#<ts>`
@@ -226,12 +227,12 @@ Per-session item shape:
 
 ### Checking `/data` persistence
 
-Session logs only survive container restart if `$DATA_DIR` is backed by a real volume (EFS on Fargate). Two ways to verify:
+Console logs (and any legacy on-disk session fallbacks) only survive container restart if `$DATA_DIR` is backed by a real volume — EFS, an EBS volume, or a host bind mount. Two ways to verify:
 
-1. **At startup** — `fargate/docker-entrypoint-judge.sh` prints the `/proc/mounts` line for `$DATA_DIR`, total bytes, existing session/log file counts, and the newest 3 session filenames. Check the container's stdout on boot.
+1. **At startup** — the entrypoint scripts (`fargate/docker-entrypoint-{hook,dashboard,judge}.sh`) print the `/proc/mounts` line for `$DATA_DIR`, total bytes, existing session/log file counts, and the newest 3 session filenames. Check the container's stdout on boot.
 2. **On a running container** — `GET /api/data-status` returns the same info as JSON:
    ```bash
-   curl -sk https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal/api/data-status | jq
+   curl -sk https://<hook-host>/api/data-status | jq
    ```
    Look for `mount.fstype` (`nfs4`/`efs` = persistent) and `sessions.fileCount`. If `mount` shows `"note": "not a mount point — ephemeral container layer"`, the task definition is missing a volume and logs will not survive restart.
 
@@ -239,18 +240,29 @@ Session logs only survive container restart if `$DATA_DIR` is backed by a real v
 
 | File | Role |
 |---|---|
-| `fargate/Dockerfile` | Test runner image — node:22-slim + AWS CLI v2 + Python + Playwright |
-| `fargate/Dockerfile.judge` | Standalone judge image (local builds from project root) |
-| `fargate/Dockerfile.judge-zip` | DEPRECATED — single-role image; use Dockerfile.hook-zip or Dockerfile.dashboard-zip |
-| `fargate/Dockerfile.hook-zip` | Hook-role image for the AI Sandbox zip — flat layout, no awscli, defaults DREDD_ROLE=hook |
-| `fargate/Dockerfile.dashboard-zip` | Dashboard-role image for the AI Sandbox zip — flat layout, no awscli, defaults DREDD_ROLE=dashboard |
-| `fargate/docker-entrypoint-hook.sh` | Hook entrypoint baked into the hook zip (DREDD_ROLE default: hook) |
-| `fargate/docker-entrypoint-dashboard.sh` | Dashboard entrypoint baked into the dashboard zip (DREDD_ROLE default: dashboard) |
-| `fargate/docker-entrypoint-judge.sh` | DEPRECATED — single-role entrypoint; kept as a fallback for any legacy task def that boots the combined image |
-| `fargate/api-server.cjs` | HTTP wrapper on port 3000 for the AI Sandbox ALB health check; provides `/run`, `/status`, `/logs` endpoints |
-| `fargate/buildspec.yml` | CodeBuild spec — builds and pushes to ECR (`621978938576.dkr.ecr.eu-west-2.amazonaws.com`) |
+| `fargate/Dockerfile.hook-zip` | Hook-role production image — flat layout, no awscli, entrypoint defaults `DREDD_ROLE=hook` |
+| `fargate/Dockerfile.dashboard-zip` | Dashboard-role production image — flat layout, no awscli, entrypoint defaults `DREDD_ROLE=dashboard` |
+| `fargate/Dockerfile.judge` | Combined single-role image — boots either role at runtime via `DREDD_ROLE` env var. Useful for self-hosted setups that want one image |
+| `fargate/docker-entrypoint-hook.sh` | Hook entrypoint baked into the hook image |
+| `fargate/docker-entrypoint-dashboard.sh` | Dashboard entrypoint baked into the dashboard image |
+| `fargate/docker-entrypoint-judge.sh` | Combined-image entrypoint — sets defaults shared by both roles |
 
-The sandbox server's **IAM task role and Fargate task definition live in the CKO AI Sandbox platform's IaC**, not in this repo.
+The container runtime (Fargate task definition / ECS service / etc.) and its IAM task role are not part of this repo — see **Infrastructure** below for what is owned here.
+
+## Infrastructure
+
+What this repo owns, in `terraform/`:
+
+| File | Resource |
+|---|---|
+| `terraform/jaid-sessions.tf` | `jaid-sessions` DynamoDB table — per-session state, 30-day TTL, point-in-time recovery, KMS-SSE |
+| `terraform/jaid-api-keys.tf` | `jaid-api-keys` DynamoDB table — SHA-256 hashed API keys, 90-day TTL on revoked rows |
+| `terraform/iam.tf` | IAM policy document for the runtime task role — minimum permissions to read/write the two tables + use the SSE KMS key |
+| `terraform/variables.tf` / `versions.tf` | Provider pin and the `sse_kms_key_arn` input |
+
+Both tables were originally created manually in the AWS console; the Terraform is a documentation snapshot of their current shape and can be imported into state if you want to move to full IaC ownership (see `terraform/README.md`). The SSE KMS key is referenced by ARN only — it is managed externally.
+
+**Out of scope for this repo:** ECR repositories, the runtime container platform (Fargate / ECS / EKS), ALB / target groups, DNS, EFS volumes, and any CI/CD pipeline that builds the images. Those belong to whichever platform hosts the running containers.
 
 ## Trust modes — decision semantics on `permissionDecision`
 
