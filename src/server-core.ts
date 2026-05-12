@@ -582,7 +582,10 @@ export function safeServerReadablePath(p: unknown): string | null {
 // ============================================================================
 
 type AuthMode = "off" | "optional" | "required";
-export const AUTH_MODE: AuthMode = ((process.env.DREDD_AUTH_MODE ?? "optional") as AuthMode);
+// Default "required" — every hook caller must present a valid Bearer
+// API key. Set DREDD_AUTH_MODE=optional explicitly during a rollout
+// where some clients don't have keys yet, or =off in dev.
+export const AUTH_MODE: AuthMode = ((process.env.DREDD_AUTH_MODE ?? "required") as AuthMode);
 if (AUTH_MODE !== "off" && AUTH_MODE !== "optional" && AUTH_MODE !== "required") {
   throw new Error(
     `Invalid DREDD_AUTH_MODE=${process.env.DREDD_AUTH_MODE} — expected off|optional|required`,

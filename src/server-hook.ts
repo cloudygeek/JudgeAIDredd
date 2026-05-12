@@ -46,6 +46,7 @@ import {
   buildSessionLogShape,
   flushLogs,
   NEW_TASK_DRIFT_MIN,
+  AUTH_MODE,
   type TrustMode,
 } from "./server-core.js";
 import type { ImageBlock } from "./session-store.js";
@@ -1302,7 +1303,7 @@ const server = createServer(async (req, res) => {
     <div class="k">Intent model</div><div class="v ${INTENT_HISTORY_MODE === "history-active" ? "green" : ""}">${INTENT_HISTORY_MODE}</div>
     <div class="k">LLM classifier</div><div class="v ${INTENT_CLASSIFIER_LLM_ENABLED ? "green" : "amber"}">${INTENT_CLASSIFIER_LLM_ENABLED ? "enabled" : "disabled"}</div>
     <div class="k">Active sessions</div><div class="v">${registeredSessions.size}</div>
-    <div class="k">Auth mode</div><div class="v ${process.env.DREDD_AUTH_MODE === "required" ? "green" : "amber"}">${process.env.DREDD_AUTH_MODE ?? "optional"}</div>
+    <div class="k">Auth mode</div><div class="v ${AUTH_MODE === "required" ? "green" : "amber"}">${AUTH_MODE}</div>
   </div>
 
   <div style="font-size: 12px; color: #8b949e; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 0.5px;">Hook endpoints</div>
