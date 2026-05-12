@@ -6,7 +6,7 @@
 // without a FilterExpression. Revoke clears gsi1pk/gsi1sk and sets a
 // 90-day TTL so revoked keys age out automatically.
 resource "aws_dynamodb_table" "jaid_api_keys" {
-  name                        = "jaid-api-keys"
+  name                        = var.api_keys_table_name
   billing_mode                = "PAY_PER_REQUEST"
   hash_key                    = "pk"
   range_key                   = "sk"
@@ -46,16 +46,11 @@ resource "aws_dynamodb_table" "jaid_api_keys" {
     recovery_period_in_days = 35
   }
 
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = var.sse_kms_key_arn
+  dynamic "server_side_encryption" {
+    for_each = var.sse_kms_key_arn != "" ? [1] : []
+    content {
+      enabled     = true
+      kms_key_arn = var.sse_kms_key_arn
+    }
   }
-}
-
-output "jaid_api_keys_arn" {
-  value = aws_dynamodb_table.jaid_api_keys.arn
-}
-
-output "jaid_api_keys_gsi1_arn" {
-  value = "${aws_dynamodb_table.jaid_api_keys.arn}/index/gsi1"
 }

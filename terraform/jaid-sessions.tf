@@ -9,7 +9,7 @@
 // TTL refreshed on every write, 30 days. Sessions that haven't been
 // touched in 30d age out naturally.
 resource "aws_dynamodb_table" "jaid_sessions" {
-  name                        = "jaid-sessions"
+  name                        = var.sessions_table_name
   billing_mode                = "PAY_PER_REQUEST"
   hash_key                    = "pk"
   range_key                   = "sk"
@@ -49,16 +49,13 @@ resource "aws_dynamodb_table" "jaid_sessions" {
     recovery_period_in_days = 35
   }
 
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = var.sse_kms_key_arn
+  // CMK-SSE only when an explicit key ARN was provided; otherwise the
+  // table uses the AWS-owned key (still encrypted at rest).
+  dynamic "server_side_encryption" {
+    for_each = var.sse_kms_key_arn != "" ? [1] : []
+    content {
+      enabled     = true
+      kms_key_arn = var.sse_kms_key_arn
+    }
   }
-}
-
-output "jaid_sessions_arn" {
-  value = aws_dynamodb_table.jaid_sessions.arn
-}
-
-output "jaid_sessions_gsi1_arn" {
-  value = "${aws_dynamodb_table.jaid_sessions.arn}/index/gsi1"
 }
