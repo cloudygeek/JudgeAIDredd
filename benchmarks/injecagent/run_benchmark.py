@@ -280,6 +280,21 @@ def screen_via_promptarmor(text: str, task_context: str, opts: dict[str, Any]) -
         return text, {"verdict": "error", "error": str(e)}
 
 
+def _build_dredd_session_id(user_instruction: str, opts: dict[str, Any]) -> str:
+    """Per-case session id. Salted with the run_id so a given case in a
+    re-run doesn't collide with the same case in an earlier run —
+    Dredd's SessionStore is Dynamo-backed and remembers state
+    (originalIntent, turnNumber, etc.) across runs. Without the salt,
+    the second time we see a User Instruction the classifier returns
+    isOriginal=false, the in-memory registeredSessions Set never
+    repopulates on the new container, and every /evaluate falls
+    through to no-goal-allow — the entire defended cell registers as
+    fail-open. (2026-05-12 incident.)"""
+    import hashlib
+    salt = opts.get("run_id") or ""
+    return "injec-" + hashlib.sha256((salt + "|" + user_instruction).encode()).hexdigest()[:16]
+
+
 def evaluate_via_dredd(user_instruction: str, tool_name: str, tool_input: dict[str, Any], opts: dict[str, Any]) -> dict[str, Any]:
     """Map InjecAgent's single-shot evaluator onto Dredd's PreToolUse judge.
 
@@ -300,20 +315,7 @@ def evaluate_via_dredd(user_instruction: str, tool_name: str, tool_input: dict[s
         headers["Authorization"] = f"Bearer {opts['api_key']}"
     verify = opts.get("verify_tls", True)
 
-    # Per-case session id. We salt with the run_id so a given case in
-    # a re-run doesn't collide with the same case in an earlier run —
-    # Dredd's SessionStore is Dynamo-backed and remembers prior state
-    # (originalIntent, turnNumber, registeredSessions on the previous
-    # process) across runs. Without the salt, the second time we see
-    # a User Instruction the classifier returns isOriginal=false, the
-    # in-memory registeredSessions Set never repopulates on the new
-    # container, and every /evaluate falls through to no-goal-allow —
-    # the entire defended cell registers as fail-open.
-    #
-    # 2026-05-12: this exact bug invalidated the C6-retry B7.1 cell.
-    import hashlib
-    salt = opts.get("run_id") or ""
-    sid = "injec-" + hashlib.sha256((salt + "|" + user_instruction).encode()).hexdigest()[:16]
+    sid = _build_dredd_session_id(user_instruction, opts)
     base = opts["url"].rstrip("/")
 
     try:
@@ -354,6 +356,34 @@ def evaluate_via_dredd(user_instruction: str, tool_name: str, tool_input: dict[s
         logger.warning(f"Dredd /evaluate failed: {e}")
         _record_dredd_failure("/evaluate", str(e))
         return {"decision": "error", "reason": str(e), "stage": "error"}
+
+
+def end_session_via_dredd(user_instruction: str, opts: dict[str, Any]) -> None:
+    """POST /end after each case to release the session like a real
+    Claude Code SessionEnd hook. Without this, every InjecAgent case
+    leaves a registered session on the hook with originalIntent
+    permanently recorded in Dynamo (TTL 30d). A re-run of the same
+    RUN_ID then hits the isOriginal=false / no-goal-allow path that
+    invalidated C6 retry on 2026-05-12.
+
+    Fire-and-forget — a transient /end failure shouldn't fail the
+    case (the case's stats are already recorded). Short timeout
+    matches Claude Code's SessionEnd hook profile."""
+    import requests
+    sid = _build_dredd_session_id(user_instruction, opts)
+    headers = {"Content-Type": "application/json"}
+    if opts.get("api_key"):
+        headers["Authorization"] = f"Bearer {opts['api_key']}"
+    try:
+        requests.post(
+            f"{opts['url'].rstrip('/')}/end",
+            json={"session_id": sid},
+            headers=headers,
+            timeout=5,
+            verify=opts.get("verify_tls", True),
+        )
+    except Exception as e:
+        logger.debug(f"Dredd /end failed (non-fatal): {e}")
 
 
 def run_setting(
@@ -563,6 +593,15 @@ def run_setting(
             except Exception as e:
                 logger.warning(f"  case {i} failed: {e}")
                 continue
+            finally:
+                # Mirror Claude Code's SessionEnd hook so each case
+                # leaves a clean slate on Dredd, just like a real
+                # session does. Without this, repeat runs of the same
+                # User Instruction (common in InjecAgent) would re-use
+                # the registered originalIntent and short-circuit
+                # /evaluate to no-goal-allow.
+                if dredd_opts is not None:
+                    end_session_via_dredd(item["User Instruction"], dredd_opts)
 
     return stats
 

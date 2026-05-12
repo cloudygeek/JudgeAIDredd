@@ -237,6 +237,19 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   if (result.isOriginal && !registeredSessions.has(session_id)) {
     await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
     registeredSessions.add(session_id);
+  } else if (!result.isOriginal && !registeredSessions.has(session_id)) {
+    // Continuation prompt landed on a fresh container. The session is
+    // already registered as far as the SessionStore is concerned but
+    // the in-memory Set is empty — rehydrate so the next /evaluate
+    // finds the session and uses the stored goal instead of falling
+    // through to no-goal-allow. Mirror of the /evaluate-side
+    // rehydration; covers the path where /intent fires before the
+    // first /evaluate on the new container.
+    await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
+    registeredSessions.add(session_id);
+    console.log(
+      `  [${session_id.substring(0, 8)}] [REHYDRATE] continuation prompt on fresh container — restored goal`
+    );
   }
 
   // Autonomous-mode topic-switch handling. Without this, the
@@ -400,7 +413,24 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   });
 
   if (!registeredSessions.has(session_id)) {
-    if (transcriptContent) {
+    // Rehydrate from the SessionStore before falling back to transcript
+    // backfill. registeredSessions is per-process in-memory, so any
+    // container restart (or a fresh deployment) loses the Set even
+    // though the underlying SessionStore still has originalIntent +
+    // history persisted. Without this, every /evaluate after a hook
+    // redeploy lands in no-goal-allow despite the session being
+    // registered as far as Dynamo is concerned. (2026-05-12 incident.)
+    const persisted = await tracker.loadSession(session_id);
+    if (persisted?.originalIntent) {
+      // Re-prime the interceptor with the stored goal — its in-memory
+      // map is per-process too, so we have to teach it the goal again.
+      const contextual = persisted.originalIntent.prompt;
+      await interceptor.registerGoal(session_id, contextual);
+      registeredSessions.add(session_id);
+      console.log(
+        `  [${session_id.substring(0, 8)}] [REHYDRATE] restored goal from store: "${contextual.substring(0, 60)}..."`
+      );
+    } else if (transcriptContent) {
       await backfillFromTranscript(session_id, transcriptContent, true);
     } else if (transcript_path) {
       await backfillFromTranscript(session_id, transcript_path);
