@@ -300,11 +300,20 @@ def evaluate_via_dredd(user_instruction: str, tool_name: str, tool_input: dict[s
         headers["Authorization"] = f"Bearer {opts['api_key']}"
     verify = opts.get("verify_tls", True)
 
-    # Per-case session id keeps Dredd's state clean between cases.
-    # 16 hex chars from a hash of the instruction is plenty of
-    # collision resistance for ~1k cases per cell.
+    # Per-case session id. We salt with the run_id so a given case in
+    # a re-run doesn't collide with the same case in an earlier run —
+    # Dredd's SessionStore is Dynamo-backed and remembers prior state
+    # (originalIntent, turnNumber, registeredSessions on the previous
+    # process) across runs. Without the salt, the second time we see
+    # a User Instruction the classifier returns isOriginal=false, the
+    # in-memory registeredSessions Set never repopulates on the new
+    # container, and every /evaluate falls through to no-goal-allow —
+    # the entire defended cell registers as fail-open.
+    #
+    # 2026-05-12: this exact bug invalidated the C6-retry B7.1 cell.
     import hashlib
-    sid = "injec-" + hashlib.sha256(user_instruction.encode()).hexdigest()[:16]
+    salt = opts.get("run_id") or ""
+    sid = "injec-" + hashlib.sha256((salt + "|" + user_instruction).encode()).hexdigest()[:16]
     base = opts["url"].rstrip("/")
 
     try:
@@ -622,12 +631,23 @@ def main() -> int:
     if args.dredd_defense:
         if not args.dredd_url:
             parser.error("--dredd-defense requires --dredd-url")
+        # Salt session ids with the run id (or promptarmor-run-id, which
+        # the entrypoint already wires up to a unique-per-run value).
+        # Without a salt, Dredd's Dynamo store remembers each session
+        # across runs and never re-registers the goal — see fix in
+        # evaluate_via_dredd() for full diagnostic.
+        run_id_salt = (
+            args.promptarmor_run_id
+            or os.environ.get("RUN_ID")
+            or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        )
         dredd_opts = {
             "url": args.dredd_url,
             "variant": args.dredd_defense,
             "mode": args.dredd_mode,
             "api_key": args.promptarmor_api_key or os.environ.get("DREDD_API_KEY"),
             "verify_tls": not args.promptarmor_no_verify_tls,
+            "run_id": run_id_salt,
         }
 
     attacks = [a.strip() for a in args.attacks.split(",") if a.strip()]
