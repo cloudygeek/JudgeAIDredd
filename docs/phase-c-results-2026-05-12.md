@@ -17,9 +17,9 @@ This document covers the Phase C re-runs that landed valid data. Earlier C6 atte
 | **gpt-4o-mini** | none | **16.7%** | 8.0% | 24.7% | 97.6% | ~55m |
 | **gpt-4o-mini** | B7.1 | **0.2%** | 0.4% | 0.0% | **0.0%** | 1h45m |
 | **gpt-4o-mini** | promptarmor | **0.3%** | 0.2% | 0.4% | **100.0%** | 1h37m |
-| **opus-4-7** | none | **0.0%** | — | — | — | 4h43m |
-| **opus-4-7** | B7.1 | running (cell 2/3) | | | | |
-| **opus-4-7** | promptarmor | pending | | | | |
+| **opus-4-7** | none | **0.0%** | 0.0% | 0.0% | — | 4h43m |
+| **opus-4-7** | B7.1 | **0.0%** | 0.0% | 0.0% | — | 2h31m |
+| **opus-4-7** | promptarmor | (cancelled — saturated row, no measurable defence delta) | | | | |
 
 Two takeaways:
 
@@ -77,7 +77,8 @@ The cumulative effect of these fixes is what makes the C6 retry-3 numbers trustw
 
 ## Pending work (Phase C continuation)
 
-- C1 retry-2 cells 2/3 + 3/3 (opus-4-7 × {B7.1, promptarmor}) — still running on bedt4 as of doc write. Expected to saturate at 0% ASR; the Dredd cell will register zero overrides because `eval_no_defence` is already 0%.
+- C1 retry-2 cell 2 (opus-4-7 × B7.1) — completed at 15:51 UTC, 0.0% ASR, 1054 cases. Confirms saturation: with no defence the model already refuses 100% of injection attempts; with B7.1 the same. Dredd never had a would-be-success to flip, so its post-output judge fired but never overrode an `eval == "succ"`. Documented in the table above.
+- C1 retry-2 cell 3 (opus-4-7 × promptarmor) — **cancelled** during the dh half. Cells 1+2 saturated at 0.0%; the PromptArmor cell on a saturated agent measures only PromptArmor's runtime cost, not its defence efficacy (no DS-S2 to differentiate on a model that refuses everything anyway). The ~$80 of opus-4-7 + Sonnet-detector spend wasn't justified by the marginal information.
 - C5 (T3e × Qwen3-32B + Qwen3-235B) — paper's own corpus head-to-head, deferred.
 - AgentDojo other suites (banking / slack / travel) — Phase C2, deferred.
 
