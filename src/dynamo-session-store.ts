@@ -89,6 +89,39 @@ const MAX_PROMPT_BYTES = 100_000;    // user prompt text
 const MAX_TOOL_INPUT_BYTES = 50_000; // serialised tool_input
 const MAX_FILE_CONTENT_BYTES = 10_000; // already truncated in sanitisers; belt-and-braces
 
+/**
+ * Window for coalescing touchActiveIntent calls. Every /evaluate
+ * touches every active intent (3-5 per turn × tens of tool calls per
+ * turn) — without coalescing this would mean ~150 Dynamo writes per
+ * turn just for LRU bookkeeping. 500ms is short enough to keep LRU
+ * ordering fresh against legitimate session lifetimes (a session
+ * paused 500ms+ between tool calls already loses its hot-path
+ * advantage) and long enough to fold an entire turn's touches into
+ * one write.
+ */
+const TOUCH_FLUSH_MS = 500;
+
+/**
+ * Synthesise a deterministic id for a legacy IntentEntry that
+ * predated the history-active schema. The id is a function of the
+ * prompt + registeredAt + position so the same entry always produces
+ * the same id across reads — referencedEntryId pointers from the
+ * classifier remain stable through container restarts.
+ */
+function deterministicLegacyId(entry: IntentEntry, position: number): string {
+  const key = `${entry.registeredAt}|${position}|${entry.prompt.substring(0, 200)}`;
+  const hex = createHash("sha256").update(key).digest("hex");
+  // UUID v4-shaped formatting so downstream code that parses the id
+  // doesn't choke on a raw hex string.
+  return [
+    hex.substring(0, 8),
+    hex.substring(8, 12),
+    hex.substring(12, 16),
+    hex.substring(16, 20),
+    hex.substring(20, 32),
+  ].join("-");
+}
+
 function truncString(s: string, limit: number): string {
   if (s.length <= limit) return s;
   return s.substring(0, limit);
@@ -157,6 +190,17 @@ export class DynamoSessionStore implements SessionStore {
     { driftDetector: DriftDetector; toolSeq: Map<number, number> }
   >();
 
+  /**
+   * Per-session buffer for `touchActiveIntent` calls. Coalesces a
+   * burst of /evaluate-driven touches into a single Dynamo write
+   * after TOUCH_FLUSH_MS so the LRU bookkeeping doesn't blow the
+   * provisioned WCU on the table.
+   */
+  private readonly touchBuffer = new Map<
+    string,
+    { pending: Map<string, number>; timer: NodeJS.Timeout | null }
+  >();
+
   constructor(opts: DynamoSessionStoreOptions) {
     this.tableName = opts.tableName;
     this.embeddingModel = opts.embeddingModel ?? "nomic-embed-text";
@@ -197,6 +241,7 @@ export class DynamoSessionStore implements SessionStore {
       activeIntents: [],
       intentHistory: [],
       activeIntentIds: [],
+      intentLastActive: {},
       lastUserPromptAt: 0,
       lastPreToolUseAt: 0,
       lastStopAt: 0,
@@ -496,10 +541,18 @@ export class DynamoSessionStore implements SessionStore {
       // History-active migration shim. New sessions persist
       // intentHistory + activeIntentIds; legacy ones don't have those
       // fields, so derive them lazily from the legacy activeIntents:
-      // synthesise stable ids for entries that don't have them, then
-      // treat the entire stack as both history and active. Either
-      // branch produces a state that's behaviour-equivalent to the
-      // legacy single-stack model.
+      // synthesise stable ids for entries that don't have them
+      // (deterministic = sha256 of prompt + registeredAt + position so
+      // any classifier-written referencedEntryId remains stable across
+      // re-reads), then treat the entire stack as both history and
+      // active. Either branch produces a state that's behaviour-
+      // equivalent to the legacy single-stack model.
+      //
+      // Step-6 review fix: deterministic ids replace per-read randomUUID
+      // so referencedEntryId pointers (sub-task parent / replacement
+      // target / revisit revival) stay stable. The legacy → history-active
+      // migration happens lazily on next setActiveIntents — no batch
+      // backfill needed.
       ...(() => {
         if (meta?.intentHistory && meta?.activeIntentIds) {
           return {
@@ -508,14 +561,16 @@ export class DynamoSessionStore implements SessionStore {
           };
         }
         const legacy = ((meta?.activeIntents as IntentEntry[] | undefined) ?? []);
-        const withIds = legacy.map((e) =>
-          e.id ? e : { ...e, id: randomUUID() },
+        const withIds = legacy.map((e, i) =>
+          e.id ? e : { ...e, id: deterministicLegacyId(e, i) },
         );
         return {
           intentHistory: withIds,
           activeIntentIds: withIds.map((e) => e.id!),
         };
       })(),
+      intentLastActive:
+        (meta?.intentLastActive as Record<string, number> | undefined) ?? {},
       lastUserPromptAt: meta?.lastUserPromptAt ?? 0,
       lastPreToolUseAt: meta?.lastPreToolUseAt ?? 0,
       lastStopAt: meta?.lastStopAt ?? 0,
@@ -796,12 +851,21 @@ export class DynamoSessionStore implements SessionStore {
     // Merge into the existing intentHistory rather than overwrite —
     // append-only semantics mean we never drop entries that were
     // recorded by appendToHistory but aren't currently active.
+    //
+    // For entries that already exist in history, the caller's version
+    // wins (kind, classifierSource, resolved, etc. updates). Earlier
+    // versions skipped the update and silently lost classifier-override
+    // state on restart; replace-by-id keeps the in-memory and
+    // persisted views in agreement.
     const existing = await this.getMeta(sessionId);
     const existingHistory = (existing?.intentHistory as IntentEntry[] | undefined) ?? [];
-    const seen = new Set(existingHistory.map((e) => e.id));
-    const merged = [...existingHistory];
+    const idToNew = new Map(persistable.map((e) => [e.id!, e]));
+    const merged: IntentEntry[] = existingHistory.map((e) =>
+      e.id && idToNew.has(e.id) ? idToNew.get(e.id)! : e,
+    );
+    const existingIds = new Set(existingHistory.map((e) => e.id));
     for (const e of persistable) {
-      if (!seen.has(e.id)) merged.push(e);
+      if (!existingIds.has(e.id)) merged.push(e);
     }
     // Cap at MAX_INTENT_HISTORY to prevent runaway item size on
     // pathological sessions. 30d Dynamo TTL is the real limit.
@@ -891,14 +955,18 @@ export class DynamoSessionStore implements SessionStore {
 
     // LRU evict if over MAX_ACTIVE_INTENTS. Pop the entry whose
     // lastActiveAt (or registeredAt fallback) is oldest.
+    // Flush any buffered touches first so LRU sees the freshest data.
+    await this.flushTouchBuffer(sessionId);
+    const lastActive: Record<string, number> =
+      ((meta?.intentLastActive as Record<string, number> | undefined) ?? {});
     let finalActiveIds = activeIds;
     if (activeIds.length > MAX_ACTIVE_INTENTS) {
       const idToEntry = new Map(history.filter((e) => e.id).map((e) => [e.id!, e] as const));
       const sorted = [...activeIds].sort((a, b) => {
         const ea = idToEntry.get(a);
         const eb = idToEntry.get(b);
-        const ta = ea?.lastActiveAt ?? ea?.registeredAt ?? 0;
-        const tb = eb?.lastActiveAt ?? eb?.registeredAt ?? 0;
+        const ta = lastActive[a] ?? ea?.lastActiveAt ?? ea?.registeredAt ?? 0;
+        const tb = lastActive[b] ?? eb?.lastActiveAt ?? eb?.registeredAt ?? 0;
         return ta - tb;
       });
       const evict = new Set(sorted.slice(0, sorted.length - MAX_ACTIVE_INTENTS));
@@ -926,13 +994,180 @@ export class DynamoSessionStore implements SessionStore {
     );
   }
 
+  /**
+   * Bump lastActiveAt for an entry. Used by /evaluate to drive LRU
+   * eviction of the active set.
+   *
+   * Earlier versions rewrote the entire intentHistory blob on every
+   * /evaluate (per-active-entry × tools-per-turn = ~150 full Dynamo
+   * writes per turn). Now we keep an `intentLastActive` map field on
+   * META (id → epoch ms) so the touch is a single map-key update,
+   * and we batch-update with a small in-process buffer flushed every
+   * TOUCH_FLUSH_MS so a burst of /evaluate calls collapses into one
+   * Dynamo write.
+   *
+   * Active-set LRU eviction reads this map alongside the per-entry
+   * lastActiveAt fallback, so legacy entries pre-migration still
+   * eviction-rank by their registeredAt.
+   */
   async touchActiveIntent(sessionId: string, entryId: string): Promise<void> {
+    let buf = this.touchBuffer.get(sessionId);
+    if (!buf) {
+      buf = { pending: new Map(), timer: null };
+      this.touchBuffer.set(sessionId, buf);
+    }
+    buf.pending.set(entryId, Date.now());
+    if (buf.timer) return;
+    // Schedule flush. Coalesces every touch in the next TOUCH_FLUSH_MS
+    // window into a single UPDATE call.
+    buf.timer = setTimeout(() => {
+      this.flushTouchBuffer(sessionId).catch((err) => {
+        console.warn(
+          `[dynamo] flushTouchBuffer failed for session=${sessionId.substring(0, 8)}: ${err}`,
+        );
+      });
+    }, TOUCH_FLUSH_MS);
+    // Don't keep the event loop alive for these — the operator can
+    // shut the server down without waiting on pending touches.
+    if (typeof (buf.timer as any).unref === "function") {
+      (buf.timer as any).unref();
+    }
+  }
+
+  async setEntryClassifierSource(
+    sessionId: string,
+    entryId: string,
+    source: "embedding" | "llm" | "llm-confirmed" | "embedding-fallback-timeout",
+  ): Promise<void> {
+    // Single-field UPDATE on the matching list element. Avoids
+    // rewriting the entire intentHistory blob just to flip one
+    // string field — the LLM-confirmed-tagging path runs on every
+    // /intent in steady state, so the savings matter.
+    //
+    // The DynamoDB list-index update needs the index, so we read META,
+    // find the position, and emit a SET expression like
+    // `SET intentHistory[3].classifierSource = :src`. Per-item
+    // versioning (updateMeta's existing optimistic-concurrency check)
+    // still guards against concurrent writers.
     const meta = await this.getMeta(sessionId);
-    const history = ((meta?.intentHistory as IntentEntry[] | undefined) ?? []).slice();
+    const history = (meta?.intentHistory as IntentEntry[] | undefined) ?? [];
     const idx = history.findIndex((e) => e.id === entryId);
     if (idx === -1) return;
-    history[idx] = { ...history[idx], lastActiveAt: Date.now() };
-    await this.updateMeta(sessionId, { intentHistory: history });
+    // Mirror in legacy activeIntents if the entry is present there too,
+    // so dashboards reading the old field see the same tag.
+    const activeIntents = (meta?.activeIntents as IntentEntry[] | undefined) ?? [];
+    const aIdx = activeIntents.findIndex((e) => e.id === entryId);
+    const update: Record<string, any> = {};
+    update[`__listSet:intentHistory[${idx}].classifierSource`] = source;
+    if (aIdx !== -1) {
+      update[`__listSet:activeIntents[${aIdx}].classifierSource`] = source;
+    }
+    await this.updateMetaListSet(sessionId, update);
+  }
+
+  /**
+   * Helper for list-element field updates. updateMeta only handles
+   * top-level scalar / map / list replacement; targeting a nested
+   * field inside a list element needs a different UpdateExpression
+   * shape (`SET intentHistory[3].classifierSource = :src`).
+   *
+   * Keys in `update` are formatted "__listSet:path[index].field" and
+   * the value is the new value. Rebuilds the full UpdateExpression
+   * with the same version-conditional semantics as updateMeta.
+   */
+  private async updateMetaListSet(
+    sessionId: string,
+    update: Record<string, any>,
+  ): Promise<void> {
+    const MAX_RETRIES = 5;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const current = await this.getMeta(sessionId);
+      const expectedVersion = (current?.version as number | undefined) ?? 0;
+      const names: Record<string, string> = { "#ttl": "ttl", "#version": "version" };
+      const values: Record<string, any> = {
+        ":ttl": ttl(),
+        ":expectedVersion": expectedVersion,
+        ":one": 1,
+        ":zero": 0,
+      };
+      const sets: string[] = [
+        "#ttl = :ttl",
+        "#version = if_not_exists(#version, :zero) + :one",
+      ];
+      let n = 0;
+      for (const [k, v] of Object.entries(update)) {
+        if (!k.startsWith("__listSet:")) continue;
+        const path = k.slice("__listSet:".length);
+        // Path looks like "intentHistory[3].classifierSource".
+        const m = path.match(/^([a-zA-Z]+)\[(\d+)\]\.([a-zA-Z]+)$/);
+        if (!m) continue;
+        const [, listName, idx, field] = m;
+        const listAlias = `#L${n}`;
+        const fieldAlias = `#F${n}`;
+        const valAlias = `:v${n}`;
+        names[listAlias] = listName;
+        names[fieldAlias] = field;
+        values[valAlias] = v;
+        sets.push(`${listAlias}[${idx}].${fieldAlias} = ${valAlias}`);
+        n++;
+      }
+      if (n === 0) return;
+      try {
+        await this.client.send(
+          new UpdateCommand({
+            TableName: this.tableName,
+            Key: { pk: pk(sessionId), sk: "META" },
+            UpdateExpression: `SET ${sets.join(", ")}`,
+            ConditionExpression:
+              "attribute_not_exists(#version) OR #version = :expectedVersion",
+            ExpressionAttributeNames: names,
+            ExpressionAttributeValues: values,
+          }),
+        );
+        return;
+      } catch (err) {
+        if (err instanceof ConditionalCheckFailedException) {
+          if (attempt === MAX_RETRIES) throw err;
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  async getIntentLastActive(sessionId: string): Promise<Record<string, number>> {
+    // Flush pending touches first so the returned map reflects the
+    // latest in-process state. Otherwise an applyIntentStackUpdate
+    // running back-to-back with /evaluate could LRU-evict an entry
+    // that's actually been touched in the buffer.
+    await this.flushTouchBuffer(sessionId);
+    const meta = await this.getMeta(sessionId);
+    return ((meta?.intentLastActive as Record<string, number> | undefined) ?? {});
+  }
+
+  private async flushTouchBuffer(sessionId: string): Promise<void> {
+    const buf = this.touchBuffer.get(sessionId);
+    if (!buf) return;
+    this.touchBuffer.delete(sessionId);
+    if (buf.timer) clearTimeout(buf.timer);
+    if (buf.pending.size === 0) return;
+
+    const meta = await this.getMeta(sessionId);
+    const lastActive: Record<string, number> =
+      ((meta?.intentLastActive as Record<string, number> | undefined) ?? {});
+    let changed = false;
+    for (const [id, ts] of buf.pending.entries()) {
+      const prev = lastActive[id];
+      // Only persist if the new timestamp is materially newer than
+      // the persisted one. Coalesced bursts within the same
+      // TOUCH_FLUSH_MS window produce a single write.
+      if (prev === undefined || ts > prev) {
+        lastActive[id] = ts;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    await this.updateMeta(sessionId, { intentLastActive: lastActive });
   }
 
   // ---- intent & drift -------------------------------------------------

@@ -42,6 +42,7 @@ import {
   buildContextualIntent,
   applyIntentStackUpdate,
   applyClassifierOverride,
+  describePhrasingMatches,
   buildSessionLogShape,
   flushLogs,
   NEW_TASK_DRIFT_MIN,
@@ -127,6 +128,18 @@ function effectiveMode(session_id: string, bodyMode: unknown): TrustMode {
   const override = sessionModeOverride.get(session_id);
   if (override) return override;
   return ((bodyMode as TrustMode | undefined) ?? CONFIG.mode);
+}
+
+// Per-session intent-history-model override. Same shape as
+// sessionModeOverride but for the history-active rollout — lets a
+// sandbox A/B-test history-active on one session while production
+// stays on legacy. Set via POST /api/session-intent-mode.
+const sessionIntentModeOverride = new Map<string, "legacy" | "history-active">();
+
+function effectiveIntentHistoryMode(session_id: string): boolean {
+  const override = sessionIntentModeOverride.get(session_id);
+  if (override) return override === "history-active";
+  return INTENT_HISTORY_MODE === "history-active";
 }
 
 // PromptArmor /screen allow-list. Only models from the head-to-head
@@ -366,7 +379,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
       prevTimings,
       CONFIG.embeddingModel,
       transcriptImages,
-      INTENT_HISTORY_MODE === "history-active",
+      effectiveIntentHistoryMode(session_id),
     );
 
     // Re-seed the interceptor's per-session goal state from the stack.
@@ -451,17 +464,25 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
             tracker,
             session_id,
             newEntryId,
-            embeddingKind,
             verdict,
           ).catch((err) => {
             console.warn(
               `  [${session_id.substring(0, 8)}] [INTENT-CLASSIFY] override failed: ${err}`,
             );
-            return { overridden: false, reason: `override error: ${err}` };
+            return { overridden: false, reason: `override error: ${err}`, embeddingKind: undefined };
           });
+          // When the LLM overrode the embedding, log which phrasing
+          // patterns the prompt did/didn't match — tells us whether
+          // the embedding missed because of a gap in the pattern set
+          // (expand patterns) or a drift threshold problem (tune it).
+          let phrasingNote = "";
+          if (result.overridden) {
+            const m = describePhrasingMatches(prompt);
+            phrasingNote = ` phrasing[revisit=${m.revisit ? "Y" : "N"} replacement=${m.replacement ? "Y" : "N"} subtask=${m.subTask ? "Y" : "N"}]`;
+          }
           console.log(
             `  [${session_id.substring(0, 8)}] [INTENT-CLASSIFY-LLM] kind=${verdict.kind} ` +
-            `conf=${verdict.confidence} (${verdict.durationMs}ms) overridden=${result.overridden} ` +
+            `conf=${verdict.confidence} (${verdict.durationMs}ms) overridden=${result.overridden}${phrasingNote} ` +
             `(${result.reason})`,
           );
           // Telemetry: record what the LLM said and whether it changed the
@@ -700,7 +721,15 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   // judge this tool call. Cap the wait so a slow Bedrock doesn't
   // hold up tool execution. Best-effort — on timeout the existing
   // (embedding-fallback) active set stays in place.
-  if (mode === "interactive" || mode === "learn") {
+  //
+  // Gated by INTENT_CLASSIFIER_LLM_ENABLED so when the LLM path is
+  // off no /intent ever calls setPendingClassification, the map is
+  // always empty, and we skip the await entirely instead of hitting
+  // the 750ms timeout false-negative.
+  if (
+    INTENT_CLASSIFIER_LLM_ENABLED &&
+    (mode === "interactive" || mode === "learn")
+  ) {
     await awaitPendingClassification(session_id, CLASSIFIER_EVALUATE_WAIT_MS);
   }
 
@@ -734,7 +763,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     await tracker.getProjectRoot(session_id),
     mode,
     activeIntents,
-    INTENT_HISTORY_MODE === "history-active",
+    effectiveIntentHistoryMode(session_id),
   );
 
   await tracker.recordToolCall(
@@ -1486,6 +1515,47 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
           session_id,
           mode: sessionModeOverride.get(session_id) ?? null,
           global_mode: CONFIG.mode,
+        });
+      }
+    }
+
+    // /api/session-intent-mode — per-session override of the
+    // INTENT_HISTORY_MODE flag. Same shape as /api/session-mode but
+    // for the history-active rollout. POST {session_id, mode:
+    // "legacy"|"history-active"|null} to set/clear; GET ?session_id
+    // to read. Lets us A/B-test the new classifier on individual
+    // sessions in a sandbox while production stays on legacy.
+    if (url.pathname === "/api/session-intent-mode") {
+      if (applyCors(req, res)) return;
+      if (req.method === "POST") {
+        const body = JSON.parse(await readBody(req));
+        const session_id: unknown = body.session_id;
+        if (typeof session_id !== "string") {
+          return json(res, 400, { error: "Missing session_id" });
+        }
+        if (rejectInvalidSessionId(res, session_id)) return;
+        const next = body.mode;
+        if (next === null) {
+          const prev = sessionIntentModeOverride.get(session_id) ?? null;
+          sessionIntentModeOverride.delete(session_id);
+          console.log(`  [${session_id.substring(0, 8)}] [SESSION-INTENT-MODE] cleared (was ${prev ?? "none"})`);
+          return json(res, 200, { session_id, intent_mode: null, previous: prev });
+        }
+        if (next !== "legacy" && next !== "history-active") {
+          return json(res, 400, { error: "intent_mode must be legacy, history-active, or null" });
+        }
+        const prev = sessionIntentModeOverride.get(session_id) ?? null;
+        sessionIntentModeOverride.set(session_id, next);
+        console.log(`  [${session_id.substring(0, 8)}] [SESSION-INTENT-MODE] override ${prev ?? "none"} → ${next}`);
+        return json(res, 200, { session_id, intent_mode: next, previous: prev });
+      }
+      if (req.method === "GET") {
+        const session_id = url.searchParams.get("session_id") ?? "";
+        if (!session_id || rejectInvalidSessionId(res, session_id)) return;
+        return json(res, 200, {
+          session_id,
+          intent_mode: sessionIntentModeOverride.get(session_id) ?? null,
+          global_intent_mode: INTENT_HISTORY_MODE,
         });
       }
     }

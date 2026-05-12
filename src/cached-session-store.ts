@@ -119,6 +119,7 @@ export class CachedSessionStore implements SessionStore {
       activeIntents: [],
       intentHistory: [],
       activeIntentIds: [],
+      intentLastActive: {},
       lastUserPromptAt: 0,
       lastPreToolUseAt: 0,
       lastStopAt: 0,
@@ -255,9 +256,16 @@ export class CachedSessionStore implements SessionStore {
       );
       cached.activeIntents = entriesWithIds;
       cached.activeIntentIds = entriesWithIds.map((e) => e.id!);
-      const seen = new Set(cached.intentHistory.map((e) => e.id));
+      // Replace existing history entries by id (kind / classifierSource
+      // / resolved updates from the caller win); append unseen entries.
+      // Mirrors the dynamo-session-store fix for the same merge bug.
+      const idToNew = new Map(entriesWithIds.map((e) => [e.id!, e]));
+      cached.intentHistory = cached.intentHistory.map((e) =>
+        e.id && idToNew.has(e.id) ? idToNew.get(e.id)! : e,
+      );
+      const existingIds = new Set(cached.intentHistory.map((e) => e.id));
       for (const e of entriesWithIds) {
-        if (!seen.has(e.id)) cached.intentHistory.push(e);
+        if (!existingIds.has(e.id)) cached.intentHistory.push(e);
       }
       cached.driftDetector.setGoalEmbeddings(entriesWithIds.map((e) => e.embedding));
     }
@@ -315,8 +323,31 @@ export class CachedSessionStore implements SessionStore {
     await this.backend.touchActiveIntent(sessionId, entryId);
     const cached = this.cache.get(sessionId);
     if (cached) {
-      const entry = cached.intentHistory.find((e) => e.id === entryId);
-      if (entry) entry.lastActiveAt = Date.now();
+      // Mirror the in-memory tracker: write to intentLastActive map
+      // rather than the per-entry lastActiveAt field so a future
+      // history-merge doesn't silently revert the timestamp.
+      cached.intentLastActive[entryId] = Date.now();
+    }
+  }
+
+  async getIntentLastActive(sessionId: string): Promise<Record<string, number>> {
+    const cached = this.cache.get(sessionId);
+    if (cached) return { ...cached.intentLastActive };
+    return this.backend.getIntentLastActive(sessionId);
+  }
+
+  async setEntryClassifierSource(
+    sessionId: string,
+    entryId: string,
+    source: "embedding" | "llm" | "llm-confirmed" | "embedding-fallback-timeout",
+  ): Promise<void> {
+    await this.backend.setEntryClassifierSource(sessionId, entryId, source);
+    const cached = this.cache.get(sessionId);
+    if (cached) {
+      const e = cached.intentHistory.find((x) => x.id === entryId);
+      if (e) e.classifierSource = source;
+      const a = cached.activeIntents.find((x) => x.id === entryId);
+      if (a) a.classifierSource = source;
     }
   }
 

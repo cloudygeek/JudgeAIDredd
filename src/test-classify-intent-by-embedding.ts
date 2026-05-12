@@ -1,22 +1,18 @@
 /**
- * Step-6 validation harness for the history-active intent model.
+ * Unit test for classifyIntentByEmbedding.
  *
- * Exercises the pure parts of the new classifier (no Bedrock / Ollama
- * round-trip required):
+ * Scope-honest naming: this is NOT a full validation of the
+ * history-active model — it only exercises the pure embedding-and-
+ * phrasing classifier and documents the legacy-downgrade table.
+ * The integration paths (applyIntentStackUpdate, the async LLM
+ * classifier override, schema migration on legacy reads) require
+ * live infrastructure or extensive mocking and are covered by:
  *
- *   1. classifyIntentByEmbedding — drift-and-phrasing classifier.
- *      Confirms it produces the new sub-task / replacement / revisit
- *      kinds on the appropriate inputs.
+ *   - Staged rollout against sandbox traffic (Step 6 telemetry)
+ *   - test-promptarmor-baseline.ts for the LLM-call shape
+ *   - Real-traffic A/B comparison via /api/session-intent-mode
  *
- *   2. The legacy downgrade path — confirms the new kinds collapse
- *      to legacy equivalents (continuation / new-task) when
- *      INTENT_HISTORY_MODE=legacy.
- *
- * The full applyIntentStackUpdate integration test requires a live
- * embedder; that's covered by the staged rollout itself (Step 6
- * deploys to a sandbox env with the real Bedrock embedder).
- *
- * Run: npx tsx src/test-intent-history-active.ts
+ * Run: npx tsx src/test-classify-intent-by-embedding.ts
  */
 
 import { classifyIntentByEmbedding } from "./server-core.js";

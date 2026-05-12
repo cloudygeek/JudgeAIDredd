@@ -180,8 +180,30 @@ export interface SessionStore {
    * Update the lastActiveAt timestamp for an entry. Called by
    * /evaluate when an entry is materialised into the activeIntents
    * passed to the interceptor. Drives LRU eviction in the active set.
+   *
+   * Coalesces in the implementation — see DynamoSessionStore's
+   * touchActiveIntent for the buffer + flush mechanic.
    */
   touchActiveIntent(sessionId: string, entryId: string): Promise<void>;
+  /**
+   * Read the per-session intentLastActive map. Used by
+   * applyIntentStackUpdate to drive LRU eviction without inflating
+   * each IntentEntry with a separate lastActiveAt field. Returns an
+   * empty record for unknown sessions.
+   */
+  getIntentLastActive(sessionId: string): Promise<Record<string, number>>;
+  /**
+   * Update the classifierSource tag on a single history entry.
+   * Used by the async LLM classifier to mark an entry "llm-confirmed"
+   * without rewriting the entire intentHistory blob (which the
+   * common-case LLM-agreed-with-embedding path was doing on every
+   * /intent — wasteful enough to bite the table's WCU budget).
+   */
+  setEntryClassifierSource(
+    sessionId: string,
+    entryId: string,
+    source: "embedding" | "llm" | "llm-confirmed" | "embedding-fallback-timeout",
+  ): Promise<void>;
 
   // ---- intent & drift -----------------------------------------------------
   registerIntent(

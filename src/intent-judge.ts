@@ -341,12 +341,20 @@ export class IntentJudge {
     //   - string[]                → legacy interactive numbered list
     //   - JudgeIntentEntry[]      → history-active rich entries
     //
-    // Detect by sniffing the first element: object with a `contextual`
-    // field is a JudgeIntentEntry; everything else is the legacy form.
+    // Detect by checking EVERY element of the array — a mixed array
+    // (which shouldn't happen but defends against future callers) is
+    // treated as rich if any element is a JudgeIntentEntry, with
+    // string elements coerced to {contextual: e}. Plain string[] uses
+    // the legacy path verbatim.
+    function isJudgeIntentEntry(x: unknown): x is JudgeIntentEntry {
+      return typeof x === "object"
+        && x !== null
+        && !Array.isArray(x)
+        && typeof (x as JudgeIntentEntry).contextual === "string";
+    }
     const isRichArray = Array.isArray(originalTask)
       && originalTask.length > 0
-      && typeof originalTask[0] === "object"
-      && (originalTask[0] as JudgeIntentEntry).contextual !== undefined;
+      && originalTask.every((e) => isJudgeIntentEntry(e));
 
     const scrubbedOriginal: string | string[] | JudgeIntentEntry[] = isRichArray
       ? (originalTask as JudgeIntentEntry[]).map((e) => ({

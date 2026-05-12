@@ -263,6 +263,16 @@ export interface SessionState {
    */
   activeIntentIds: string[];
   /**
+   * id → last-touched epoch-ms map. Persisted alongside intentHistory
+   * but in a separate field so /evaluate-driven LRU bookkeeping
+   * doesn't require rewriting the (10–30KB) intentHistory blob on
+   * every tool call. Active-set LRU eviction reads this map first,
+   * falling back to the per-entry lastActiveAt / registeredAt for
+   * entries that haven't been touched yet (e.g. legacy sessions
+   * pre-migration).
+   */
+  intentLastActive: Record<string, number>;
+  /**
    * Epoch ms of the last UserPromptSubmit. Combined with
    * lastPreToolUseAt and lastStopAt, gives us the turn state when the
    * NEXT prompt arrives (open / draining / closed).
@@ -286,11 +296,13 @@ export interface SessionState {
 }
 
 /**
- * Cap on the active-intent stack size. Five concurrent goals is more
- * than any real human juggles, and bigger stacks bloat the judge prompt
- * (every additional intent is rendered + drift-checked). On overflow
- * the OLDEST non-original entry is popped — the session-defining goal
- * is sticky.
+ * Cap on the active-intent stack size in the legacy single-stack
+ * model. Superseded by MAX_ACTIVE_INTENTS in the history-active
+ * rollout; kept exported for any external callers (dashboard,
+ * benchmark tooling) that reference it. New code should use
+ * MAX_ACTIVE_INTENTS.
+ *
+ * @deprecated Use MAX_ACTIVE_INTENTS.
  */
 export const MAX_INTENT_STACK = 5;
 
@@ -381,6 +393,7 @@ export class InMemorySessionStore implements SessionStore {
         activeIntents: [],
         intentHistory: [],
         activeIntentIds: [],
+        intentLastActive: {},
         lastUserPromptAt: 0,
         lastPreToolUseAt: 0,
         lastStopAt: 0,
@@ -1178,11 +1191,16 @@ export class InMemorySessionStore implements SessionStore {
     s.activeIntentIds = entriesWithIds.map((e) => e.id!);
 
     // Keep history in sync with the active stack: every entry currently
-    // active also belongs to history. Append any new ones that aren't
-    // there yet (matched by id).
-    const seen = new Set(s.intentHistory.map((e) => e.id));
+    // active also belongs to history. Replace existing entries by id
+    // (kind / classifierSource / resolved updates from the caller
+    // win); append unseen entries.
+    const idToNew = new Map(entriesWithIds.map((e) => [e.id!, e]));
+    s.intentHistory = s.intentHistory.map((e) =>
+      e.id && idToNew.has(e.id) ? idToNew.get(e.id)! : e,
+    );
+    const existingIds = new Set(s.intentHistory.map((e) => e.id));
     for (const e of entriesWithIds) {
-      if (!seen.has(e.id)) s.intentHistory.push(e);
+      if (!existingIds.has(e.id)) s.intentHistory.push(e);
     }
     // Bound history at MAX_INTENT_HISTORY (in-memory hygiene; Dynamo
     // has its own TTL). Drop oldest first.
@@ -1238,21 +1256,20 @@ export class InMemorySessionStore implements SessionStore {
       return;
     }
     entry.resolved = false;
-    entry.lastActiveAt = Date.now();
+    s.intentLastActive[entryId] = Date.now();
     // Avoid duplicate ids in the active list.
     if (!s.activeIntentIds.includes(entryId)) {
       s.activeIntentIds.push(entryId);
     }
-    // Cap with LRU eviction — drop the entry whose lastActiveAt (or
-    // registeredAt fallback) is oldest. Equivalent under append-only
-    // semantics but explicit about the eviction policy.
+    // Cap with LRU eviction — drop the entry whose intentLastActive
+    // (or per-entry lastActiveAt / registeredAt fallback) is oldest.
     if (s.activeIntentIds.length > MAX_ACTIVE_INTENTS) {
       const idToEntry = new Map(s.intentHistory.map((e) => [e.id, e] as const));
       const sorted = [...s.activeIntentIds].sort((a, b) => {
         const ea = idToEntry.get(a);
         const eb = idToEntry.get(b);
-        const ta = ea?.lastActiveAt ?? ea?.registeredAt ?? 0;
-        const tb = eb?.lastActiveAt ?? eb?.registeredAt ?? 0;
+        const ta = s.intentLastActive[a] ?? ea?.lastActiveAt ?? ea?.registeredAt ?? 0;
+        const tb = s.intentLastActive[b] ?? eb?.lastActiveAt ?? eb?.registeredAt ?? 0;
         return ta - tb;
       });
       const evict = sorted.slice(0, sorted.length - MAX_ACTIVE_INTENTS);
@@ -1272,8 +1289,25 @@ export class InMemorySessionStore implements SessionStore {
 
   async touchActiveIntent(sessionId: string, entryId: string): Promise<void> {
     const s = this.getSession(sessionId);
+    s.intentLastActive[entryId] = Date.now();
+  }
+
+  async getIntentLastActive(sessionId: string): Promise<Record<string, number>> {
+    return { ...this.getSession(sessionId).intentLastActive };
+  }
+
+  async setEntryClassifierSource(
+    sessionId: string,
+    entryId: string,
+    source: "embedding" | "llm" | "llm-confirmed" | "embedding-fallback-timeout",
+  ): Promise<void> {
+    const s = this.getSession(sessionId);
     const entry = s.intentHistory.find((e) => e.id === entryId);
-    if (entry) entry.lastActiveAt = Date.now();
+    if (entry) entry.classifierSource = source;
+    // Mirror into activeIntents so the materialised view is consistent
+    // (next /evaluate read sees the updated tag).
+    const aentry = s.activeIntents.find((e) => e.id === entryId);
+    if (aentry) aentry.classifierSource = source;
   }
 }
 
