@@ -114,6 +114,12 @@ variable "api_keys_table_name" {
   default     = "jaid-api-keys"
 }
 
+variable "approvals_table_name" {
+  description = "Name of the user-approvals Dynamo table (interactive-mode learning)."
+  type        = string
+  default     = "jaid-approvals"
+}
+
 variable "sse_kms_key_arn" {
   description = "Optional customer-managed KMS CMK for DynamoDB SSE. Empty string = use AWS-owned key."
   type        = string

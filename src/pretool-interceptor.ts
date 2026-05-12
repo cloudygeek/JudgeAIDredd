@@ -69,6 +69,7 @@ export interface InterceptionResult {
   stage:
     | "policy-allow" | "policy-deny"
     | "domain-allow" | "domain-deny"
+    | "approval-allow"
     | "drift-allow" | "drift-deny"
     | "judge-allow" | "judge-deny";
   policyResult: PolicyResult;
@@ -241,6 +242,14 @@ export class PreToolInterceptor {
      *  the same plain string[] it always has. Step-5 telemetry runs
      *  unchanged either way; this only affects judge prompt rendering. */
     historyActiveJudgeRendering: boolean = false,
+    /** Approval-learning lookup hook. Called AFTER the policy + domain
+     *  safety rails so a prior approval can never override a hard deny.
+     *  Returns a summary string if a live, intent-drift-acceptable
+     *  approval exists for this (scope, fingerprint), null otherwise.
+     *  Caller owns scope construction, fingerprinting, and the
+     *  drift-distance comparison — keeping the interceptor decoupled
+     *  from the approval store. */
+    approvalCheck?: () => Promise<{ summary: string } | null>,
   ): Promise<InterceptionResult> {
     const start = Date.now();
     const s = this.getSession(sessionId);
@@ -326,7 +335,33 @@ export class PreToolInterceptor {
       this.log(s, result, sessionId);
       return result;
     }
-    // "review" (or no match) → continue to drift + judge.
+    // "review" (or no match) → check learned approvals before falling
+    // through to the heuristic checks (drift + judge).
+
+    // --- Stage 1.75: Approval lookup ---
+    // Short-circuit to allow when the user has previously consented to
+    // this exact (scope, fingerprint) and the session's intent hasn't
+    // drifted too far from the approving moment. Skipped when no
+    // approvalCheck callback is provided (e.g. autonomous mode without
+    // an owner, or callers that haven't wired the store in yet).
+    if (approvalCheck) {
+      const approval = await approvalCheck();
+      if (approval) {
+        const result: InterceptionResult = {
+          allowed: true,
+          tool,
+          input,
+          stage: "approval-allow",
+          policyResult,
+          similarity: null,
+          judgeVerdict: null,
+          evaluationMs: Date.now() - start,
+          reason: `Previously approved: ${approval.summary}`,
+        };
+        this.log(s, result, sessionId);
+        return result;
+      }
+    }
 
     // --- Stage 2: Embedding drift check ---
     // If the caller passed an active intent stack (interactive/learn),

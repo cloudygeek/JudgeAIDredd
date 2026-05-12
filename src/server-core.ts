@@ -100,6 +100,13 @@ import {
 } from "./api-key-store.js";
 import { DynamoApiKeyStore } from "./dynamo-api-key-store.js";
 import { CachedApiKeyStore } from "./cached-api-key-store.js";
+import {
+  type ApprovalStore,
+  InMemoryApprovalStore,
+} from "./approval-store.js";
+import { DynamoApprovalStore } from "./dynamo-approval-store.js";
+import { CachedApprovalStore } from "./cached-approval-store.js";
+import { pruneExpiredPendingApprovals } from "./pending-approvals.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
 import type { PromptVariant } from "./intent-judge.js";
 
@@ -476,6 +483,37 @@ console.log(
       ? ` (table=${DYNAMO_API_KEYS_TABLE_NAME}, region=${DYNAMO_REGION})`
       : ""),
 );
+
+// ---- approval store -------------------------------------------------------
+// Durable "learning" of user-approved tool calls. Dynamo wiring is added in
+// the DynamoApprovalStore task; until then the in-memory store gives us a
+// working local-dev path without a second deploy.
+
+export const DYNAMO_APPROVALS_TABLE_NAME =
+  process.env.DYNAMO_APPROVALS_TABLE_NAME ?? "jaid-approvals";
+
+export const approvals: ApprovalStore = STORE_BACKEND === "dynamo"
+  ? new CachedApprovalStore({
+      backend: new DynamoApprovalStore({
+        tableName: DYNAMO_APPROVALS_TABLE_NAME,
+        region: DYNAMO_REGION,
+      }),
+    })
+  : new InMemoryApprovalStore();
+
+console.log(
+  `  [APPRV] Approval store: ${STORE_BACKEND}` +
+    (STORE_BACKEND === "dynamo"
+      ? ` (table=${DYNAMO_APPROVALS_TABLE_NAME}, region=${DYNAMO_REGION})`
+      : ""),
+);
+
+// Periodically purge expired pending-approval candidates (the 60s
+// window between an "ask" and the user's accept/deny). Cheap, keeps
+// the in-process map from growing unbounded under abandoned prompts.
+setInterval(() => {
+  pruneExpiredPendingApprovals();
+}, 30_000).unref();
 
 export const interceptor = new PreToolInterceptor({
   judgeModel: CONFIG.judgeModel,

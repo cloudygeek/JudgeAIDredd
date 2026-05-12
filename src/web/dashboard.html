@@ -353,6 +353,7 @@
       <div class="tab admin-only" onclick="switchTab('logs')">Logs</div>
       <div class="tab" onclick="switchTab('integrate')">Integrate</div>
       <div class="tab" onclick="switchTab('keys')">API Keys</div>
+      <div class="tab" onclick="switchTab('approvals')">Approvals</div>
     </div>
 
     <div id="tab-overview" class="tab-content active">
@@ -601,6 +602,37 @@ mv .claude/settings.json .claude/settings.json.dredd-off
           </thead>
           <tbody id="keys-body">
             <tr><td colspan="6" class="empty">No keys yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="tab-approvals" class="tab-content">
+      <div style="max-width:1080px">
+        <h2 style="margin:0 0 4px">Approvals</h2>
+        <p class="muted" style="margin:0 0 16px;font-size:13px">
+          Tool calls you've previously approved at an "ask" prompt. The
+          same tool with the same shape (e.g. <code>curl</code> to the
+          same host with the same API key, or <code>Edit</code> on the
+          same file) won't re-prompt for 30 days from the last use.
+          Revoke any entry to force re-consent next time.
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th style="width:200px">Tool</th>
+              <th>Summary</th>
+              <th class="admin-only" style="width:200px">Owner</th>
+              <th style="width:220px">Project root</th>
+              <th style="width:70px">Uses</th>
+              <th style="width:140px">Last used</th>
+              <th style="width:140px">Expires</th>
+              <th style="width:90px"></th>
+            </tr>
+          </thead>
+          <tbody id="approvals-body">
+            <tr><td colspan="8" class="empty">No approvals yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -1680,6 +1712,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       if (tab === 'policies') loadPolicies();
       if (tab === 'logs') loadLogs();
       if (tab === 'keys') loadKeys();
+      if (tab === 'approvals') loadApprovals();
     }
 
     // ---- API keys tab -------------------------------------------------
@@ -1778,6 +1811,77 @@ mv .claude/settings.json .claude/settings.json.dredd-off
           return;
         }
         await loadKeys();
+      } catch (err) {
+        alert('Revoke failed: ' + err.message);
+      }
+    }
+
+    // ---- Approvals tab ------------------------------------------------
+    let approvalsData = [];
+    async function loadApprovals() {
+      try {
+        const r = await dreddFetch(`${API}/api/approvals`);
+        if (!r.ok) {
+          document.getElementById('approvals-body').innerHTML =
+            `<tr><td colspan="8" class="empty">Failed to load approvals (HTTP ${r.status})</td></tr>`;
+          return;
+        }
+        approvalsData = await r.json();
+        renderApprovals();
+      } catch (err) {
+        document.getElementById('approvals-body').innerHTML =
+          `<tr><td colspan="8" class="empty">Failed to load approvals: ${esc(err.message)}</td></tr>`;
+      }
+    }
+
+    function renderApprovals() {
+      const tbody = document.getElementById('approvals-body');
+      if (!approvalsData.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty">No approvals yet. Approve an "ask" prompt and it shows up here.</td></tr>';
+        return;
+      }
+      const isAdmin = !!(dreddPrincipal && dreddPrincipal.isAdmin);
+      tbody.innerHTML = approvalsData.map(a => {
+        const lastUsed = a.lastUsedAt ? new Date(a.lastUsedAt).toLocaleString() : '—';
+        const expires = a.expiresAt ? new Date(a.expiresAt).toLocaleString() : '—';
+        const ownerCell = isAdmin
+          ? `<td class="admin-only mono muted" title="${esc(a.ownerSub ?? '')}">${esc(a.ownerEmail ?? a.ownerSub ?? '-')}</td>`
+          : '';
+        // projectRoot can be long — truncate visually but keep the
+        // full path in the title for hover.
+        const root = a.projectRoot ?? '';
+        const rootDisplay = root.length > 32 ? '…' + root.slice(-30) : root;
+        return `<tr>
+          <td class="mono">${esc(a.tool ?? '-')}</td>
+          <td>${esc(a.summary ?? '')}</td>
+          ${ownerCell}
+          <td class="mono muted" title="${esc(root)}">${esc(rootDisplay)}</td>
+          <td class="mono muted">${a.useCount ?? 0}</td>
+          <td class="mono muted">${esc(lastUsed)}</td>
+          <td class="mono muted">${esc(expires)}</td>
+          <td><button class="refresh-btn"
+                onclick="revokeApproval('${esc(a.fingerprintHash)}', ${JSON.stringify(root)}, ${JSON.stringify(a.ownerSub ?? '')})">Revoke</button></td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function revokeApproval(fingerprintHash, projectRoot, ownerSub) {
+      if (!confirm('Revoke this approval? You\'ll be re-prompted next time this tool call comes up.')) return;
+      try {
+        const body = { fingerprintHash, projectRoot };
+        // Admins can revoke other users' approvals; ownerSub is only
+        // honoured server-side when the caller has admin role.
+        if (ownerSub) body.ownerSub = ownerSub;
+        const r = await dreddFetch(`${API}/api/approvals/revoke`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) {
+          alert('Revoke failed: HTTP ' + r.status);
+          return;
+        }
+        await loadApprovals();
       } catch (err) {
         alert('Revoke failed: ' + err.message);
       }

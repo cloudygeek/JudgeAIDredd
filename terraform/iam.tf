@@ -117,6 +117,25 @@ data "aws_iam_policy_document" "hook_task" {
     ]
   }
 
+  // Hook reads + writes approvals: lookup on every PreToolUse (read),
+  // upsert when a user accepts an "ask" prompt (UpdateItem), touch
+  // lastUsedAt on each hit (UpdateItem). No revoke from the hook —
+  // that's a dashboard-only operation.
+  statement {
+    sid    = "ApprovalsTableReadWrite"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:Query",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      aws_dynamodb_table.jaid_approvals.arn,
+      "${aws_dynamodb_table.jaid_approvals.arn}/index/gsi1",
+    ]
+  }
+
   // Bedrock — judge model + embedding model. Scoped to inference
   // profiles + foundation models in any region (cross-region inference
   // profiles can route to multiple regions, so we don't pin to one).
@@ -215,6 +234,24 @@ data "aws_iam_policy_document" "dashboard_task" {
     resources = [
       aws_dynamodb_table.jaid_api_keys.arn,
       "${aws_dynamodb_table.jaid_api_keys.arn}/index/gsi1",
+    ]
+  }
+
+  // Dashboard lists, inspects, and revokes user approvals. Scan for the
+  // admin "all approvals" view; UpdateItem for soft-revoke (the revoke
+  // path sets revokedAt and removes the GSI1 keys atomically).
+  statement {
+    sid    = "ApprovalsTableReadRevoke"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:Query",
+      "dynamodb:Scan",
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      aws_dynamodb_table.jaid_approvals.arn,
+      "${aws_dynamodb_table.jaid_approvals.arn}/index/gsi1",
     ]
   }
 

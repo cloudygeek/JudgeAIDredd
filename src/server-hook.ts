@@ -23,6 +23,7 @@ import {
   CONFIG,
   tracker,
   apiKeys,
+  approvals,
   interceptor,
   registeredSessions,
   feed,
@@ -59,6 +60,17 @@ import {
   cancelPendingClassification,
 } from "./intent-classifier.js";
 import { CLERK_PUBLISHABLE_KEY } from "./clerk-auth.js";
+import {
+  computeFingerprint,
+  hashFingerprint,
+  fingerprintJson,
+} from "./approval-fingerprint.js";
+import {
+  recordPendingApproval,
+  consumePendingApproval,
+} from "./pending-approvals.js";
+import { APPROVAL_INTENT_DRIFT_THRESHOLD } from "./approval-store.js";
+import { cosineSimilarity } from "./ollama-client.js";
 
 // CORS origin the dashboard container runs at. When unset, cross-origin
 // requests are rejected — same-origin only, which is what the hook gets
@@ -854,15 +866,68 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     ).catch(() => {});
   }
 
+  // Approval-learning lookup: built once here so the interceptor only
+  // has to invoke a closure. Conditions for any lookup:
+  //   - we can compute a fingerprint for this tool call,
+  //   - the session has a known owner + projectRoot (no approvals
+  //     persisted for anonymous or rootless sessions),
+  //   - we have a current intent embedding to compare against the
+  //     snapshot (the intent-drift backstop).
+  // When any precondition fails, the callback resolves to null and the
+  // interceptor falls through to the heuristic checks.
+  const projectRootForApproval = await tracker.getProjectRoot(session_id);
+  const ownerForApproval = await tracker.getSessionOwner(session_id);
+  const approvalCheck = async (): Promise<{ summary: string } | null> => {
+    if (!projectRootForApproval || !ownerForApproval.ownerSub) return null;
+    if (mode !== "interactive") return null; // only the consent mode uses approvals
+    const fp = computeFingerprint(tool_name, tool_input ?? {});
+    if (!fp) return null;
+    const hash = hashFingerprint(fp);
+    const scope = {
+      ownerSub: ownerForApproval.ownerSub,
+      projectRoot: projectRootForApproval,
+    };
+    const record = await approvals.lookup(scope, hash);
+    if (!record) return null;
+
+    // Intent-drift backstop: snapshot was taken when the user
+    // consented; reject the approval if the session's current intent
+    // has drifted too far from that moment. Cosine distance > 0.4 ≈
+    // semantically different goal — re-prompt the user.
+    const currentEmbedding =
+      activeIntents && activeIntents.length > 0
+        ? activeIntents[activeIntents.length - 1].embedding
+        : null;
+    if (
+      currentEmbedding &&
+      currentEmbedding.length > 0 &&
+      record.goalEmbedding.length > 0
+    ) {
+      const sim = cosineSimilarity(currentEmbedding, record.goalEmbedding);
+      const distance = 1 - sim;
+      if (distance > APPROVAL_INTENT_DRIFT_THRESHOLD) {
+        console.log(
+          `  [${session_id.substring(0, 8)}] [APPRV] match for "${record.summary}" rejected — intent drift ${distance.toFixed(3)} > ${APPROVAL_INTENT_DRIFT_THRESHOLD}`,
+        );
+        return null;
+      }
+    }
+
+    // Fire-and-forget touch: keeps the TTL fresh on every hit.
+    approvals.touchLastUsed(scope, hash).catch(() => {});
+    return { summary: record.summary };
+  };
+
   const result = await interceptor.evaluate(
     session_id,
     tool_name,
     tool_input ?? {},
     fullContext || undefined,
-    await tracker.getProjectRoot(session_id),
+    projectRootForApproval,
     mode,
     activeIntents,
     effectiveIntentHistoryMode(session_id),
+    approvalCheck,
   );
 
   await tracker.recordToolCall(
@@ -948,9 +1013,45 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       // permission prompt with our reason. The reason text is
       // user-facing, so phrase it accordingly: lead with the
       // suspicion, end with what to check.
+      //
+      // Approval-learning: stash a pending candidate keyed by the
+      // tool_use_id so the matching PostToolUse can promote it to a
+      // durable approval. If the user denies the prompt, no PostToolUse
+      // arrives and the candidate expires after 60s — we never learn
+      // from a denied prompt.
+      const fp = computeFingerprint(tool_name, tool_input ?? {});
+      let learningNote = "";
+      if (fp && tool_use_id) {
+        // Snapshot the freshest active-intent embedding as the
+        // intent-drift backstop anchor. Lookup compares the session's
+        // intent embedding at THAT moment against this snapshot;
+        // a >0.4 cosine distance rejects the approval even if the
+        // fingerprint matches.
+        const freshest = activeIntents && activeIntents.length > 0
+          ? activeIntents[activeIntents.length - 1]
+          : null;
+        const intentSnapshot = freshest?.prompt ?? "";
+        const goalEmbedding = freshest?.embedding ?? [];
+        recordPendingApproval(session_id, tool_use_id, {
+          tool: tool_name,
+          fingerprintHash: hashFingerprint(fp),
+          fingerprintJson: fingerprintJson(fp),
+          summary: fp.summary,
+          intentSnapshot,
+          goalEmbedding,
+        });
+        // Tell the user what will be remembered if they accept. Keeps
+        // consent explicit — they're not just allowing this call,
+        // they're allowing every future call with the same shape from
+        // this project for 30 days.
+        learningNote =
+          ` Approving will remember: ${fp.summary} from this project, ` +
+          `for 30 days. Revoke any time from the dashboard's Approvals tab.`;
+      }
+
       const askReason =
         `${DREDD_TAG}: this tool call looks suspicious. ${result.reason}. ` +
-        `Review and approve only if this matches your intent.`;
+        `Review and approve only if this matches your intent.${learningNote}`;
       hookResponse.hookSpecificOutput = {
         hookEventName: "PreToolUse",
         permissionDecision: "ask",
@@ -1020,6 +1121,11 @@ async function handleTrack(req: IncomingMessage, res: ServerResponse) {
 
   const body = JSON.parse(await readBody(req));
   const { session_id, tool_name, tool_input, tool_output } = body;
+  // Correlates with the tool_use_id sent on /evaluate. Used (in later
+  // steps) to look up a pending approval and promote it to a durable
+  // entry — the PostToolUse arrival is our only signal that the user
+  // accepted the prompt Dredd asked them about.
+  const tool_use_id: string | null = body.tool_use_id ?? null;
 
   if (rejectInvalidSessionId(res, session_id)) return;
   if (!tool_name) {
@@ -1054,6 +1160,41 @@ async function handleTrack(req: IncomingMessage, res: ServerResponse) {
 
   if (tool_name === "Bash") {
     await tracker.recordEnvVar(session_id, String(tool_input?.command ?? ""));
+  }
+
+  // Approval-learning promotion. Only fires when /evaluate stashed a
+  // pending candidate against this tool_use_id (i.e. Dredd returned
+  // permissionDecision="ask" and the user accepted — the tool wouldn't
+  // be running otherwise). Best-effort: any failure logs and continues
+  // without blocking the tracking response.
+  if (tool_use_id) {
+    const pending = consumePendingApproval(session_id, tool_use_id);
+    if (pending) {
+      try {
+        const projectRoot = await tracker.getProjectRoot(session_id);
+        const { ownerSub, ownerEmail } = await tracker.getSessionOwner(session_id);
+        if (projectRoot && ownerSub) {
+          await approvals.recordApproval({
+            scope: { ownerSub, projectRoot },
+            ownerEmail,
+            fingerprintHash: pending.fingerprintHash,
+            fingerprintJson: pending.fingerprintJson,
+            summary: pending.summary,
+            tool: pending.tool,
+            intentSnapshot: pending.intentSnapshot,
+            goalEmbedding: pending.goalEmbedding,
+          });
+          console.log(
+            `  [${session_id.substring(0, 8)}] [APPRV] learned: ${pending.summary}`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          `  [${session_id.substring(0, 8)}] [APPRV] failed to record approval:`,
+          (err as Error)?.message ?? err,
+        );
+      }
+    }
   }
 
   json(res, 200, {});

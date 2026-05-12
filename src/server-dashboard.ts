@@ -33,6 +33,7 @@ import {
   CONFIG,
   tracker,
   apiKeys,
+  approvals,
   readBody,
   json,
   BodyTooLargeError,
@@ -40,6 +41,7 @@ import {
   buildSessionLogShape,
   flushLogs,
 } from "./server-core.js";
+import type { ApprovalRecord } from "./approval-store.js";
 import { exportPolicies } from "./tool-policy.js";
 import { exportDomainPolicies } from "./domain-policy.js";
 import {
@@ -414,6 +416,66 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { revoked: ok });
     }
 
+    // ---------------------------------------------------------------
+    // Approvals — interactive-mode learning records. Same Clerk-scoping
+    // as /api/keys: a non-admin sees only approvals their ownerSub
+    // matches; admins see everyone's.
+    // ---------------------------------------------------------------
+    if (url.pathname === "/api/approvals") {
+      const principal = await requireClerkAuth(req, res);
+      if (!principal) return;
+      if (req.method === "GET") {
+        let records: ApprovalRecord[];
+        if (principal.isAdmin) {
+          try {
+            records = await approvals.listAll(500);
+          } catch (err) {
+            if ((err as any)?.name === "AccessDeniedException") {
+              console.warn(
+                "[admin-approvals] listAll denied (dynamodb:Scan missing) — " +
+                  "falling back to admin's own approvals",
+              );
+              records = await approvals.listByOwner(principal.userId, 500);
+            } else {
+              throw err;
+            }
+          }
+        } else {
+          records = await approvals.listByOwner(principal.userId, 500);
+        }
+        return json(res, 200, records.map(redactApproval));
+      }
+      return json(res, 405, { error: "Method not allowed" });
+    }
+
+    // Revoke takes the composite key in the body — fingerprintHash
+    // alone isn't enough because approvals are scoped (ownerSub +
+    // projectRoot). Non-admins can only revoke approvals they own;
+    // attempts to revoke someone else's silently return 404 so the
+    // existence of another user's records doesn't leak through.
+    if (req.method === "POST" && url.pathname === "/api/approvals/revoke") {
+      const principal = await requireClerkAuth(req, res);
+      if (!principal) return;
+      const body = JSON.parse(await readBody(req));
+      const fingerprintHash = String(body.fingerprintHash ?? "");
+      const projectRoot = String(body.projectRoot ?? "");
+      const targetOwner = principal.isAdmin
+        ? String(body.ownerSub ?? principal.userId)
+        : principal.userId;
+      if (!fingerprintHash || !/^[a-f0-9]{64}$/.test(fingerprintHash)) {
+        return json(res, 400, { error: "Invalid fingerprintHash" });
+      }
+      if (!projectRoot) {
+        return json(res, 400, { error: "Missing projectRoot" });
+      }
+      const ok = await approvals.revoke(
+        { ownerSub: targetOwner, projectRoot },
+        fingerprintHash,
+        principal.userId,
+      );
+      return json(res, 200, { revoked: ok });
+    }
+
     json(res, 404, { error: "Not found" });
   } catch (err) {
     if (err instanceof BodyTooLargeError) {
@@ -450,6 +512,28 @@ function redactKey(record: any) {
     keyType: record.keyType,
     createdAt: record.createdAt,
     lastUsedAt: record.lastUsedAt,
+    revokedAt: record.revokedAt,
+    revokedBy: record.revokedBy,
+  };
+}
+
+/** Drops the 1024-dim goalEmbedding (only needed server-side for the
+ *  intent-drift check). Everything else is already safe to display —
+ *  raw secrets never reach this layer because the curl fingerprinter
+ *  hashes Authorization headers at recording time. */
+function redactApproval(record: ApprovalRecord) {
+  return {
+    fingerprintHash: record.fingerprintHash,
+    summary: record.summary,
+    tool: record.tool,
+    ownerSub: record.ownerSub,
+    ownerEmail: record.ownerEmail,
+    projectRoot: record.projectRoot,
+    grantedAt: record.grantedAt,
+    lastUsedAt: record.lastUsedAt,
+    useCount: record.useCount,
+    expiresAt: record.expiresAt,
+    intentSnapshot: record.intentSnapshot,
     revokedAt: record.revokedAt,
     revokedBy: record.revokedBy,
   };
