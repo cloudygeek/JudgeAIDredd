@@ -238,17 +238,29 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
     registeredSessions.add(session_id);
   } else if (!result.isOriginal && !registeredSessions.has(session_id)) {
-    // Continuation prompt landed on a fresh container. The session is
-    // already registered as far as the SessionStore is concerned but
-    // the in-memory Set is empty — rehydrate so the next /evaluate
-    // finds the session and uses the stored goal instead of falling
-    // through to no-goal-allow. Mirror of the /evaluate-side
-    // rehydration; covers the path where /intent fires before the
-    // first /evaluate on the new container.
-    await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
+    // Continuation prompt landed on a container that doesn't have
+    // the session in its in-memory Set. Two cases collapse here:
+    //
+    //   (a) Fresh container after redeploy — session was registered
+    //       on the old container, the SessionStore still has it, the
+    //       new container's Set is empty.
+    //   (b) `claude --continue` after a SessionEnd — /end stamped
+    //       endedAt and removed the Set entry, the user resumed with
+    //       the same session_id. SessionStore still has originalIntent
+    //       (TTL 30d).
+    //
+    // In BOTH cases the right goal to register with the interceptor
+    // is the PERSISTED original intent, not the current prompt. The
+    // current prompt is a follow-up turn, not a new goal — registering
+    // it as the goal would silently rebase the judge on a continuation
+    // ("now add tests") instead of the actual project ("build the
+    // auth service"). Pull the stored original from the tracker.
+    const persisted = await tracker.loadSession(session_id);
+    const goalToRegister = persisted?.originalIntent?.prompt ?? contextualGoal;
+    await interceptor.registerGoal(session_id, goalToRegister, transcriptImages);
     registeredSessions.add(session_id);
     console.log(
-      `  [${session_id.substring(0, 8)}] [REHYDRATE] continuation prompt on fresh container — restored goal`
+      `  [${session_id.substring(0, 8)}] [REHYDRATE] continuation/redeploy — restored goal: "${goalToRegister.substring(0, 60)}..."`
     );
   }
 
