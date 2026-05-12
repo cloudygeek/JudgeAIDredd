@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# PromptArmor Phase B (Anthropic-on-Bedrock subset) entrypoint.
+# AgentDojo runner entrypoint — PromptArmor / B7.1 / none head-to-head.
 #
 # Iterates the cell matrix:
-#   AGENT_MODELS   ∈ {sonnet, opus-4-7}                         (--model on the runner)
+#   AGENT_MODELS   ∈ {sonnet, opus-4-7, gpt-4o-mini, qwen3-32b, qwen3-235b, …}
 #   DEFENCES       ∈ {none, B7, B7.1, promptarmor}              (per-cell defence)
 #   ATTACKS        ∈ {important_instructions}                   (paper centrepiece)
 #   SUITES         ∈ {workspace}                                (default)
 #
 # Override any of these by exporting the env var with a comma-separated
 # list. Empty/unset falls back to the default below.
+#
+# Backend routing happens in run_cell(): qwen* → bedrock-converse,
+# gpt-* → openai, otherwise bedrock (Anthropic-on-Bedrock). Set
+# AGENT_BACKEND explicitly if the heuristic doesn't match a future
+# model name.
 #
 # Required env:
 #   AWS_REGION              eu-west-2
@@ -21,6 +26,16 @@
 #   PROMPTARMOR_MODEL       defaults to "eu.anthropic.claude-sonnet-4-6"
 #   PROMPTARMOR_BACKEND     defaults to "bedrock"
 #   AGENTDOJO_LOGDIR        defaults to /app/runs (in the image)
+#   AGENT_BACKEND           override the model→backend heuristic
+#   AGENT_AWS_REGION        region for the agent's bedrock-converse calls
+#                           (default: eu-central-1, only used when backend
+#                            resolves to bedrock-converse — Qwen direct
+#                            foundation models are eu-central-1 only)
+#   OPENAI_API_KEY          required IF AGENT_MODELS contains a gpt-*
+#                           entry. Pass via the kick-off curl env vars;
+#                           the entrypoint inherits via the api-server
+#                           generic env passthrough. Not stored in
+#                           Secrets Manager.
 #   DRY_RUN=1               echo the planned commands, don't execute
 
 set -euo pipefail
@@ -117,9 +132,19 @@ log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × ${#DEFENCES_ARR[
 
 run_cell() {
   local model="$1" defence="$2" attack="$3" suite="$4"
+  # Route to the right backend based on the model name. Bedrock-Anthropic
+  # for Claude (sonnet, opus-4-7, haiku); bedrock-converse for Qwen
+  # (qwen3-32b, qwen3-235b); openai for GPT (gpt-4o, gpt-4o-mini, gpt-4.1-mini).
+  # AGENT_BACKEND can override if a future model's name doesn't match
+  # the heuristic.
+  local backend="${AGENT_BACKEND:-bedrock}"
+  case "$model" in
+    qwen*|*qwen*) backend="bedrock-converse" ;;
+    gpt-*) backend="openai" ;;
+  esac
   local args=(
     benchmarks/agentdojo/run_benchmark.py
-    --backend bedrock
+    --backend "$backend"
     --model "$model"
     --suite "$suite"
     --attack "$attack"
@@ -127,6 +152,13 @@ run_cell() {
     --dredd-url "$DREDD_URL"
     --logdir "$LOGDIR"
   )
+  # Qwen direct foundation models live in eu-central-1; other Bedrock
+  # backends live in eu-west-2 (default). The runner takes a separate
+  # --agent-aws-region for this; pass it when needed so AWS_REGION
+  # (used for the Sonnet judge in the dredd hook) stays unchanged.
+  if [[ "$backend" == "bedrock-converse" ]]; then
+    args+=(--agent-region "${AGENT_AWS_REGION:-eu-central-1}")
+  fi
   case "$defence" in
     none)
       ;;
