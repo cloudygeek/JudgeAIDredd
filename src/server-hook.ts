@@ -557,6 +557,20 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       ? await tracker.getActiveIntents(session_id)
       : undefined;
 
+  // Touch every materialised active entry so its lastActiveAt is bumped.
+  // Drives LRU eviction of the active set in the history-active model:
+  // entries that haven't been referenced by a recent /evaluate stay
+  // older than entries currently being judged against and get evicted
+  // first when the active set overflows. Best-effort — don't fail
+  // /evaluate on a Dynamo write hiccup.
+  if (activeIntents && activeIntents.length > 0) {
+    Promise.all(
+      activeIntents
+        .filter((e) => e.id)
+        .map((e) => tracker.touchActiveIntent(session_id, e.id!).catch(() => {})),
+    ).catch(() => {});
+  }
+
   const result = await interceptor.evaluate(
     session_id,
     tool_name,

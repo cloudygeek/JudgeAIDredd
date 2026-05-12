@@ -18,6 +18,7 @@
  */
 
 import { type IncomingMessage, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
 import {
   createWriteStream,
@@ -90,7 +91,7 @@ import { InMemorySessionStore } from "./session-tracker.js";
 import { DynamoSessionStore } from "./dynamo-session-store.js";
 import { CachedSessionStore } from "./cached-session-store.js";
 import type { SessionStore, ImageBlock, IntentEntry } from "./session-store.js";
-import { MAX_INTENT_STACK, RESOLVED_INTENT_TTL_MS } from "./session-tracker.js";
+import { MAX_INTENT_STACK, MAX_ACTIVE_INTENTS, RESOLVED_INTENT_TTL_MS } from "./session-tracker.js";
 import { embedAny, cosineSimilarity } from "./ollama-client.js";
 import {
   type ApiKeyStore,
@@ -941,6 +942,10 @@ async function makeIntentEntry(
 ): Promise<IntentEntry> {
   const embeddings = await embedAny(prompt, embeddingModel);
   return {
+    // Synthesise stable id up-front. Step 1 of the history-active
+    // migration relies on every entry having an id so the active set
+    // can reference history by id.
+    id: randomUUID(),
     prompt,
     contextual: buildContextualIntent(prompt, priorAssistant),
     embedding: embeddings[0],
@@ -948,6 +953,11 @@ async function makeIntentEntry(
     kind,
     resolved: false,
     images: images?.length ? images : undefined,
+    // Default classifierSource for anything built here (original,
+    // confirmation, plus the entries from applyIntentStackUpdate).
+    // Step 4 will overwrite to "llm" / "llm-confirmed" when the async
+    // classifier returns a verdict.
+    classifierSource: "embedding",
   };
 }
 
@@ -973,6 +983,12 @@ async function makeIntentEntry(
  * Drop the carve-out. The original is just an entry; if the user has
  * moved on enough that the stack overflows past the original's age,
  * it gets popped like anything else.
+ *
+ * @deprecated Step 2 of the history-active migration replaces
+ *   trimStack with the cap+TTL logic baked into the SessionStore's
+ *   activateIntent/markIntentResolved methods. Kept exported for
+ *   any external callers that still depend on it; the production
+ *   write path goes through trimActiveSet now.
  */
 function trimStack(stack: IntentEntry[]): IntentEntry[] {
   const now = Date.now();
@@ -982,6 +998,55 @@ function trimStack(stack: IntentEntry[]): IntentEntry[] {
   if (fresh.length <= MAX_INTENT_STACK) return fresh;
   // Keep the most recent MAX_INTENT_STACK entries in registration order.
   return fresh.slice(-MAX_INTENT_STACK);
+}
+
+/**
+ * History-active equivalent of trimStack. Operates on the resolved
+ * active set (entries already materialised from history+activeIntentIds)
+ * and decides which to keep:
+ *
+ *   1. Drop resolved entries whose registeredAt is older than
+ *      RESOLVED_INTENT_TTL_MS. They stay in history (the SessionStore
+ *      enforces history-side TTL separately at 30d) but are no longer
+ *      live for the judge.
+ *   2. Cap the live set at MAX_ACTIVE_INTENTS via LRU on lastActiveAt
+ *      (fallback registeredAt). Newest stay; oldest get evicted to
+ *      resolved.
+ *
+ * Returns an evictionPlan: which ids should be marked resolved
+ * (removed from active, kept in history). The caller applies it via
+ * the SessionStore's markIntentResolved.
+ */
+function planActiveSetEviction(active: IntentEntry[]): {
+  keep: IntentEntry[];
+  resolveIds: string[];
+} {
+  const now = Date.now();
+  const resolveIds: string[] = [];
+  const fresh = active.filter((e) => {
+    if (!e.resolved) return true;
+    if (now - e.registeredAt < RESOLVED_INTENT_TTL_MS) return true;
+    if (e.id) resolveIds.push(e.id);
+    return false;
+  });
+  if (fresh.length <= MAX_ACTIVE_INTENTS) {
+    return { keep: fresh, resolveIds };
+  }
+  // LRU: sort oldest-touch-first, evict from the front.
+  const sorted = [...fresh].sort((a, b) => {
+    const ta = a.lastActiveAt ?? a.registeredAt;
+    const tb = b.lastActiveAt ?? b.registeredAt;
+    return ta - tb;
+  });
+  const evictCount = sorted.length - MAX_ACTIVE_INTENTS;
+  const evicted = sorted.slice(0, evictCount);
+  const keepIds = new Set(sorted.slice(evictCount).map((e) => e.id));
+  for (const e of evicted) {
+    if (e.id) resolveIds.push(e.id);
+  }
+  // Restore registration order for the kept entries.
+  const keep = active.filter((e) => e.id && keepIds.has(e.id));
+  return { keep, resolveIds };
 }
 
 export interface IntentStackUpdateResult {
@@ -1037,6 +1102,10 @@ export async function applyIntentStackUpdate(
       images,
     );
     const stack = [entry];
+    // setActiveIntents writes both legacy activeIntents and the new
+    // history+ids fields. Step 7 cleanup will switch this to a pure
+    // appendToHistory + activateIntent call once setActiveIntents is
+    // removed.
     await store.setActiveIntents(sessionId, stack);
     return { kind: "original", turnState, stack, driftToStackTop: null };
   }
@@ -1053,9 +1122,12 @@ export async function applyIntentStackUpdate(
       embeddingModel,
       images,
     );
-    const stack = trimStack([...existing, entry]);
-    await store.setActiveIntents(sessionId, stack);
-    return { kind: "confirmation", turnState, stack, driftToStackTop: 0 };
+    const planned = planActiveSetEviction([...existing, entry]);
+    if (planned.resolveIds.length > 0) {
+      await store.markIntentResolved(sessionId, planned.resolveIds);
+    }
+    await store.setActiveIntents(sessionId, planned.keep);
+    return { kind: "confirmation", turnState, stack: planned.keep, driftToStackTop: 0 };
   }
 
   // Compute drift to the most recent live stack entry — the variable
@@ -1083,7 +1155,7 @@ export async function applyIntentStackUpdate(
   const driftToStackTop = topSim === null ? null : 1 - topSim;
 
   let kind: IntentEntry["kind"];
-  let stack = [...existing];
+  let baseStack = [...existing];
 
   if (turnState === "draining") {
     kind = "queued";
@@ -1091,14 +1163,15 @@ export async function applyIntentStackUpdate(
     kind = "open-followup";
   } else if (driftToStackTop !== null && driftToStackTop > NEW_TASK_DRIFT_MIN) {
     // Closed state, distant from any prior intent — true topic switch.
-    // Evict resolved entries entirely. We previously preserved the
-    // session's original entry on every new-task pivot ("session-
-    // defining goal"), but in practice that turned the first prompt
-    // into a poison pill: the judge kept anchoring to it for hours
-    // after the user had moved on. The original is no longer special;
-    // a true topic switch wipes resolved history including the original.
+    // Evict resolved entries entirely. The original is no longer
+    // special; a true topic switch wipes resolved history including
+    // the original.
     kind = "new-task";
-    stack = stack.filter((e) => !e.resolved);
+    const toResolve = baseStack.filter((e) => e.resolved && e.id).map((e) => e.id!);
+    if (toResolve.length > 0) {
+      await store.markIntentResolved(sessionId, toResolve);
+    }
+    baseStack = baseStack.filter((e) => !e.resolved);
   } else if (driftToStackTop !== null && driftToStackTop < CONTINUATION_DRIFT_MAX) {
     kind = "continuation";
   } else {
@@ -1108,6 +1181,12 @@ export async function applyIntentStackUpdate(
   }
 
   const entry: IntentEntry = {
+    // Synthesise the id up-front so planActiveSetEviction can refer
+    // to this entry by id (it's the freshest entry, never a candidate
+    // for eviction in a fresh-stack pass, but we want symmetry with
+    // the rest of the entries — every active intent should have an
+    // id once it leaves this function).
+    id: randomUUID(),
     prompt,
     contextual: buildContextualIntent(prompt, priorAssistant),
     embedding: promptEmbedding,
@@ -1115,11 +1194,20 @@ export async function applyIntentStackUpdate(
     kind,
     resolved: false,
     images: images?.length ? images : undefined,
+    // classifierSource is "embedding" until step 4 wires the async
+    // LLM classifier; entries from the embedding-only path are tagged
+    // explicitly so the dashboard + telemetry can count overrides.
+    classifierSource: "embedding",
   };
-  stack = trimStack([...stack, entry]);
-  await store.setActiveIntents(sessionId, stack);
+  // LRU-evict to MAX_ACTIVE_INTENTS, marking evicted ids resolved (kept
+  // in history). Replaces the old trimStack call.
+  const planned = planActiveSetEviction([...baseStack, entry]);
+  if (planned.resolveIds.length > 0) {
+    await store.markIntentResolved(sessionId, planned.resolveIds);
+  }
+  await store.setActiveIntents(sessionId, planned.keep);
 
-  return { kind, turnState, stack, driftToStackTop };
+  return { kind, turnState, stack: planned.keep, driftToStackTop };
 }
 
 export async function backfillFromTranscript(
