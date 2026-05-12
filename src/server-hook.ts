@@ -54,6 +54,21 @@ import { scanClaudeMd, scanClaudeMdContent, type ClaudeMdScanResult } from "./cl
 // from Claude Code hooks.
 const DASHBOARD_ORIGIN = process.env.DREDD_DASHBOARD_ORIGIN ?? "";
 
+// Build version, surfaced in every permissionDecisionReason so users can
+// tell which deployment produced an error. Read once at module load —
+// package.json is baked into the image, so re-reading per request adds no
+// information.
+const PKG_VERSION: string = (() => {
+  try {
+    return JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8")
+    ).version as string;
+  } catch {
+    return "unknown";
+  }
+})();
+const DREDD_TAG = `Judge AI Dredd [v${PKG_VERSION}]`;
+
 // Per-session trust-mode override. Set via POST /api/session-mode from the
 // dashboard. Beats body.mode and CONFIG.mode for that one session — used to
 // rescue stuck sessions where the LLM stack classifier has locked onto a
@@ -461,7 +476,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
             permissionDecision: "deny",
-            permissionDecisionReason: `Judge AI Dredd (no goal, ${noGoalDetail}): ${policyOnly.reason}`,
+            permissionDecisionReason: `${DREDD_TAG} (no goal, ${noGoalDetail}): ${policyOnly.reason}`,
           },
           _meta: { allowed: false, stage: "policy-deny", reason: policyOnly.reason, noGoalDetail },
         });
@@ -470,7 +485,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "allow",
-          permissionDecisionReason: `Judge AI Dredd: no goal registered (${noGoalDetail}), policy allows`,
+          permissionDecisionReason: `${DREDD_TAG}: no goal registered (${noGoalDetail}), policy allows`,
         },
         _meta: { allowed: true, stage: "no-goal-allow", reason: "No goal registered, policy allows", noGoalDetail },
       });
@@ -501,7 +516,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: `Judge AI Dredd: ${LOCKED_MESSAGE}`,
+        permissionDecisionReason: `${DREDD_TAG}: ${LOCKED_MESSAGE}`,
       },
       systemMessage: LOCKED_MESSAGE,
       _meta: {
@@ -607,7 +622,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       hookResponse.hookSpecificOutput = {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: `Judge AI Dredd: ${LOCKED_MESSAGE}`,
+        permissionDecisionReason: `${DREDD_TAG}: ${LOCKED_MESSAGE}`,
       };
       hookResponse.systemMessage = LOCKED_MESSAGE;
     } else {
@@ -620,7 +635,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       hookResponse.hookSpecificOutput = {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: `Judge AI Dredd: ${result.reason}`,
+        permissionDecisionReason: `${DREDD_TAG}: ${result.reason}`,
       };
       hookResponse.systemMessage =
         `[SECURITY] Tool call ${tool_name} was blocked. Reason: ${result.reason}. ` +
@@ -630,7 +645,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     hookResponse.hookSpecificOutput = {
       hookEventName: "PreToolUse",
       permissionDecision: "allow",
-      permissionDecisionReason: `Judge AI Dredd: ${result.reason}`,
+      permissionDecisionReason: `${DREDD_TAG}: ${result.reason}`,
     };
   }
 
