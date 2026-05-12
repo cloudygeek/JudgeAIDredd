@@ -1251,9 +1251,19 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       }
     }
 
-    async function showDetail(sessionId, section) {
+    async function showDetail(sessionId, section, opts) {
       try {
         const data = await (await dreddFetch(`${API}/api/session-log/${encodeURIComponent(sessionId)}`)).json();
+
+        // Wire into the History API so the browser back/forward buttons
+        // navigate between the main page and the session detail page.
+        // Skip the pushState when called from popstate (opts.fromHistory)
+        // — replaying history.back() into a pushState would create a
+        // back-loop the user can't escape.
+        if (!(opts && opts.fromHistory)) {
+          const url = `${window.location.pathname}#session/${encodeURIComponent(sessionId)}`;
+          history.pushState({ view: "session", sessionId }, "", url);
+        }
 
         currentDetailSessionId = sessionId;
         document.getElementById('main-page').style.display = 'none';
@@ -1406,15 +1416,47 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       }
     }
 
-    function showMain() {
+    function showMain(opts) {
       currentDetailSessionId = null;
       document.getElementById('detail-page').classList.remove('active');
       document.getElementById('main-page').style.display = 'block';
+      // Mirror the URL change from showDetail. fromHistory skip same
+      // as showDetail — popstate replays shouldn't push their own
+      // history entry.
+      if (!(opts && opts.fromHistory)) {
+        history.pushState({ view: "main" }, "", window.location.pathname);
+      }
     }
 
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') showMain();
     });
+
+    // Browser back/forward: route to the right view based on the URL
+    // hash. The hash is the source of truth (state.sessionId is the
+    // optimistic copy but cleared on a hard refresh).
+    window.addEventListener('popstate', () => {
+      const m = window.location.hash.match(/^#session\/(.+)$/);
+      if (m && m[1]) {
+        const sid = decodeURIComponent(m[1]);
+        showDetail(sid, undefined, { fromHistory: true });
+      } else {
+        showMain({ fromHistory: true });
+      }
+    });
+
+    // Honour deep-link on initial load — `…/dashboard#session/<id>`
+    // opens straight to the session detail page. Runs after the rest
+    // of initialisation so showDetail's data fetches kick off
+    // alongside the main-page populate.
+    (function deepLinkOpen() {
+      const m = window.location.hash.match(/^#session\/(.+)$/);
+      if (m && m[1]) {
+        const sid = decodeURIComponent(m[1]);
+        // Defer a tick so the rest of the page boot completes first.
+        setTimeout(() => showDetail(sid, undefined, { fromHistory: true }), 0);
+      }
+    })();
 
     function switchTab(tab) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
