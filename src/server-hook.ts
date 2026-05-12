@@ -41,6 +41,7 @@ import {
   extractLastUserAndPriorAssistant,
   buildContextualIntent,
   applyIntentStackUpdate,
+  applyClassifierOverride,
   buildSessionLogShape,
   flushLogs,
   NEW_TASK_DRIFT_MIN,
@@ -48,11 +49,33 @@ import {
 } from "./server-core.js";
 import type { ImageBlock } from "./session-store.js";
 import { scanClaudeMd, scanClaudeMdContent, type ClaudeMdScanResult } from "./claudemd-scanner.js";
+import {
+  IntentClassifier,
+  setPendingClassification,
+  awaitPendingClassification,
+  cancelPendingClassification,
+} from "./intent-classifier.js";
 
 // CORS origin the dashboard container runs at. When unset, cross-origin
 // requests are rejected — same-origin only, which is what the hook gets
 // from Claude Code hooks.
 const DASHBOARD_ORIGIN = process.env.DREDD_DASHBOARD_ORIGIN ?? "";
+
+// Async LLM intent classifier — feature-flagged so we can roll out
+// staged: schema first (already in production via main), then embedding
+// fallback (already in production), then async LLM. Default off until
+// step 6 telemetry validates the classifier prompt + override logic.
+const INTENT_CLASSIFIER_LLM_ENABLED =
+  process.env.INTENT_CLASSIFIER_LLM_ENABLED === "true";
+const intentClassifier = new IntentClassifier(
+  (process.env.INTENT_CLASSIFIER_BACKEND as "bedrock" | "ollama" | undefined) ?? "bedrock",
+  process.env.INTENT_CLASSIFIER_MODEL ?? "eu.anthropic.claude-sonnet-4-6",
+);
+/** How long /evaluate waits for an in-flight classifier verdict
+ *  before falling back to the existing active state. Cap chosen to
+ *  stay below typical agent-response latency so it's hidden in
+ *  normal flow. */
+const CLASSIFIER_EVALUATE_WAIT_MS = 750;
 
 // Build version, surfaced in every permissionDecisionReason so users can
 // tell which deployment produced an error. Read once at module load —
@@ -353,6 +376,59 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
       `drift=${stackUpdate.driftToStackTop?.toFixed(3) ?? "n/a"}, ` +
       `stack=${stackUpdate.stack.length}: ${stackPrompts})`
     );
+
+    // Async LLM classifier override. Spawn a Bedrock call to second-
+    // guess the embedding fallback. /intent has already returned to
+    // the caller; this happens in the background. /evaluate awaits
+    // the result with a bounded timeout (CLASSIFIER_EVALUATE_WAIT_MS)
+    // so a fast classifier verdict can correct the active set before
+    // the agent's first tool call. /end and /pivot cancel pending
+    // classifications.
+    //
+    // Only run when:
+    //   - feature flag is on
+    //   - we have a real new entry (not queued/open-followup, where
+    //     the kind is already determined by turn state and the LLM
+    //     has nothing to add)
+    //   - the embedding-fallback kind is not "original" (first prompt
+    //     of session is unambiguous)
+    if (
+      INTENT_CLASSIFIER_LLM_ENABLED &&
+      stackUpdate.newEntryId &&
+      stackUpdate.kind !== "queued" &&
+      stackUpdate.kind !== "open-followup" &&
+      stackUpdate.kind !== "original"
+    ) {
+      const newEntryId = stackUpdate.newEntryId;
+      const embeddingKind = stackUpdate.kind;
+      const turnState = stackUpdate.turnState;
+      const classifierPromise = (async () => {
+        const active = await tracker.getActiveIntents(session_id);
+        const history = await tracker.getIntentHistory(session_id);
+        const verdict = await intentClassifier.classify(prompt, active, history, turnState);
+        if (verdict) {
+          const result = await applyClassifierOverride(
+            tracker,
+            session_id,
+            newEntryId,
+            embeddingKind,
+            verdict,
+          ).catch((err) => {
+            console.warn(
+              `  [${session_id.substring(0, 8)}] [INTENT-CLASSIFY] override failed: ${err}`,
+            );
+            return { overridden: false, reason: `override error: ${err}` };
+          });
+          console.log(
+            `  [${session_id.substring(0, 8)}] [INTENT-CLASSIFY-LLM] kind=${verdict.kind} ` +
+            `conf=${verdict.confidence} (${verdict.durationMs}ms) overridden=${result.overridden} ` +
+            `(${result.reason})`,
+          );
+        }
+        return verdict;
+      })();
+      setPendingClassification(session_id, classifierPromise);
+    }
   }
 
   const classification = tracker.classifyDrift(result.driftFromOriginal);
@@ -547,6 +623,16 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   if (agent_reasoning) {
     fullContext = (fullContext ? fullContext + "\n\n" : "") +
       `AGENT REASONING (why it wants to use this tool):\n${agent_reasoning}`;
+  }
+
+  // If an async LLM intent classifier is in flight for this session
+  // (kicked off by the most recent /intent), wait briefly for its
+  // verdict so a fast override can correct the active set BEFORE we
+  // judge this tool call. Cap the wait so a slow Bedrock doesn't
+  // hold up tool execution. Best-effort — on timeout the existing
+  // (embedding-fallback) active set stays in place.
+  if (mode === "interactive" || mode === "learn") {
+    await awaitPendingClassification(session_id, CLASSIFIER_EVALUATE_WAIT_MS);
   }
 
   // In interactive/learn mode pass the active intent stack so the judge
@@ -762,6 +848,7 @@ async function handleEnd(req: IncomingMessage, res: ServerResponse) {
   );
 
   registeredSessions.delete(session_id);
+  cancelPendingClassification(session_id);
   await tracker.endSession(session_id);
   interceptor.reset(session_id);
 
@@ -871,6 +958,7 @@ async function handlePivot(req: IncomingMessage, res: ServerResponse) {
 
   interceptor.reset(session_id);
   registeredSessions.delete(session_id);
+  cancelPendingClassification(session_id);
 
   json(res, 200, { pivoted: true, reason: reason ?? "User changed direction" });
 }

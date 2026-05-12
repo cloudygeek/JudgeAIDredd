@@ -1299,6 +1299,14 @@ export interface IntentStackUpdateResult {
    * was added — null when the stack was empty (very first prompt).
    */
   driftToStackTop: number | null;
+  /**
+   * ID of the freshly-registered entry. Step 4 uses this to apply
+   * an async-LLM-classifier override: if the LLM disagrees with the
+   * embedding fallback at high confidence, the override needs to
+   * mutate this specific entry (overwrite its kind, possibly
+   * mark/activate other entries) before the next /evaluate.
+   */
+  newEntryId?: string;
 }
 
 /**
@@ -1345,7 +1353,7 @@ export async function applyIntentStackUpdate(
     // appendToHistory + activateIntent call once setActiveIntents is
     // removed.
     await store.setActiveIntents(sessionId, stack);
-    return { kind: "original", turnState, stack, driftToStackTop: null };
+    return { kind: "original", turnState, stack, driftToStackTop: null, newEntryId: entry.id };
   }
 
   // Confirmation: adopt the prior assistant proposal as the new top.
@@ -1365,7 +1373,13 @@ export async function applyIntentStackUpdate(
       await store.markIntentResolved(sessionId, planned.resolveIds);
     }
     await store.setActiveIntents(sessionId, planned.keep);
-    return { kind: "confirmation", turnState, stack: planned.keep, driftToStackTop: 0 };
+    return {
+      kind: "confirmation",
+      turnState,
+      stack: planned.keep,
+      driftToStackTop: 0,
+      newEntryId: entry.id,
+    };
   }
 
   // Compute drift to the most recent live stack entry — the variable
@@ -1476,7 +1490,139 @@ export async function applyIntentStackUpdate(
     ` drift=${driftToStackTop?.toFixed(3) ?? "n/a"} (${verdict.reason})`,
   );
 
-  return { kind, turnState, stack: planned.keep, driftToStackTop };
+  return { kind, turnState, stack: planned.keep, driftToStackTop, newEntryId: entry.id };
+}
+
+/**
+ * Apply an async-LLM-classifier override against a session whose
+ * embedding-fallback verdict is already in place. Called after
+ * /intent has returned its response — the LLM call (1.5–2.5s) runs
+ * in the background and this function takes the verdict, decides
+ * whether to override the embedding-fallback decision, and applies
+ * the change via SessionStore methods.
+ *
+ * Override policy:
+ *   - LLM verdict same kind as embedding fallback → no-op, just tag
+ *     the entry's classifierSource as "llm-confirmed" for telemetry.
+ *   - LLM verdict different AND confidence is "high" → apply override.
+ *   - LLM verdict different AND confidence is "medium" or "low" →
+ *     keep embedding fallback. Low-confidence flips would just churn
+ *     state without clear benefit; logged for telemetry.
+ *
+ * Per the design doc, the override mutates the active set (mark
+ * entries resolved, activate historical entries) but DOES NOT
+ * retroactively change the kind of an entry that's already been
+ * registered — the new entry's kind is updated in place, but
+ * historical entries keep whatever kind they had at registration.
+ */
+export async function applyClassifierOverride(
+  store: SessionStore,
+  sessionId: string,
+  newEntryId: string,
+  embeddingKind: IntentEntry["kind"],
+  llmVerdict: import("./intent-classifier.js").ClassifierVerdict,
+): Promise<{ overridden: boolean; reason: string }> {
+  // Same kind — confirm and tag for telemetry.
+  if (llmVerdict.kind === embeddingKind) {
+    await tagClassifierConfirmed(store, sessionId, newEntryId);
+    return { overridden: false, reason: "llm agreed with embedding" };
+  }
+  // Different kind but low confidence — defer to embedding.
+  if (llmVerdict.confidence !== "high") {
+    return {
+      overridden: false,
+      reason: `llm disagreed (${embeddingKind} → ${llmVerdict.kind}) but confidence ${llmVerdict.confidence} — keeping embedding`,
+    };
+  }
+  // Apply the override. The new entry has already been registered
+  // with embeddingKind; update its kind + classifierSource in place,
+  // and apply per-kind state transitions on the active set.
+  const history = await store.getIntentHistory(sessionId);
+  const newEntry = history.find((e) => e.id === newEntryId);
+  if (!newEntry) {
+    return {
+      overridden: false,
+      reason: `llm verdict ${llmVerdict.kind} arrived but entry ${newEntryId} no longer in history`,
+    };
+  }
+  // Roll back any state changes made by the embedding kind, then
+  // apply the LLM's decision. Concretely: if embedding said
+  // "replacement" we previously marked an entry resolved — re-activate
+  // it, then apply the LLM's verdict cleanly.
+  //
+  // For v1 we keep this simple: only state transitions for the LLM
+  // kind are applied. Roll-back of embedding-fallback state changes
+  // is left to step 5+ if the override-disagreement rate justifies
+  // the complexity. Most disagreements will be in the
+  // continuation/sub-task/replacement family where the active set
+  // is already close to right.
+  if (llmVerdict.kind === "revisit" && llmVerdict.referencedEntryId) {
+    await store.activateIntent(sessionId, llmVerdict.referencedEntryId);
+  } else if (llmVerdict.kind === "replacement" && llmVerdict.referencedEntryId) {
+    await store.markIntentResolved(sessionId, [llmVerdict.referencedEntryId]);
+  } else if (llmVerdict.kind === "new-task") {
+    // Mark all other actives resolved.
+    const active = await store.getActiveIntents(sessionId);
+    const toResolve = active
+      .filter((e) => e.id && e.id !== newEntryId)
+      .map((e) => e.id!);
+    if (toResolve.length > 0) {
+      await store.markIntentResolved(sessionId, toResolve);
+    }
+  }
+  // Update the new entry's kind + classifierSource + referencedEntryId
+  // in history. We rebuild the active set view by re-applying
+  // setActiveIntents with the updated entry mixed back in.
+  const updatedHistory = history.map((e) =>
+    e.id === newEntryId
+      ? {
+          ...e,
+          kind: llmVerdict.kind as IntentEntry["kind"],
+          classifierSource: "llm" as const,
+          referencedEntryId: llmVerdict.referencedEntryId,
+        }
+      : e,
+  );
+  // Rebuild active using whatever the store now holds, mixing in the
+  // updated entry by id.
+  const currentActive = await store.getActiveIntents(sessionId);
+  const updatedActive = currentActive.map((e) =>
+    e.id === newEntryId
+      ? updatedHistory.find((h) => h.id === newEntryId)!
+      : e,
+  );
+  await store.setActiveIntents(sessionId, updatedActive);
+
+  return {
+    overridden: true,
+    reason: `llm overrode embedding ${embeddingKind} → ${llmVerdict.kind} (high conf)`,
+  };
+}
+
+/**
+ * Tag an existing history entry's classifierSource as "llm-confirmed"
+ * — the LLM agreed with the embedding fallback. Doesn't change the
+ * active set; this is purely a telemetry marker on the entry.
+ */
+async function tagClassifierConfirmed(
+  store: SessionStore,
+  sessionId: string,
+  entryId: string,
+): Promise<void> {
+  // The SessionStore doesn't have a generic "update one entry" method
+  // because every other call site updates the whole active set. We
+  // re-emit the active set with the entry's classifierSource updated
+  // — same data, same shape, just the tag flipped. Cheap on the
+  // happy path (LLM agrees most of the time) and avoids inflating
+  // the SessionStore interface for a single field update.
+  const active = await store.getActiveIntents(sessionId);
+  const next = active.map((e) =>
+    e.id === entryId ? { ...e, classifierSource: "llm-confirmed" as const } : e,
+  );
+  // Only write if something actually changed (the entry was active).
+  if (next.some((e) => e.id === entryId)) {
+    await store.setActiveIntents(sessionId, next);
+  }
 }
 
 export async function backfillFromTranscript(
