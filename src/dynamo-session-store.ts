@@ -82,134 +82,28 @@ import type {
 import { createHash, randomUUID } from "node:crypto";
 import { isSensitiveEnvVar } from "./sensitive-env.js";
 import { MAX_ACTIVE_INTENTS, MAX_INTENT_HISTORY } from "./session-tracker.js";
-
-// ---- constants --------------------------------------------------------------
-
-const TTL_DAYS = 30;
-const TTL_SECONDS = TTL_DAYS * 24 * 60 * 60;
-const GSI_NAME = "gsi1";
-const GSI_PK = "SESSION";
-
-// Per-field size caps. DynamoDB enforces a 400KB hard limit per item; we
-// cap well under that so a single huge attribute (e.g. a pasted file
-// dump in a user prompt) can't break writes. Values are truncated silently
-// — the judge has already seen the full content via the request body.
-const MAX_PROMPT_BYTES = 100_000;    // user prompt text
-const MAX_TOOL_INPUT_BYTES = 50_000; // serialised tool_input
-const MAX_FILE_CONTENT_BYTES = 10_000; // already truncated in sanitisers; belt-and-braces
-
-/**
- * Window for coalescing touchActiveIntent calls. Every /evaluate
- * touches every active intent (3-5 per turn × tens of tool calls per
- * turn) — without coalescing this would mean ~150 Dynamo writes per
- * turn just for LRU bookkeeping. 500ms is short enough to keep LRU
- * ordering fresh against legitimate session lifetimes (a session
- * paused 500ms+ between tool calls already loses its hot-path
- * advantage) and long enough to fold an entire turn's touches into
- * one write.
- */
-const TOUCH_FLUSH_MS = 500;
-
-/**
- * Synthesise a deterministic id for a legacy IntentEntry that
- * predated the history-active schema. The id is a function of the
- * prompt + registeredAt + position so the same entry always produces
- * the same id across reads — referencedEntryId pointers from the
- * classifier remain stable through container restarts.
- */
-function deterministicLegacyId(entry: IntentEntry, position: number): string {
-  const key = `${entry.registeredAt}|${position}|${entry.prompt.substring(0, 200)}`;
-  const hex = createHash("sha256").update(key).digest("hex");
-  // UUID v4-shaped formatting so downstream code that parses the id
-  // doesn't choke on a raw hex string.
-  return [
-    hex.substring(0, 8),
-    hex.substring(8, 12),
-    hex.substring(12, 16),
-    hex.substring(16, 20),
-    hex.substring(20, 32),
-  ].join("-");
-}
-
-function truncString(s: string, limit: number): string {
-  if (s.length <= limit) return s;
-  return s.substring(0, limit);
-}
-
-function truncToolInput(input: Record<string, unknown>): Record<string, unknown> {
-  const json = JSON.stringify(input);
-  if (json.length <= MAX_TOOL_INPUT_BYTES) return input;
-  // Overrun: keep the shape but replace each string value with a truncated
-  // copy. Shape preservation matters for the judge and the dashboard.
-  const clipped: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(input)) {
-    clipped[k] = typeof v === "string"
-      ? truncString(v, Math.floor(MAX_TOOL_INPUT_BYTES / Math.max(1, Object.keys(input).length)))
-      : v;
-  }
-  return clipped;
-}
-
-function now(): number {
-  return Math.floor(Date.now() / 1000);
-}
-
-function ttl(): number {
-  return now() + TTL_SECONDS;
-}
-
-function pad(n: number, width = 4): string {
-  return String(n).padStart(width, "0");
-}
-
-function pk(sessionId: string): string {
-  return `SESSION#${sessionId}`;
-}
-
-function hashPath(path: string): string {
-  return createHash("sha1").update(path).digest("hex").substring(0, 16);
-}
-
-/**
- * Build an IntentEntry from a DynamoDB Item retrieved via Get/Query
- * on an INTENT# row. Strips the dynamo-specific (pk/sk/ttl) fields
- * and coerces optional ones to their TS-typed defaults.
- */
-function rowToIntentEntry(item: Record<string, any>): IntentEntry {
-  return {
-    id: item.id,
-    prompt: item.prompt ?? "",
-    contextual: item.contextual ?? "",
-    embedding: item.embedding ?? [],
-    registeredAt: item.registeredAt,
-    lastActiveAt: item.lastActiveAt,
-    classifierSource: item.classifierSource,
-    referencedEntryId: item.referencedEntryId,
-    kind: item.kind,
-    resolved: item.resolved ?? false,
-    images: item.images,
-  };
-}
-
-/**
- * Sort key for an IntentEntry row. The registeredAt prefix makes a
- * `begins_with(sk,"INTENT#")` query return entries in chronological
- * order, which is what every reader of intentHistory expects. The id
- * suffix disambiguates same-millisecond inserts (rare, but possible
- * when a confirmation prompt and its parent share a timestamp).
- *
- * 13-digit zero-pad fits epoch-ms through year 2286.
- */
-function intentSk(registeredAt: number, id: string): string {
-  return `INTENT#${String(registeredAt).padStart(13, "0")}#${id}`;
-}
-
-const INTENT_SK_PREFIX = "INTENT#";
-
-/** Per-IntentEntry persisted size budget. The serialised row carries
- *  prompt + contextual + a 1024-d Cohere embedding (~10KB) + a few
- *  small fields, comfortably under DynamoDB's 400KB hard limit. */
-const MAX_INTENT_ENTRY_FIELD_BYTES = 10_000;
+import {
+  TTL_DAYS,
+  TTL_SECONDS,
+  GSI_NAME,
+  GSI_PK,
+  MAX_PROMPT_BYTES,
+  MAX_TOOL_INPUT_BYTES,
+  MAX_FILE_CONTENT_BYTES,
+  TOUCH_FLUSH_MS,
+  INTENT_SK_PREFIX,
+  MAX_INTENT_ENTRY_FIELD_BYTES,
+  deterministicLegacyId,
+  truncString,
+  truncToolInput,
+  now,
+  ttl,
+  pad,
+  pk,
+  hashPath,
+  rowToIntentEntry,
+  intentSk,
+} from "./dynamo-session-marshal.js";
 
 // ---- store ------------------------------------------------------------------
 
