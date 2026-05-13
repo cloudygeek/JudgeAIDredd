@@ -177,7 +177,8 @@
       overflow-y: auto; font-family: 'SF Mono', 'Fira Code', monospace;
       font-size: 12px; line-height: 1.6; margin-bottom: 24px;
     }
-    .feed-entry { padding: 4px 0; border-bottom: 1px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+    .feed-entry { padding: 4px 6px; border-bottom: 1px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; cursor: pointer; border-radius: 3px; transition: background 0.1s; }
+    .feed-entry:hover { background: rgba(255,255,255,0.04); }
     .feed-entry:last-child { border-bottom: none; }
     .feed-time { color: var(--muted); }
     .feed-allow { color: var(--green); }
@@ -735,6 +736,17 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     </div>
   </div>
 
+  <!-- LIVE FEED DETAIL MODAL -->
+  <div id="feed-detail-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;align-items:flex-start;justify-content:center;padding-top:60px" onclick="closeFeedDetailIfOverlay(event)">
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;max-width:880px;width:92%;max-height:80vh;overflow-y:auto;padding:24px" role="dialog" aria-labelledby="feed-detail-title">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px">
+        <h2 id="feed-detail-title" style="margin:0;font-size:18px">Feed entry</h2>
+        <button class="refresh-btn" onclick="closeFeedDetail()" aria-label="Close">Close</button>
+      </div>
+      <div id="feed-detail-body"></div>
+    </div>
+  </div>
+
   <script>
     const API = window.location.origin;
     // HOOK_API points at the hook container (set by server-dashboard.ts via
@@ -972,10 +984,17 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       const sid = f.sessionId ?? '';
       const sidShort = sid ? (sid.length > 8 ? sid.substring(0, 8) : sid) : '';
       const showSid = opts && opts.showSessionId !== false;
+      // event.stopPropagation on the session-id chip so clicking it
+      // navigates to the session detail page instead of also opening
+      // the feed-entry modal underneath.
       const sidHtml = showSid && sid
-        ? `<span class="feed-sid cell-link muted" title="${esc(sid)}" onclick="showDetail('${esc(sid)}')">${esc(sidShort)}</span> `
+        ? `<span class="feed-sid cell-link muted" title="${esc(sid)}" onclick="event.stopPropagation(); showDetail('${esc(sid)}')">${esc(sidShort)}</span> `
         : '';
-      return `<div class="feed-entry"><span class="feed-time">${time}</span> ${sidHtml}<span class="${cls}">${icon}</span> <span class="feed-tool">${esc(f.tool ?? f.type ?? '')}</span> ${intentKindHtml}${stageHtml}<span class="muted" title="${msgEsc}">${msgEsc}</span></div>`;
+      // Embed the full feed entry as a data attribute. esc() turns
+      // double quotes into &quot; which browsers decode automatically
+      // when the value is read via .dataset, so JSON.parse round-trips.
+      const dataFeed = esc(JSON.stringify(f));
+      return `<div class="feed-entry" data-feed="${dataFeed}" onclick="openFeedDetail(this)" title="Click for full details"><span class="feed-time">${time}</span> ${sidHtml}<span class="${cls}">${icon}</span> <span class="feed-tool">${esc(f.tool ?? f.type ?? '')}</span> ${intentKindHtml}${stageHtml}<span class="muted" title="${msgEsc}">${msgEsc}</span></div>`;
     }
 
     // Settings modal — fetches /api/whoami and renders the OIDC JWT claims
@@ -1653,6 +1672,83 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       if (event.target.id === 'tool-detail-overlay') closeToolDetail();
     }
 
+    // ---- Feed-entry detail modal -----------------------------------
+    // Called from the inline onclick on every .feed-entry div. The full
+    // FeedEntry is JSON-encoded into the row's data-feed attribute at
+    // render time, so we don't need a global index/array — the row
+    // carries its own payload. Same modal works for both the main-page
+    // live feed and the per-session detail-page feed.
+    function openFeedDetail(row) {
+      let f;
+      try {
+        f = JSON.parse(row.dataset.feed);
+      } catch (err) {
+        console.warn('openFeedDetail: bad data-feed JSON', err);
+        return;
+      }
+      const time = f.timestamp ? new Date(f.timestamp).toLocaleString() : '—';
+      const sid = f.sessionId ?? '';
+      const sidHtml = sid
+        ? `<span class="cell-link mono" onclick="closeFeedDetail(); showDetail('${esc(sid)}')" style="font-size:0.85em">${esc(sid)}</span>`
+        : '<span class="muted">—</span>';
+      const decision = f.allowed === false ? 'deny' : f.allowed === true ? 'allow' : (f.type ?? '');
+      const badgeCls = f.allowed === false ? 'badge-deny' : f.allowed === true ? 'badge-allow' : '';
+      const decisionHtml = decision
+        ? `<span class="badge ${esc(badgeCls)}">${esc(decision)}</span>`
+        : '';
+      // Build the field list. Only render rows that have a value so the
+      // modal stays tight on slim feed types (notification, compact, etc).
+      const fields = [
+        ['Time',         `${esc(time)} <span class="muted" style="font-size:0.85em">(${esc(f.timestamp ?? '')})</span>`],
+        ['Type',         f.type ? `<span class="mono">${esc(f.type)}</span>` : null],
+        ['Session',      sidHtml],
+        ['Tool',         f.tool ? `<span class="mono">${esc(f.tool)}</span>` : null],
+        ['Decision',     decisionHtml || null],
+        ['Stage',        f.stage ? `<span class="mono">${esc(f.stage)}</span>` : null],
+        ['Similarity',   (f.similarity !== null && f.similarity !== undefined) ? `<span class="mono">${esc(f.similarity.toFixed?.(3) ?? f.similarity)}</span>` : null],
+        ['Intent kind',  f.intentKind ? `<span class="mono">${esc(f.intentKind)}</span>${f.intentStackSize ? ` <span class="muted">· stack ${esc(f.intentStackSize)}</span>` : ''}` : null],
+        ['Owner',        f.ownerSub ? `<span class="mono" style="font-size:0.85em">${esc(f.ownerSub)}</span>` : null],
+        ['Auth stage',   f.authStage ? `<span class="mono">${esc(f.authStage)}</span>` : null],
+      ];
+      const rowsHtml = fields
+        .filter(([, v]) => v)
+        .map(([k, v]) => `<div><span class="muted">${esc(k)}:</span> ${v}</div>`)
+        .join('');
+
+      const prompt = f.prompt ?? null;
+      const reason = f.reason ?? null;
+      // Full raw payload — useful for fields we haven't rendered above
+      // and for debugging. Always present.
+      let rawBlock;
+      try {
+        rawBlock = JSON.stringify(f, null, 2);
+      } catch {
+        rawBlock = String(f);
+      }
+
+      document.getElementById('feed-detail-body').innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:6px;font-size:14px;margin-bottom:16px">${rowsHtml}</div>
+        ${prompt ? `
+          <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:12px 0 6px">Prompt</h3>
+          <div style="font-size:13px;line-height:1.5;white-space:pre-wrap">${esc(prompt)}</div>
+        ` : ''}
+        ${reason ? `
+          <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:12px 0 6px">Reason</h3>
+          <div style="font-size:13px;line-height:1.5;white-space:pre-wrap">${esc(reason)}</div>
+        ` : ''}
+        <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 6px">Raw entry</h3>
+        <pre style="max-height:320px">${esc(rawBlock)}</pre>
+      `;
+      document.getElementById('feed-detail-overlay').style.display = 'flex';
+    }
+
+    function closeFeedDetail() {
+      document.getElementById('feed-detail-overlay').style.display = 'none';
+    }
+    function closeFeedDetailIfOverlay(event) {
+      if (event.target.id === 'feed-detail-overlay') closeFeedDetail();
+    }
+
     function showMain(opts) {
       currentDetailSessionId = null;
       document.getElementById('detail-page').classList.remove('active');
@@ -1667,9 +1763,14 @@ mv .claude/settings.json .claude/settings.json.dredd-off
 
     document.addEventListener('keydown', e => {
       if (e.key !== 'Escape') return;
-      // Modal-on-modal: close the tool-call modal first if open, so
+      // Modal-on-modal stacking: dismiss the top-most modal first so
       // Escape doesn't simultaneously navigate the user out of the
-      // session detail page.
+      // session detail page. Order: feed modal → tool modal → main.
+      const fd = document.getElementById('feed-detail-overlay');
+      if (fd && fd.style.display !== 'none') {
+        closeFeedDetail();
+        return;
+      }
       const td = document.getElementById('tool-detail-overlay');
       if (td && td.style.display !== 'none') {
         closeToolDetail();
