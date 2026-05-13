@@ -85,18 +85,21 @@ variable "alb_internet_facing" {
 // DNS / TLS
 // ===========================================================================
 variable "route53_zone_id" {
-  description = "Existing Route53 hosted zone ID that owns hook_host and dashboard_host. ACM cert is DNS-validated against this zone."
+  description = "Existing Route53 hosted zone ID that owns hook_host and dashboard_host. ACM cert is DNS-validated against this zone. Default = the acta.io zone in account 110745800154 (prod). Override when deploying elsewhere."
   type        = string
+  default     = "Z3ASY8UIU7J3MV"
 }
 
 variable "hook_host" {
-  description = "FQDN the hook service answers on (e.g. dredd-hook.example.com)."
+  description = "FQDN the hook service answers on (e.g. dredd-hook.example.com). Default = prod."
   type        = string
+  default     = "dredd-hook.acta.io"
 }
 
 variable "dashboard_host" {
-  description = "FQDN the dashboard service answers on (e.g. dredd.example.com)."
+  description = "FQDN the dashboard service answers on (e.g. dredd.example.com). Default = prod."
   type        = string
+  default     = "dredd.acta.io"
 }
 
 // ===========================================================================

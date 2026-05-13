@@ -34,31 +34,44 @@ What it deliberately doesn't do:
 - **No HA** — single task replica each, single private subnet. Bump `hook_desired_count` and pass both private subnet IDs in `existing_private_subnet_ids` to get AZ redundancy.
 - **No image build / push pipeline** — see "First-apply flow" for the manual steps.
 
-## Required inputs
+## Inputs
 
-You must supply these as `-var` or in a `.tfvars`:
+The three host-identity variables are **prefilled for the prod
+deployment** in account `110745800154` (eu-west-1, `acta.io` zone), so
+a default `tofu plan` / `tofu apply` here targets the running prod
+stack with no flags:
 
-| Variable | Example | Why |
+| Variable | Default | Override when… |
 |---|---|---|
-| `route53_zone_id` | `Z1ABCDEF123456` | Existing hosted zone that owns the two hostnames. ACM validates against this zone. |
-| `hook_host` | `dredd-hook.example.com` | Public FQDN for the hook service. Must be inside the zone. |
-| `dashboard_host` | `dredd.example.com` | Public FQDN for the dashboard. Must be inside the zone. |
+| `route53_zone_id` | `Z3ASY8UIU7J3MV` (the `acta.io` zone) | Deploying into a different AWS account / DNS zone |
+| `hook_host` | `dredd-hook.acta.io` | Same — different deployment |
+| `dashboard_host` | `dredd.acta.io` | Same — different deployment |
 
-Everything else has sensible defaults — see `variables.tf` for the full list.
+Everything else has sensible defaults too — see `variables.tf` for the
+full list. To deploy into a non-prod environment, drop a
+`terraform.tfvars` overriding the three above (and probably
+`environment`, `sessions_table_name`, etc. so you don't collide with
+prod resource names).
 
-Example `terraform.tfvars`:
+Example non-prod `terraform.tfvars`:
 
 ```hcl
 route53_zone_id = "Z1ABCDEF123456"
-hook_host       = "dredd-hook.example.com"
-dashboard_host  = "dredd.example.com"
+hook_host       = "dredd-hook.staging.example.com"
+dashboard_host  = "dredd.staging.example.com"
 
-# Optional overrides
-environment             = "prod"
+environment             = "staging"
 primary_region          = "eu-west-1"
 bedrock_region          = "eu-west-2"
-hook_desired_count      = 2
+hook_desired_count      = 1
 dashboard_desired_count = 1
+
+# Side-step the prod deletion-protected tables.
+sessions_table_name         = "jaid-sessions-staging"
+api_keys_table_name         = "jaid-api-keys-staging"
+approvals_table_name        = "jaid-approvals-staging"
+user_permissions_table_name = "jaid-user-permissions-staging"
+
 # sse_kms_key_arn = "arn:aws:kms:eu-west-1:123456789012:key/abcd-..."
 ```
 
