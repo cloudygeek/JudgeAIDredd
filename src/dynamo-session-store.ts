@@ -533,6 +533,7 @@ export class DynamoSessionStore implements SessionStore {
       input: t.input ?? {},
       decision: t.decision,
       similarity: t.similarity ?? null,
+      timestamp: t.timestamp,
     }));
 
     const turnIntents: TurnIntent[] = turns.map((t) => ({

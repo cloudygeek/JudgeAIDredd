@@ -110,6 +110,8 @@
     }
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: rgba(255,255,255,0.02); }
+    tr.clickable-row { cursor: pointer; }
+    tr.clickable-row:hover td { background: rgba(255,255,255,0.05); }
 
     .badge {
       display: inline-block; padding: 2px 8px;
@@ -687,6 +689,17 @@ mv .claude/settings.json .claude/settings.json.dredd-off
 
       <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 8px">OIDC headers</h3>
       <pre id="settings-headers" style="max-height:120px"></pre>
+    </div>
+  </div>
+
+  <!-- TOOL CALL DETAIL MODAL -->
+  <div id="tool-detail-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;align-items:flex-start;justify-content:center;padding-top:60px" onclick="closeToolDetailIfOverlay(event)">
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;max-width:880px;width:92%;max-height:80vh;overflow-y:auto;padding:24px" role="dialog" aria-labelledby="tool-detail-title">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px">
+        <h2 id="tool-detail-title" style="margin:0;font-size:18px">Tool call</h2>
+        <button class="refresh-btn" onclick="closeToolDetail()" aria-label="Close">Close</button>
+      </div>
+      <div id="tool-detail-body"></div>
     </div>
   </div>
 
@@ -1514,14 +1527,18 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         body.innerHTML = `<tr><td colspan="6" class="empty">${detailToolFilter ? `No ${detailToolFilter}ed tool calls` : 'No tool calls recorded'}</td></tr>`;
         return;
       }
-      body.innerHTML = slice.map(t => {
+      // Cache the rendered slice keyed by index so the row's click
+      // handler can resolve the full record without reparsing the
+      // (truncated) cell contents.
+      detailToolsRendered = slice;
+      body.innerHTML = slice.map((t, i) => {
         const decision = t.decision ?? (t.allowed ? 'allow' : 'deny');
         const badgeCls = decision === 'deny' ? 'deny' : 'allow';
         const ts = detailToolsTurnTime(t);
         const tsCell = ts
           ? `<span class="mono muted">${esc(new Date(ts).toLocaleString())}</span>`
           : '<span class="muted">-</span>';
-        return `<tr>
+        return `<tr class="clickable-row" onclick="openToolDetail(${i})" title="Click for full details">
           <td>${esc(t.turn ?? t.turnNumber ?? '-')}</td>
           <td>${tsCell}</td>
           <td class="mono">${esc(t.tool)}</td>
@@ -1530,6 +1547,76 @@ mv .claude/settings.json .claude/settings.json.dredd-off
           <td class="mono muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(JSON.stringify(t.input ?? '').substring(0, 80))}</td>
         </tr>`;
       }).join('');
+    }
+
+    // Currently-rendered slice of tool calls. Lookup target for the
+    // row click handler — index into here, not into the unfiltered
+    // cache, so filter / page changes always resolve to the row the
+    // user is actually looking at.
+    let detailToolsRendered = [];
+
+    function openToolDetail(idx) {
+      const t = detailToolsRendered[idx];
+      if (!t) return;
+      const decision = t.decision ?? (t.allowed ? 'allow' : 'deny');
+      const badgeCls = decision === 'deny' ? 'deny' : 'allow';
+      const ts = detailToolsTurnTime(t);
+      const tsLine = ts
+        ? `<div><span class="muted">Time:</span> <span class="mono">${esc(new Date(ts).toLocaleString())}</span> <span class="muted" style="font-size:0.85em">(${esc(ts)})</span></div>`
+        : '';
+      const reason = t.reason ?? t.permissionDecisionReason ?? null;
+      const stage = t.stage ?? null;
+      const similarity = (t.similarity !== null && t.similarity !== undefined)
+        ? t.similarity.toFixed(3) : null;
+      // Pretty-print tool input. Falls back to the raw value if it
+      // isn't JSON-serialisable (shouldn't happen — server-side it
+      // already round-trips through JSON).
+      let inputBlock = '';
+      try {
+        inputBlock = JSON.stringify(t.input ?? {}, null, 2);
+      } catch {
+        inputBlock = String(t.input ?? '');
+      }
+      // Output / result if present (PostToolUse-side records).
+      const out = t.tool_output ?? t.output ?? null;
+      let outputBlock = null;
+      if (out) {
+        try {
+          outputBlock = typeof out === 'string' ? out : JSON.stringify(out, null, 2);
+        } catch {
+          outputBlock = String(out);
+        }
+      }
+
+      const rows = [
+        `<div><span class="muted">Tool:</span> <span class="mono">${esc(t.tool)}</span></div>`,
+        `<div><span class="muted">Turn:</span> ${esc(t.turn ?? t.turnNumber ?? '-')}</div>`,
+        tsLine,
+        `<div><span class="muted">Decision:</span> <span class="badge badge-${esc(badgeCls)}">${esc(decision)}</span>${stage ? ` <span class="muted">${esc(stage)}</span>` : ''}</div>`,
+        similarity ? `<div><span class="muted">Similarity:</span> <span class="mono">${esc(similarity)}</span></div>` : '',
+      ].filter(Boolean).join('');
+
+      document.getElementById('tool-detail-body').innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:6px;font-size:14px;margin-bottom:16px">${rows}</div>
+        ${reason ? `
+          <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:12px 0 6px">Reason</h3>
+          <div style="font-size:13px;line-height:1.5">${esc(reason)}</div>
+        ` : ''}
+        <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 6px">Input</h3>
+        <pre style="max-height:280px">${esc(inputBlock)}</pre>
+        ${outputBlock ? `
+          <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 6px">Output</h3>
+          <pre style="max-height:280px">${esc(outputBlock)}</pre>
+        ` : ''}
+      `;
+      document.getElementById('tool-detail-overlay').style.display = 'flex';
+    }
+
+    function closeToolDetail() {
+      document.getElementById('tool-detail-overlay').style.display = 'none';
+    }
+    function closeToolDetailIfOverlay(event) {
+      if (event.target.id === 'tool-detail-overlay') closeToolDetail();
     }
 
     function showMain(opts) {
@@ -1545,7 +1632,16 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     }
 
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') showMain();
+      if (e.key !== 'Escape') return;
+      // Modal-on-modal: close the tool-call modal first if open, so
+      // Escape doesn't simultaneously navigate the user out of the
+      // session detail page.
+      const td = document.getElementById('tool-detail-overlay');
+      if (td && td.style.display !== 'none') {
+        closeToolDetail();
+        return;
+      }
+      showMain();
     });
 
     // Browser back/forward: route to the right view based on the URL

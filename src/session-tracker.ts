@@ -135,6 +135,10 @@ export interface ToolCallRecord {
   input: Record<string, unknown>;
   decision: "allow" | "deny" | "review";
   similarity: number | null;
+  /** ISO timestamp when the decision was recorded. Optional for
+   *  backwards compatibility — pre-2026-05-13 records didn't carry it,
+   *  and the dashboard renders "-" when absent. */
+  timestamp?: string;
 }
 
 export interface FileRecord {
@@ -659,6 +663,7 @@ export class InMemorySessionStore implements SessionStore {
       input,
       decision,
       similarity,
+      timestamp: new Date().toISOString(),
     });
   }
 

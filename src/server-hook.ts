@@ -38,6 +38,7 @@ import {
   authenticateHookRequest,
   authStageForFeed,
   backfillFromTranscript,
+  backfillFromSummary,
   extractLastUserAndPriorAssistant,
   buildContextualIntent,
   applyIntentStackUpdate,
@@ -242,6 +243,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(await readBody(req, BODY_LIMIT_TRANSCRIPT));
   const { session_id, prompt, transcript_path, cwd } = body;
   const transcriptContent: string | undefined = body.transcript_content;
+  const transcriptSummary: unknown = body.transcript_summary;
   const claudeMdContent: string | undefined = body.claudemd_content;
 
   if (rejectInvalidSessionId(res, session_id)) return;
@@ -280,20 +282,41 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   }
 
   if (!registeredSessions.has(session_id)) {
-    if (transcriptContent) {
-      await backfillFromTranscript(session_id, transcriptContent, true);
-    } else if (transcript_path) {
-      await backfillFromTranscript(session_id, transcript_path);
+    // Prefer the structured summary envelope — it skips the JSONL
+    // parse and ships ~5KB instead of ~800KB on a long session.
+    // Falls back to the raw transcript paths so an old hook can
+    // still talk to a new server during the rollout window.
+    const usedSummary = transcriptSummary
+      ? await backfillFromSummary(session_id, transcriptSummary)
+      : false;
+    if (!usedSummary) {
+      if (transcriptContent) {
+        await backfillFromTranscript(session_id, transcriptContent, true);
+      } else if (transcript_path) {
+        await backfillFromTranscript(session_id, transcript_path);
+      }
     }
   }
 
   const mode: TrustMode = effectiveMode(session_id, body.mode);
 
-  const { priorAssistant, images: transcriptImages } = transcriptContent
-    ? extractLastUserAndPriorAssistant(transcriptContent, true)
-    : transcript_path
-      ? extractLastUserAndPriorAssistant(transcript_path)
-      : { priorAssistant: null, images: [] as ImageBlock[] };
+  // priorAssistant + image blocks for THIS prompt. The summary
+  // envelope provides them directly; otherwise re-derive from the
+  // raw transcript.
+  const summaryPrior =
+    transcriptSummary && typeof transcriptSummary === "object"
+      ? (transcriptSummary as { priorAssistantText?: string | null; lastUserImages?: ImageBlock[] })
+      : null;
+  const { priorAssistant, images: transcriptImages } = summaryPrior
+    ? {
+        priorAssistant: summaryPrior.priorAssistantText ?? null,
+        images: Array.isArray(summaryPrior.lastUserImages) ? summaryPrior.lastUserImages : [],
+      }
+    : transcriptContent
+      ? extractLastUserAndPriorAssistant(transcriptContent, true)
+      : transcript_path
+        ? extractLastUserAndPriorAssistant(transcript_path)
+        : { priorAssistant: null, images: [] as ImageBlock[] };
 
   // Treat short replies as confirmations of the previous turn rather than
   // standalone goals. Includes "option N" / "option foo" so users picking
@@ -612,6 +635,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const tool_input: Record<string, unknown> = isBenchmarkFormat ? (body.proposed_action.parameters ?? {}) : body.tool_input;
   const { agent_reasoning, transcript_path } = body;
   const transcriptContent: string | undefined = body.transcript_content;
+  const transcriptSummary: unknown = body.transcript_summary;
   const mode: TrustMode = effectiveMode(session_id, body.mode);
   const isLearn = mode === "learn";
 
@@ -673,10 +697,19 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       console.log(
         `  [${session_id.substring(0, 8)}] [REHYDRATE] no active set; falling back to originalIntent (${ageMin}m old): "${contextual.substring(0, 60)}..."`,
       );
-    } else if (transcriptContent) {
-      await backfillFromTranscript(session_id, transcriptContent, true);
-    } else if (transcript_path) {
-      await backfillFromTranscript(session_id, transcript_path);
+    } else {
+      // Cold path: nothing in Dynamo and no in-memory state. Try
+      // the structured summary first; fall back to raw JSONL.
+      const usedSummary = transcriptSummary
+        ? await backfillFromSummary(session_id, transcriptSummary)
+        : false;
+      if (!usedSummary) {
+        if (transcriptContent) {
+          await backfillFromTranscript(session_id, transcriptContent, true);
+        } else if (transcript_path) {
+          await backfillFromTranscript(session_id, transcript_path);
+        }
+      }
     }
 
     if (!registeredSessions.has(session_id)) {

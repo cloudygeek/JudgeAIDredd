@@ -1748,6 +1748,188 @@ async function tagClassifierConfirmed(
   await store.setEntryClassifierSource(sessionId, entryId, "llm-confirmed");
 }
 
+/**
+ * Structured backfill envelope sent by the hook in place of the raw
+ * transcript JSONL. Carries only the bits the server actually
+ * consumes — user prompts (intent history), tool_use blocks (tool
+ * history), file IO, and the (lastUser, priorAssistant) pair the
+ * judge anchors on. Anything else in the transcript (system prompts,
+ * tool results, attachments, file-history-snapshots, permission-mode
+ * markers) is JSONL ballast we don't need on the wire.
+ *
+ * Hook v1: ~5KB on a 50-prompt session vs ~800KB raw transcript.
+ *
+ * Server falls back to parsing transcript_content / transcript_path
+ * when transcript_summary is absent or version-bumped past the
+ * current schema, so an old hook talking to a new server still works.
+ */
+export interface TranscriptSummary {
+  /** Schema version. Bump when fields change in a non-additive way. */
+  version: 1;
+  /** Every non-synthetic user prompt seen, oldest-first. Each carries
+   *  the inline images that were attached to it. */
+  userPrompts: { text: string; images: ImageBlock[] }[];
+  /** The most recent non-confirmation user prompt — i.e. what the
+   *  judge should treat as the active goal. */
+  lastUserText: string | null;
+  /** Inline images attached to lastUserText, if any. */
+  lastUserImages: ImageBlock[];
+  /** Most recent assistant text block before lastUserText. The
+   *  judge wraps this into the contextual intent so it knows what
+   *  the agent had just claimed before the user's prompt. */
+  priorAssistantText: string | null;
+  /** Tool calls (assistant tool_use blocks) in order. */
+  toolCalls: { tool: string; input: Record<string, unknown> }[];
+  /** File paths read via the Read tool. */
+  filesRead: string[];
+  /** Files written / edited by Write/Edit tools. */
+  filesWritten: { path: string; content: string; isEdit: boolean }[];
+}
+
+/**
+ * Apply a parsed backfill payload to the session state. Shared by
+ * the JSONL parser (`backfillFromTranscript`) and the structured
+ * envelope path (`backfillFromSummary`).
+ *
+ * Idempotent on `registeredSessions`: callers can invoke this on
+ * every UserPromptSubmit and only the first call (per session)
+ * actually mutates state — subsequent calls early-return because
+ * the session is already in the registered set.
+ */
+async function applyBackfill(
+  sessionId: string,
+  parts: {
+    userPrompts: { text: string; images: ImageBlock[] }[];
+    lastUserText: string | null;
+    lastUserImages: ImageBlock[];
+    priorAssistantText: string | null;
+    toolCalls: { tool: string; input: Record<string, unknown> }[];
+    filesRead: string[];
+    filesWritten: { path: string; content: string; isEdit: boolean }[];
+  },
+  source: "transcript" | "summary",
+): Promise<void> {
+  const { userPrompts, toolCalls, filesRead, filesWritten } = parts;
+  if (userPrompts.length === 0) return;
+
+  const lastUser = parts.lastUserText;
+  const lastImages = parts.lastUserImages ?? [];
+  const priorAssistant = parts.priorAssistantText;
+
+  let goalIdx = userPrompts.length - 1;
+  if (lastUser) {
+    for (let i = userPrompts.length - 1; i >= 0; i--) {
+      if (userPrompts[i].text === lastUser) { goalIdx = i; break; }
+    }
+  }
+  const goalEntry = userPrompts[goalIdx];
+  const goalPrompt = lastUser ?? goalEntry.text;
+  const goalImages = lastImages.length ? lastImages : goalEntry.images;
+  const contextualGoal = buildContextualIntent(goalPrompt, priorAssistant);
+
+  console.log(
+    `  [BACKFILL] Session ${sessionId.substring(0, 8)}: ` +
+    `${userPrompts.length} user prompts, ${toolCalls.length} tools, ` +
+    `${filesRead.length} reads, ${filesWritten.length} writes` +
+    `${goalImages.length ? `, ${goalImages.length} image(s)` : ""}` +
+    ` from ${source}`
+  );
+
+  for (let i = 0; i < goalIdx; i++) {
+    const p = userPrompts[i];
+    await tracker.registerIntent(sessionId, p.text, true, p.images);
+  }
+  await tracker.registerIntent(sessionId, goalPrompt, false, goalImages);
+  await interceptor.registerGoal(sessionId, contextualGoal, goalImages);
+  registeredSessions.add(sessionId);
+
+  for (const path of filesRead) {
+    await tracker.recordFileRead(sessionId, path, "(backfilled)");
+  }
+  for (const file of filesWritten) {
+    await tracker.recordFileWrite(sessionId, file.path, file.content, file.isEdit);
+  }
+
+  for (const tc of toolCalls) {
+    await tracker.recordToolCall(sessionId, tc.tool, tc.input, "allow", null);
+  }
+
+  console.log(
+    `  [BACKFILL] Latest intent: "${goalPrompt.substring(0, 60)}..." ` +
+    `(prior assistant context: ${priorAssistant ? "yes" : "no"})`
+  );
+}
+
+/**
+ * Fast-path backfill from the hook's structured envelope. Skips
+ * JSONL parsing entirely; trusts the envelope's shape (the hook
+ * already filtered synthetic entries and identified the goal turn).
+ *
+ * Returns true if the envelope was applied, false if it was missing
+ * or malformed (callers fall back to backfillFromTranscript).
+ */
+export async function backfillFromSummary(
+  sessionId: string,
+  summary: unknown,
+): Promise<boolean> {
+  if (!summary || typeof summary !== "object") return false;
+  const s = summary as Partial<TranscriptSummary>;
+  if (s.version !== 1) return false;
+  if (!Array.isArray(s.userPrompts)) return false;
+
+  // Defensive coercion: the hook composes the envelope in jq, but
+  // an old/buggy hook could ship a payload with stray nulls. Coerce
+  // to the shape applyBackfill expects, dropping anything malformed.
+  const userPrompts = s.userPrompts
+    .filter((p): p is { text: string; images: ImageBlock[] } =>
+      Boolean(p) && typeof (p as any).text === "string"
+    )
+    .map((p) => ({ text: p.text, images: Array.isArray(p.images) ? p.images : [] }));
+
+  if (userPrompts.length === 0) return false;
+
+  const toolCalls = (Array.isArray(s.toolCalls) ? s.toolCalls : [])
+    .filter((t): t is { tool: string; input: Record<string, unknown> } =>
+      Boolean(t) && typeof (t as any).tool === "string"
+    )
+    .map((t) => ({ tool: t.tool, input: t.input ?? {} }));
+
+  const filesRead = (Array.isArray(s.filesRead) ? s.filesRead : [])
+    .filter((p): p is string => typeof p === "string");
+
+  const filesWritten = (Array.isArray(s.filesWritten) ? s.filesWritten : [])
+    .filter((f): f is { path: string; content: string; isEdit: boolean } =>
+      Boolean(f) && typeof (f as any).path === "string"
+    )
+    .map((f) => ({
+      path: f.path,
+      content: typeof f.content === "string" ? f.content : "",
+      isEdit: Boolean(f.isEdit),
+    }));
+
+  try {
+    await applyBackfill(
+      sessionId,
+      {
+        userPrompts,
+        lastUserText: typeof s.lastUserText === "string" ? s.lastUserText : null,
+        lastUserImages: Array.isArray(s.lastUserImages) ? s.lastUserImages : [],
+        priorAssistantText: typeof s.priorAssistantText === "string" ? s.priorAssistantText : null,
+        toolCalls,
+        filesRead,
+        filesWritten,
+      },
+      "summary",
+    );
+    return true;
+  } catch (err) {
+    console.error(
+      `  [BACKFILL] Summary backfill failed for ${sessionId.substring(0, 8)}: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return false;
+  }
+}
+
 export async function backfillFromTranscript(
   sessionId: string,
   transcriptPathOrContent: string,
@@ -1817,51 +1999,21 @@ export async function backfillFromTranscript(
       } catch {}
     }
 
-    if (userPrompts.length === 0) return;
-
     const { lastUser, priorAssistant, images: lastImages } =
       extractLastUserAndPriorAssistant(raw, true);
-    let goalIdx = userPrompts.length - 1;
-    if (lastUser) {
-      for (let i = userPrompts.length - 1; i >= 0; i--) {
-        if (userPrompts[i].text === lastUser) { goalIdx = i; break; }
-      }
-    }
-    const goalEntry = userPrompts[goalIdx];
-    const goalPrompt = lastUser ?? goalEntry.text;
-    const goalImages = lastImages.length ? lastImages : goalEntry.images;
-    const contextualGoal = buildContextualIntent(goalPrompt, priorAssistant);
 
-    console.log(
-      `  [BACKFILL] Session ${sessionId.substring(0, 8)}: ` +
-      `${userPrompts.length} user prompts, ${toolCalls.length} tools, ` +
-      `${filesRead.length} reads, ${filesWritten.length} writes` +
-      `${goalImages.length ? `, ${goalImages.length} image(s)` : ""}` +
-      ` from transcript`
-    );
-
-    for (let i = 0; i < goalIdx; i++) {
-      const p = userPrompts[i];
-      await tracker.registerIntent(sessionId, p.text, true, p.images);
-    }
-    await tracker.registerIntent(sessionId, goalPrompt, false, goalImages);
-    await interceptor.registerGoal(sessionId, contextualGoal, goalImages);
-    registeredSessions.add(sessionId);
-
-    for (const path of filesRead) {
-      await tracker.recordFileRead(sessionId, path, "(backfilled)");
-    }
-    for (const file of filesWritten) {
-      await tracker.recordFileWrite(sessionId, file.path, file.content, file.isEdit);
-    }
-
-    for (const tc of toolCalls) {
-      await tracker.recordToolCall(sessionId, tc.tool, tc.input, "allow", null);
-    }
-
-    console.log(
-      `  [BACKFILL] Latest intent: "${goalPrompt.substring(0, 60)}..." ` +
-      `(prior assistant context: ${priorAssistant ? "yes" : "no"})`
+    await applyBackfill(
+      sessionId,
+      {
+        userPrompts,
+        lastUserText: lastUser,
+        lastUserImages: lastImages,
+        priorAssistantText: priorAssistant,
+        toolCalls,
+        filesRead,
+        filesWritten,
+      },
+      "transcript",
     );
   } catch (err) {
     console.error(

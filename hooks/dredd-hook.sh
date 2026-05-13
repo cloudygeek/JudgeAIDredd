@@ -115,24 +115,168 @@ if ! curl -s --connect-timeout 1 "$DREDD_URL/health" > /dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# Helper: read transcript content.
+# Helper: build a structured backfill envelope from the transcript JSONL.
 #
-# UserPromptSubmit sends the full transcript so server-side backfill can
-# replay every user turn (see $TRANSCRIPT_TAIL_LIMIT below). PreToolUse
-# uses a bounded tail to keep high-frequency tool events cheap — backfill
-# from PreToolUse only fires if Dredd hasn't seen this session yet, which
-# is rare once UserPromptSubmit has already run for the session.
+# The server only consumes a tiny slice of the JSONL — user prompts,
+# tool_use blocks, file IO from Read/Write/Edit, and the (lastUser,
+# priorAssistant) anchor pair. Everything else (system prompts, tool
+# results, attachments, file-history-snapshots, permission-mode markers)
+# is ballast we don't need on the wire.
+#
+# Shipping the raw transcript hit a 1MB ceiling on macOS because the
+# previous code passed the body through `curl -d "$(jq …)"`, and bash's
+# argv truncation silently chopped the body — surfacing as HTTP 400
+# "Invalid JSON body: Unexpected end of JSON input". This envelope drops
+# the body to ~5KB on a 50-prompt session.
+#
+# The envelope shape mirrors `interface TranscriptSummary` in
+# src/server-core.ts; bump `version` if you change non-additively.
 # ---------------------------------------------------------------------------
-read_transcript_content() {
+build_transcript_summary() {
   local tp="$1"
-  local limit="${2:-0}"   # 0 = whole file
-  if [ -n "$tp" ] && [ -f "$tp" ]; then
-    if [ "$limit" -gt 0 ]; then
-      tail -"$limit" "$tp"
-    else
-      cat "$tp"
-    fi
+  if [ -z "$tp" ] || [ ! -f "$tp" ]; then
+    return 1
   fi
+  jq -s '
+    # Slurp every JSONL line into an array, then walk it once.
+    # Synthetic command markers (<command-name>, <local-command-…>)
+    # are filtered out — same predicate the server applies in
+    # isSyntheticUserEntry().
+    def text_of(content):
+      if (content | type) == "string" then content
+      elif (content | type) == "array" then
+        ([content[] | select(.type == "text") | .text] | join("\n"))
+      else "" end;
+
+    # Full image blocks (with inline base64 data). Only the goal
+    # turn ships full bytes via lastUserImages; non-goal turns ship
+    # an image-count placeholder via images_count_only since the
+    # server uses historical images for embedding/display only and
+    # never re-encodes them for the judge.
+    def images_of(content):
+      if (content | type) == "array" then
+        [content[]
+          | select(.type == "image")
+          | { source: (.source // null) }]
+      else [] end;
+    # Image-count placeholder. The server applyBackfill records
+    # historical user prompts via tracker.registerIntent(images),
+    # which uses images for embedding/display only and does not
+    # re-encode the bytes for the judge. Empty source objects
+    # preserve the per-turn image count without shipping the bytes.
+    def images_count_only(content):
+      if (content | type) == "array" then
+        [content[] | select(.type == "image") | { source: null }]
+      else [] end;
+
+      def is_synthetic(msg; t):
+        (msg.isMeta == true)
+        or (t | startswith("<command-name>"))
+        or (t | startswith("<local-command-"))
+        or (t | startswith("<command-message>"))
+        or (t | startswith("<command-args>"));
+
+      def is_confirmation(s):
+        (s
+          | ascii_downcase
+          | gsub("[.!?\\s]"; ""))
+        | (length < 80 and (
+              . == "yes" or . == "yeah" or . == "yep" or . == "ok"
+              or . == "okay" or . == "sure" or . == "doit"
+              or . == "goahead" or . == "go" or . == "proceed"
+              or . == "continue" or . == "y" or . == "k"
+              or . == "confirm" or . == "approve" or . == "approved"
+              or . == "lgtm" or . == "shipit" or . == "soundsgood"
+              or . == "thatsright" or . == "correct" or . == "exactly"
+              or . == "please" or . == "thanks" or . == "thankyou"));
+
+    # User prompts (oldest first), with images.
+    [ .[] | select(.type == "user") |
+        . as $msg |
+        text_of(.message.content) as $raw |
+        ($raw | gsub("^\\s+|\\s+$"; "")) as $t |
+        images_count_only(.message.content) as $imgs |
+        select(is_synthetic($msg; $t) | not) |
+        select(($t | length) > 0 or ($imgs | length) > 0) |
+        { text: $t, images: $imgs }
+    ] as $userPrompts |
+
+    # Tool calls + file IO from assistant tool_use blocks.
+    # Cap stringy fields in tool_input so a 50KB Edit payload x 50
+    # tool_use blocks does not reflate the envelope. Shape preserved;
+    # only string values get clipped. The server recordToolCall path
+    # also truncates server-side, but trimming here saves bandwidth.
+    def cap_strings(o; n):
+      if (o | type) == "object" then
+        o
+        | with_entries(.value = (
+            if (.value | type) == "string" and (.value | length) > n
+              then .value[0:n] else .value end))
+      else o end;
+
+    # Backfill only consults tool history when a session is cold —
+    # never seen before by the server. The most recent N calls are
+    # enough to seed the recent-tool view; older ones are noise.
+    # Cap at 50 to bound the envelope on long sessions.
+    ([ .[] | select(.type == "assistant") |
+        (.message.content // []) | select(type == "array") | .[] |
+        select(.type == "tool_use") |
+        { tool: .name, input: cap_strings(.input // {}; 4000) }
+    ] | (if length > 50 then .[(length - 50):] else . end)
+    ) as $toolCalls |
+
+    [ $toolCalls[] | select(.tool == "Read") | (.input.file_path // "") ] as $filesRead |
+    [ $toolCalls[] |
+        select(.tool == "Write" or .tool == "Edit") |
+        { path: (.input.file_path // ""),
+          # Server caps file content at 10KB; ship 4KB to match the
+          # tool-input cap and keep the envelope small.
+          content: (if .tool == "Write"
+                    then ((.input.content // "")[0:4000])
+                    else ((.input.new_string // "")[0:4000]) end),
+          isEdit: (.tool == "Edit") }
+    ] as $filesWritten |
+
+    # lastUser / priorAssistant: walk in order, remember the most
+    # recent assistant text, and pick the most recent NON-confirmation
+    # user prompt as the goal anchor. `reduce` cannot be bound via
+    # `as` directly — wrap the whole expression in parens.
+    (reduce (.[] | select(.type == "user" or .type == "assistant")) as $m
+      ({ pendingAssistant: null, turns: [] };
+        if $m.type == "assistant" then
+          (text_of($m.message.content) | gsub("^\\s+|\\s+$"; "")) as $t |
+          (if ($t | length) > 0 then .pendingAssistant = $t else . end)
+        else
+          (text_of($m.message.content) | gsub("^\\s+|\\s+$"; "")) as $t |
+          # Full image data here; only the goal turn gets picked
+          # out below for lastUserImages, so non-goal-turn entries
+          # have their full-data lists dropped on the floor by the
+          # consumer. We still emit them here so the goal-finder
+          # logic does not have to do a second pass.
+          images_of($m.message.content) as $imgs |
+          (if (is_synthetic($m; $t) | not) and (($t | length) > 0 or ($imgs | length) > 0)
+           then .turns += [{ user: $t, prior: .pendingAssistant, images: $imgs }]
+           else . end)
+        end)) as $st |
+    ($st.turns
+      | (if length == 0 then null
+         else
+           # Walk from newest to oldest, take the first non-confirmation.
+           ([.[] | select(is_confirmation(.user) | not)] |
+              if length > 0 then .[-1] else (.[length - 1]) end)
+         end)) as $goal |
+
+    {
+      version: 1,
+      userPrompts: $userPrompts,
+      lastUserText: ($goal.user // null),
+      lastUserImages: ($goal.images // []),
+      priorAssistantText: ($goal.prior // null),
+      toolCalls: $toolCalls,
+      filesRead: $filesRead,
+      filesWritten: $filesWritten
+    }
+  ' "$tp" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -160,63 +304,93 @@ case "$HOOK_EVENT" in
     PROMPT=$(echo "$INPUT" | jq -r '.prompt // .message // empty')
     TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
     CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
-
-    # Full transcript — the server replays every user turn into the tracker
-    # so resumed sessions (`claude --continue`) retain their complete intent
-    # history, not just first + last prompt.
-    #
-    # Server-side cap is BODY_LIMIT_TRANSCRIPT (20 MB on production). JSON
-    # encoding doubles every quote / backslash / newline so the on-disk
-    # transcript can be much smaller than the encoded body. Cap defensively
-    # at 12 MB raw to keep encoded payload under the server limit; if the
-    # transcript is larger, drop it entirely (server backfills from
-    # transcript_path on next /evaluate as a fallback). We log the
-    # truncation to a debug file the operator can grep — UserPromptSubmit
-    # silently failing was the cause of long sessions losing intent
-    # registration on 2026-05-12.
-    TRANSCRIPT_CONTENT=$(read_transcript_content "$TRANSCRIPT_PATH" 0)
-    CLAUDEMD_CONTENT=$(read_claudemd_content "$CWD")
-    TC_SIZE=${#TRANSCRIPT_CONTENT}
     DREDD_DEBUG_LOG="${DREDD_DEBUG_LOG:-$HOME/.claude/dredd/hook-debug.log}"
-    if [ "$TC_SIZE" -gt 12582912 ]; then
-      printf '[%s] %s — transcript %d bytes exceeds 12MB cap, dropping for /intent (session=%s)\n' \
-        "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "UserPromptSubmit" "$TC_SIZE" "${SESSION_ID:0:8}" \
-        >>"$DREDD_DEBUG_LOG" 2>/dev/null || true
-      TRANSCRIPT_CONTENT=""
+
+    # Build a structured backfill envelope. The server prefers this
+    # over the raw JSONL transcript — ships ~5KB on a 50-prompt
+    # session vs ~800KB raw, and avoids the macOS ARG_MAX truncation
+    # that bit /intent on 2026-05-12 (transcripts >1MB encoded as
+    # `curl -d "$(...)"` got chopped, surfacing as HTTP 400
+    # "Invalid JSON body: Unexpected end of JSON input").
+    SUMMARY_FILE=$(mktemp -t dredd-summary.XXXXXX)
+    if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+      build_transcript_summary "$TRANSCRIPT_PATH" >"$SUMMARY_FILE" 2>/dev/null
+    fi
+    # If the summary build produced nothing usable, drop it — the
+    # server has a transcript_path fallback that re-reads from disk
+    # (only works on local installs, not remote/Fargate, but better
+    # than nothing).
+    if [ ! -s "$SUMMARY_FILE" ]; then
+      rm -f "$SUMMARY_FILE" 2>/dev/null || true
+      SUMMARY_FILE=""
+    fi
+    SUMMARY_SIZE=0
+    if [ -n "$SUMMARY_FILE" ]; then
+      SUMMARY_SIZE=$(wc -c < "$SUMMARY_FILE" 2>/dev/null | tr -d ' ')
     fi
 
-    # Capture body to a temp file and HTTP code separately. Avoids
-    # bash substring math (broke earlier on empty / short responses
-    # with "substring expression < 0") and keeps a large response
-    # body out of shell variables.
-    INTENT_BODY_FILE=$(mktemp -t dredd-intent.XXXXXX)
-    HTTP_CODE=$(curl -s -X POST "$DREDD_URL/intent" \
-      "${DREDD_CURL_ARGS[@]}" \
-      -H "Content-Type: application/json" \
-      -o "$INTENT_BODY_FILE" \
-      -w '%{http_code}' \
-      -d "$(jq -n \
+    CLAUDEMD_CONTENT=$(read_claudemd_content "$CWD")
+
+    # Compose the request body. jq reads the summary from a slurped
+    # file, side-stepping argv. The full transcript is no longer sent
+    # — if the server can't make sense of the summary it falls back
+    # to transcript_path, which it already has via the hook input.
+    REQ_BODY_FILE=$(mktemp -t dredd-intent-req.XXXXXX)
+    if [ -n "$SUMMARY_FILE" ]; then
+      jq -n \
         --arg sid "$SESSION_ID" \
         --arg prompt "$PROMPT" \
         --arg cwd "$CWD" \
-        --arg tc "$TRANSCRIPT_CONTENT" \
+        --arg tp "$TRANSCRIPT_PATH" \
+        --arg cm "$CLAUDEMD_CONTENT" \
+        --arg mode "$DREDD_MODE" \
+        --slurpfile sum "$SUMMARY_FILE" \
+        '{
+          session_id: $sid,
+          prompt: $prompt,
+          cwd: $cwd,
+          transcript_path: (if $tp == "" then null else $tp end),
+          transcript_summary: ($sum | first),
+          claudemd_content: (if $cm == "" then null else $cm end),
+          mode: (if $mode == "" then null else $mode end)
+        }' >"$REQ_BODY_FILE"
+    else
+      jq -n \
+        --arg sid "$SESSION_ID" \
+        --arg prompt "$PROMPT" \
+        --arg cwd "$CWD" \
+        --arg tp "$TRANSCRIPT_PATH" \
         --arg cm "$CLAUDEMD_CONTENT" \
         --arg mode "$DREDD_MODE" \
         '{
           session_id: $sid,
           prompt: $prompt,
           cwd: $cwd,
-          transcript_content: (if $tc == "" then null else $tc end),
+          transcript_path: (if $tp == "" then null else $tp end),
           claudemd_content: (if $cm == "" then null else $cm end),
           mode: (if $mode == "" then null else $mode end)
-        }')" \
+        }' >"$REQ_BODY_FILE"
+    fi
+
+    # POST with --data-binary @file so the body never rides on argv.
+    # macOS ARG_MAX is 1MB; the previous `-d "$(jq …)"` form
+    # silently truncated the body past that boundary and the server
+    # returned HTTP 400 with no recoverable trace.
+    INTENT_BODY_FILE=$(mktemp -t dredd-intent.XXXXXX)
+    HTTP_CODE=$(curl -s -X POST "$DREDD_URL/intent" \
+      "${DREDD_CURL_ARGS[@]}" \
+      -H "Content-Type: application/json" \
+      -o "$INTENT_BODY_FILE" \
+      -w '%{http_code}' \
+      --data-binary "@$REQ_BODY_FILE" \
       --connect-timeout 5 --max-time 30 2>/dev/null)
     HTTP_CODE="${HTTP_CODE:-000}"
     if [ "$HTTP_CODE" != "200" ]; then
       BODY_PREVIEW=$(head -c 200 "$INTENT_BODY_FILE" 2>/dev/null || echo "")
-      printf '[%s] %s — /intent HTTP %s (session=%s, transcript_bytes=%d): %s\n' \
+      REQ_SIZE=$(wc -c < "$REQ_BODY_FILE" 2>/dev/null | tr -d ' ')
+      printf '[%s] %s — /intent HTTP %s (session=%s, body_bytes=%s, summary_bytes=%s): %s\n' \
         "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "UserPromptSubmit" "$HTTP_CODE" "${SESSION_ID:0:8}" \
-        "$TC_SIZE" "$BODY_PREVIEW" \
+        "$REQ_SIZE" "$SUMMARY_SIZE" "$BODY_PREVIEW" \
         >>"$DREDD_DEBUG_LOG" 2>/dev/null || true
       # Emit empty hook output so the prompt still goes through.
       # Server-side state is recoverable via /evaluate's rehydration.
@@ -225,7 +399,7 @@ case "$HOOK_EVENT" in
       # Extract just the hook fields (systemMessage etc), strip _meta.
       jq 'del(._meta)' "$INTENT_BODY_FILE" 2>/dev/null || echo '{}'
     fi
-    rm -f "$INTENT_BODY_FILE" 2>/dev/null || true
+    rm -f "$INTENT_BODY_FILE" "$REQ_BODY_FILE" "$SUMMARY_FILE" 2>/dev/null || true
     ;;
 
   "PreToolUse")
@@ -243,32 +417,65 @@ case "$HOOK_EVENT" in
         | head -c 500)
     fi
 
-    # Read transcript content for backfill (only needed if server hasn't
-    # seen this session). Bounded tail keeps hot-path tool-call overhead low;
-    # UserPromptSubmit already sends the full transcript, so by the time
-    # evaluate fires Dredd normally has the full history anyway.
-    TRANSCRIPT_CONTENT=$(read_transcript_content "$TRANSCRIPT_PATH" 500)
+    # Backfill envelope, only consulted server-side if the session
+    # isn't already in Dredd's in-memory cache or Dynamo. The summary
+    # is small (~5KB on a 50-prompt session) so it's safe to attach
+    # on every /evaluate; UserPromptSubmit usually has it covered, but
+    # a cold-start /evaluate (container failover, fresh deploy) needs
+    # *some* backfill source.
+    EVAL_SUMMARY_FILE=$(mktemp -t dredd-eval-summary.XXXXXX)
+    if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+      build_transcript_summary "$TRANSCRIPT_PATH" >"$EVAL_SUMMARY_FILE" 2>/dev/null
+    fi
+    if [ ! -s "$EVAL_SUMMARY_FILE" ]; then
+      rm -f "$EVAL_SUMMARY_FILE" 2>/dev/null || true
+      EVAL_SUMMARY_FILE=""
+    fi
 
-    RESPONSE=$(curl -s -X POST "$DREDD_URL/evaluate" \
-      "${DREDD_CURL_ARGS[@]}" \
-      -H "Content-Type: application/json" \
-      -d "$(jq -n \
+    EVAL_REQ_FILE=$(mktemp -t dredd-eval-req.XXXXXX)
+    if [ -n "$EVAL_SUMMARY_FILE" ]; then
+      jq -n \
         --arg sid "$SESSION_ID" \
         --arg tn "$TOOL_NAME" \
         --argjson ti "$TOOL_INPUT" \
         --arg ar "$AGENT_REASONING" \
-        --arg tc "$TRANSCRIPT_CONTENT" \
+        --arg tp "$TRANSCRIPT_PATH" \
+        --arg mode "$DREDD_MODE" \
+        --slurpfile sum "$EVAL_SUMMARY_FILE" \
+        '{
+          session_id: $sid,
+          tool_name: $tn,
+          tool_input: $ti,
+          agent_reasoning: $ar,
+          transcript_path: (if $tp == "" then null else $tp end),
+          transcript_summary: ($sum | first),
+          mode: (if $mode == "" then null else $mode end)
+        }' >"$EVAL_REQ_FILE"
+    else
+      jq -n \
+        --arg sid "$SESSION_ID" \
+        --arg tn "$TOOL_NAME" \
+        --argjson ti "$TOOL_INPUT" \
+        --arg ar "$AGENT_REASONING" \
+        --arg tp "$TRANSCRIPT_PATH" \
         --arg mode "$DREDD_MODE" \
         '{
           session_id: $sid,
           tool_name: $tn,
           tool_input: $ti,
           agent_reasoning: $ar,
-          transcript_content: (if $tc == "" then null else $tc end),
+          transcript_path: (if $tp == "" then null else $tp end),
           mode: (if $mode == "" then null else $mode end)
-        }')" \
+        }' >"$EVAL_REQ_FILE"
+    fi
+
+    RESPONSE=$(curl -s -X POST "$DREDD_URL/evaluate" \
+      "${DREDD_CURL_ARGS[@]}" \
+      -H "Content-Type: application/json" \
+      --data-binary "@$EVAL_REQ_FILE" \
       --connect-timeout 5 --max-time 60)
 
+    rm -f "$EVAL_REQ_FILE" "$EVAL_SUMMARY_FILE" 2>/dev/null || true
     echo "$RESPONSE" | jq 'del(._meta)' 2>/dev/null || echo '{}'
     ;;
 
