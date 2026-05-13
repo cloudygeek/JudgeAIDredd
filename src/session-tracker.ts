@@ -139,6 +139,11 @@ export interface ToolCallRecord {
    *  backwards compatibility — pre-2026-05-13 records didn't carry it,
    *  and the dashboard renders "-" when absent. */
   timestamp?: string;
+  /** Claude Code's per-call identifier (toolu_*). Same value comes
+   *  back in PostToolUse, which is how we (or the dashboard) can
+   *  pair a Pre-decision with its Post-execution outcome.
+   *  Optional: benchmark harnesses don't emit one. */
+  toolUseId?: string | null;
 }
 
 export interface FileRecord {
@@ -654,7 +659,8 @@ export class InMemorySessionStore implements SessionStore {
     tool: string,
     input: Record<string, unknown>,
     decision: "allow" | "deny" | "review",
-    similarity: number | null
+    similarity: number | null,
+    toolUseId?: string | null,
   ): Promise<void> {
     const session = this.getSession(sessionId);
     session.toolHistory.push({
@@ -664,6 +670,7 @@ export class InMemorySessionStore implements SessionStore {
       decision,
       similarity,
       timestamp: new Date().toISOString(),
+      toolUseId: toolUseId ?? null,
     });
   }
 

@@ -267,6 +267,9 @@ export interface SessionStore {
     input: Record<string, unknown>,
     decision: "allow" | "deny" | "review",
     similarity: number | null,
+    /** Claude Code's per-call identifier (toolu_*) — optional for
+     *  back-compat with benchmark harnesses that don't emit one. */
+    toolUseId?: string | null,
   ): Promise<void>;
 
   recordHijackStrike(

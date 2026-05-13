@@ -633,6 +633,14 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const session_id: string = isBenchmarkFormat ? body.session : body.session_id;
   const tool_name: string = isBenchmarkFormat ? body.proposed_action.tool : body.tool_name;
   const tool_input: Record<string, unknown> = isBenchmarkFormat ? (body.proposed_action.parameters ?? {}) : body.tool_input;
+  // Per-call id Claude Code sends in PreToolUse and re-sends in
+  // PostToolUse. Lets us correlate /evaluate decisions with /track
+  // outcomes for the same call. Optional — benchmark harnesses don't
+  // emit one, in which case the row carries null.
+  const tool_use_id: string | null =
+    typeof body.tool_use_id === "string" && body.tool_use_id.length > 0
+      ? body.tool_use_id
+      : null;
   const { agent_reasoning, transcript_path } = body;
   const transcriptContent: string | undefined = body.transcript_content;
   const transcriptSummary: unknown = body.transcript_summary;
@@ -749,7 +757,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   }
 
   if (mode === "autonomous" && (await tracker.isLocked(session_id))) {
-    await tracker.recordToolCall(session_id, tool_name, tool_input ?? {}, "deny", null);
+    await tracker.recordToolCall(session_id, tool_name, tool_input ?? {}, "deny", null, tool_use_id);
     addFeed({
       timestamp: new Date().toISOString(),
       type: "tool",
@@ -861,7 +869,8 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     tool_name,
     tool_input ?? {},
     result.allowed ? "allow" : "deny",
-    result.similarity
+    result.similarity,
+    tool_use_id,
   );
 
   let lockState: { strikes: number; locked: boolean; justLocked: boolean } | null = null;

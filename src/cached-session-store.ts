@@ -459,10 +459,19 @@ export class CachedSessionStore implements SessionStore {
     input: Record<string, unknown>,
     decision: "allow" | "deny" | "review",
     similarity: number | null,
+    toolUseId?: string | null,
   ): Promise<void> {
-    await this.backend.recordToolCall(sessionId, tool, input, decision, similarity);
+    await this.backend.recordToolCall(sessionId, tool, input, decision, similarity, toolUseId);
     const s = await this.getOrLoad(sessionId);
-    s.toolHistory.push({ turnNumber: s.currentTurn, tool, input, decision, similarity });
+    s.toolHistory.push({
+      turnNumber: s.currentTurn,
+      tool,
+      input,
+      decision,
+      similarity,
+      toolUseId: toolUseId ?? null,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   async recordHijackStrike(

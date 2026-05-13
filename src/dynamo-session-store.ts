@@ -534,6 +534,7 @@ export class DynamoSessionStore implements SessionStore {
       decision: t.decision,
       similarity: t.similarity ?? null,
       timestamp: t.timestamp,
+      toolUseId: t.toolUseId ?? null,
     }));
 
     const turnIntents: TurnIntent[] = turns.map((t) => ({
@@ -1575,6 +1576,7 @@ export class DynamoSessionStore implements SessionStore {
     input: Record<string, unknown>,
     decision: "allow" | "deny" | "review",
     similarity: number | null,
+    toolUseId?: string | null,
   ): Promise<void> {
     const meta = await this.getMeta(sessionId);
     const turnNumber = meta?.currentTurn ?? 0;
@@ -1606,6 +1608,7 @@ export class DynamoSessionStore implements SessionStore {
               decision,
               similarity,
               timestamp,
+              toolUseId: toolUseId ?? null,
               ttl: ttl(),
             },
             ConditionExpression: "attribute_not_exists(sk)",

@@ -405,6 +405,11 @@ case "$HOOK_EVENT" in
   "PreToolUse")
     TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
     TOOL_INPUT=$(echo "$INPUT" | jq '.tool_input // {}')
+    # tool_use_id is Claude's per-call identifier (e.g. toolu_*). Same
+    # value reappears in PostToolUse, which lets the server stitch
+    # together pre- and post-execution records for one call. We pass
+    # it through unchanged.
+    TOOL_USE_ID=$(echo "$INPUT" | jq -r '.tool_use_id // empty')
     TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
 
     # Extract the last assistant message from the transcript for context
@@ -438,6 +443,7 @@ case "$HOOK_EVENT" in
         --arg sid "$SESSION_ID" \
         --arg tn "$TOOL_NAME" \
         --argjson ti "$TOOL_INPUT" \
+        --arg tuid "$TOOL_USE_ID" \
         --arg ar "$AGENT_REASONING" \
         --arg tp "$TRANSCRIPT_PATH" \
         --arg mode "$DREDD_MODE" \
@@ -446,6 +452,7 @@ case "$HOOK_EVENT" in
           session_id: $sid,
           tool_name: $tn,
           tool_input: $ti,
+          tool_use_id: (if $tuid == "" then null else $tuid end),
           agent_reasoning: $ar,
           transcript_path: (if $tp == "" then null else $tp end),
           transcript_summary: ($sum | first),
@@ -456,6 +463,7 @@ case "$HOOK_EVENT" in
         --arg sid "$SESSION_ID" \
         --arg tn "$TOOL_NAME" \
         --argjson ti "$TOOL_INPUT" \
+        --arg tuid "$TOOL_USE_ID" \
         --arg ar "$AGENT_REASONING" \
         --arg tp "$TRANSCRIPT_PATH" \
         --arg mode "$DREDD_MODE" \
@@ -463,6 +471,7 @@ case "$HOOK_EVENT" in
           session_id: $sid,
           tool_name: $tn,
           tool_input: $ti,
+          tool_use_id: (if $tuid == "" then null else $tuid end),
           agent_reasoning: $ar,
           transcript_path: (if $tp == "" then null else $tp end),
           mode: (if $mode == "" then null else $mode end)
@@ -482,24 +491,38 @@ case "$HOOK_EVENT" in
   "PostToolUse")
     TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
     TOOL_INPUT=$(echo "$INPUT" | jq '.tool_input // {}')
+    TOOL_USE_ID=$(echo "$INPUT" | jq -r '.tool_use_id // empty')
     TOOL_OUTPUT=$(echo "$INPUT" | jq -r '.tool_output // empty' | head -c 5000)
 
-    # Async — fire and forget, don't block the agent
-    curl -s -X POST "$DREDD_URL/track" \
-      "${DREDD_CURL_ARGS[@]}" \
-      -H "Content-Type: application/json" \
-      -d "$(jq -n \
-        --arg sid "$SESSION_ID" \
-        --arg tn "$TOOL_NAME" \
-        --argjson ti "$TOOL_INPUT" \
-        --arg to "$TOOL_OUTPUT" \
-        '{
-          session_id: $sid,
-          tool_name: $tn,
-          tool_input: $ti,
-          tool_output: $to
-        }')" \
-      --connect-timeout 2 --max-time 5 > /dev/null 2>&1 &
+    # Compose to a tempfile + --data-binary @file for the same
+    # ARG_MAX safety reason as /intent (a 100KB Bash output via
+    # `-d "$(...)"` would also get clipped).
+    TRACK_REQ_FILE=$(mktemp -t dredd-track.XXXXXX)
+    jq -n \
+      --arg sid "$SESSION_ID" \
+      --arg tn "$TOOL_NAME" \
+      --argjson ti "$TOOL_INPUT" \
+      --arg tuid "$TOOL_USE_ID" \
+      --arg to "$TOOL_OUTPUT" \
+      '{
+        session_id: $sid,
+        tool_name: $tn,
+        tool_input: $ti,
+        tool_use_id: (if $tuid == "" then null else $tuid end),
+        tool_output: $to
+      }' >"$TRACK_REQ_FILE"
+
+    # Async — fire and forget, don't block the agent. The trailing
+    # `; rm` runs in the background subshell so the tempfile is
+    # cleaned up after curl exits, regardless of whether the request
+    # succeeds.
+    ( curl -s -X POST "$DREDD_URL/track" \
+        "${DREDD_CURL_ARGS[@]}" \
+        -H "Content-Type: application/json" \
+        --data-binary "@$TRACK_REQ_FILE" \
+        --connect-timeout 2 --max-time 5 > /dev/null 2>&1
+      rm -f "$TRACK_REQ_FILE" 2>/dev/null || true
+    ) &
 
     echo '{}'
     ;;
