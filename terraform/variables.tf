@@ -129,6 +129,12 @@ variable "user_permissions_table_name" {
   default     = "jaid-user-permissions"
 }
 
+variable "user_permissions_enforced" {
+  description = "Phase 6 rollout flag. When true, the hook task gets DREDD_USER_PERMISSIONS_ENABLED=true, which switches on the user-deny short-circuit and user-allow annotation in the PreToolUse pipeline. When false, uploads + storage + dashboard surfacing still work but the pipeline ignores the lists. Default true — prod has been bake-tested; new deployments inherit enforcement."
+  type        = bool
+  default     = true
+}
+
 variable "sse_kms_key_arn" {
   description = "Optional customer-managed KMS CMK for DynamoDB SSE. Empty string = use AWS-owned key."
   type        = string

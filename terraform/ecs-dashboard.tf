@@ -30,6 +30,7 @@ resource "aws_ecs_task_definition" "dashboard" {
       { name = "DYNAMO_TABLE_NAME", value = aws_dynamodb_table.jaid_sessions.name },
       { name = "DYNAMO_REGION", value = local.tables_region },
       { name = "DYNAMO_API_KEYS_TABLE_NAME", value = aws_dynamodb_table.jaid_api_keys.name },
+      { name = "DYNAMO_USER_PERMISSIONS_TABLE_NAME", value = aws_dynamodb_table.jaid_user_permissions.name },
       { name = "DREDD_HOOK_URL", value = "https://${var.hook_host}" },
     ]
 
