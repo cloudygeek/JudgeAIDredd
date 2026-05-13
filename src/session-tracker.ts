@@ -39,6 +39,7 @@ export type {
   EnvVarRecord,
   TurnMetrics,
   SessionState,
+  UserPermissionsLists,
 } from "./session-types.js";
 export {
   MAX_INTENT_STACK,
@@ -57,6 +58,7 @@ import type {
   EnvVarRecord,
   TurnMetrics,
   SessionState,
+  UserPermissionsLists,
 } from "./session-types.js";
 import {
   MAX_ACTIVE_INTENTS,
@@ -130,6 +132,7 @@ export class InMemorySessionStore implements SessionStore {
         lastUserPromptAt: 0,
         lastPreToolUseAt: 0,
         lastStopAt: 0,
+        userPermissions: null,
       });
     }
     return this.sessions.get(sessionId)!;
@@ -184,6 +187,20 @@ export class InMemorySessionStore implements SessionStore {
     sessionId: string,
   ): Promise<import("./claudemd-scanner.js").ClaudeMdScanResult | null> {
     return this.sessions.get(sessionId)?.claudeMdScan ?? null;
+  }
+
+  async setUserPermissions(
+    sessionId: string,
+    lists: UserPermissionsLists,
+  ): Promise<void> {
+    const session = this.getSession(sessionId);
+    session.userPermissions = lists;
+  }
+
+  async getUserPermissions(
+    sessionId: string,
+  ): Promise<UserPermissionsLists | null> {
+    return this.sessions.get(sessionId)?.userPermissions ?? null;
   }
 
   /**

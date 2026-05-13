@@ -33,6 +33,7 @@ import {
   applyIntentStackUpdate,
   applyClassifierOverride,
   describePhrasingMatches,
+  userPermissions as userPermissionsStore,
   NEW_TASK_DRIFT_MIN,
   CONFIG,
   type TrustMode,
@@ -66,6 +67,18 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   const transcriptContent: string | undefined = body.transcript_content;
   const transcriptSummary: unknown = body.transcript_summary;
   const claudeMdContent: string | undefined = body.claudemd_content;
+  // User-permissions upload (Phase 1 hook contract).
+  //   user_permissions_hash — always present once the hook has settings to upload.
+  //   user_permissions      — only on hash change or heartbeat re-uploads.
+  // See hooks/dredd-hook.sh::build_user_permissions_payload + cache logic.
+  const userPermissionsHashBody: string | null =
+    typeof body.user_permissions_hash === "string" && body.user_permissions_hash.length > 0
+      ? body.user_permissions_hash
+      : null;
+  const userPermissionsBody: { allow?: unknown; deny?: unknown; ask?: unknown } | null =
+    body.user_permissions && typeof body.user_permissions === "object"
+      ? body.user_permissions
+      : null;
 
   if (rejectInvalidSessionId(res, session_id)) return;
   if (!prompt) {
@@ -116,6 +129,65 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
       } else if (transcript_path) {
         await backfillFromTranscript(session_id, transcript_path);
       }
+    }
+  }
+
+  // User-permissions reconciliation. Three cases:
+  //   - Hook sent full payload: upsert into jaid-user-permissions,
+  //     copy into session META.
+  //   - Hook sent only the hash and we have a matching stored row:
+  //     copy stored lists into session META.
+  //   - Hook sent only the hash and we don't recognise it (no row, or
+  //     mismatched hash): set userPermissionsResync so the response
+  //     tells the hook to re-send the full payload next prompt.
+  //
+  // Gated on ownerSub + cwd — anonymous sessions or hooks without a
+  // working cwd skip the whole flow. Best-effort; a Dynamo blip
+  // shouldn't fail /intent (the user-permissions feature is advisory
+  // in Phase 4, so dropping a refresh on the floor is recoverable).
+  let userPermissionsResync = false;
+  const ownerSubForPerms = identity.keyValid ? identity.ownerSub : null;
+  if (ownerSubForPerms && cwd && userPermissionsHashBody) {
+    const sanitizeList = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    try {
+      if (userPermissionsBody) {
+        const allow = sanitizeList(userPermissionsBody.allow);
+        const deny = sanitizeList(userPermissionsBody.deny);
+        const ask = sanitizeList(userPermissionsBody.ask);
+        await userPermissionsStore.upsert({
+          ownerSub: ownerSubForPerms,
+          projectRoot: cwd,
+          hash: userPermissionsHashBody,
+          allow,
+          deny,
+          ask,
+        });
+        await tracker.setUserPermissions(session_id, {
+          hash: userPermissionsHashBody,
+          allow,
+          deny,
+          ask,
+          copiedAt: new Date().toISOString(),
+        });
+      } else {
+        const snapshot = await userPermissionsStore.get(ownerSubForPerms, cwd);
+        if (snapshot && snapshot.hash === userPermissionsHashBody) {
+          await tracker.setUserPermissions(session_id, {
+            hash: snapshot.hash,
+            allow: snapshot.allow,
+            deny: snapshot.deny,
+            ask: snapshot.ask,
+            copiedAt: new Date().toISOString(),
+          });
+        } else {
+          userPermissionsResync = true;
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `  [${session_id.substring(0, 8)}] [USERPERM] reconcile failed: ${(err as Error)?.message ?? err}`,
+      );
     }
   }
 
@@ -411,6 +483,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
 
   json(res, 200, {
     ...hookResponse,
+    ...(userPermissionsResync ? { user_permissions_resync: true } : {}),
     _meta: {
       isOriginal: result.isOriginal,
       turnNumber: result.turnNumber,

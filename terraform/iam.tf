@@ -136,6 +136,24 @@ data "aws_iam_policy_document" "hook_task" {
     ]
   }
 
+  // Hook reads + writes user-permissions: GetItem on every /intent to
+  // see if the uploaded hash matches the stored snapshot, PutItem when
+  // the hook ships a full payload (hash change / heartbeat). No
+  // DeleteItem — TTL ages out abandoned (user, project) rows.
+  statement {
+    sid    = "UserPermissionsTableReadWrite"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:Query",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      aws_dynamodb_table.jaid_user_permissions.arn,
+    ]
+  }
+
   // Bedrock — judge model + embedding model. Scoped to inference
   // profiles + foundation models in any region (cross-region inference
   // profiles can route to multiple regions, so we don't pin to one).
@@ -252,6 +270,23 @@ data "aws_iam_policy_document" "dashboard_task" {
     resources = [
       aws_dynamodb_table.jaid_approvals.arn,
       "${aws_dynamodb_table.jaid_approvals.arn}/index/gsi1",
+    ]
+  }
+
+  // Dashboard reads user-permissions for Phase 5 surfacing (session
+  // detail "User Permissions" section, admin "all users' policies"
+  // view). Read-only — the dashboard never edits the user's local
+  // settings.json; the hook is the only writer.
+  statement {
+    sid    = "UserPermissionsTableRead"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:Query",
+      "dynamodb:Scan",
+    ]
+    resources = [
+      aws_dynamodb_table.jaid_user_permissions.arn,
     ]
   }
 

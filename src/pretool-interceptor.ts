@@ -31,7 +31,8 @@ import { DriftDetector } from "./drift-detector.js";
 import { IntentJudge, type JudgeVerdict, type JudgeBackend, type PromptVariant } from "./intent-judge.js";
 import { checkOllama, embedAny, isBedrockModel, chat } from "./ollama-client.js";
 import { checkBedrock, bedrockChat, bedrockEmbed } from "./bedrock-client.js";
-import type { ImageBlock, IntentEntry } from "./session-tracker.js";
+import type { ImageBlock, IntentEntry, UserPermissionsLists } from "./session-tracker.js";
+import { matchUserAllow, matchUserDeny } from "./user-permission-matcher.js";
 
 export interface InterceptorConfig {
   embeddingModel?: string;
@@ -71,7 +72,8 @@ export interface InterceptionResult {
     | "domain-allow" | "domain-deny"
     | "approval-allow"
     | "drift-allow" | "drift-deny"
-    | "judge-allow" | "judge-deny";
+    | "judge-allow" | "judge-deny"
+    | "user-deny";
   policyResult: PolicyResult;
   /** Embedding similarity (null if not evaluated) */
   similarity: number | null;
@@ -81,6 +83,21 @@ export interface InterceptionResult {
   evaluationMs: number;
   /** Reason for the decision */
   reason: string;
+  /**
+   * Whether the user's local Claude permission lists had something to
+   * say about this call. Asymmetric semantics:
+   *
+   *   - { kind: "deny", rule }  — call matched a user-deny rule.
+   *     ALWAYS produces stage="user-deny" and allowed=false; the early
+   *     check short-circuits before Stage 1 so deny saves a judge call.
+   *   - { kind: "allow", rule } — call matched a user-allow rule. Pure
+   *     annotation: the verdict stands. Stage is whatever the pipeline
+   *     produced (typically "policy-allow"); the dashboard renders the
+   *     annotation as a side badge. User-allow NEVER weakens a deny.
+   *
+   * Undefined when the user has no lists, or no rule matched.
+   */
+  userPermissionMatch?: { kind: "allow" | "deny"; rule: string };
 }
 
 /**
@@ -250,9 +267,59 @@ export class PreToolInterceptor {
      *  drift-distance comparison — keeping the interceptor decoupled
      *  from the approval store. */
     approvalCheck?: () => Promise<{ summary: string } | null>,
+    /** User's local Claude Code .permissions.{allow,deny,ask} snapshot,
+     *  copied from the cross-session jaid-user-permissions table into
+     *  session META by /intent. Asymmetric semantics — deny matches
+     *  short-circuit before Stage 1 (saves a judge call), allow matches
+     *  only annotate the final result. See InterceptionResult.userPermissionMatch.
+     *  Undefined or null = no user policy to consult. */
+    userPermissions?: UserPermissionsLists | null,
   ): Promise<InterceptionResult> {
     const start = Date.now();
     const s = this.getSession(sessionId);
+
+    // Pre-compute the user-allow match once so we can attach it to
+    // whatever verdict the pipeline ends up producing. Annotation only —
+    // the pipeline's decision always stands. Computed before the user-
+    // deny short-circuit so the `log` funnel can refer to it uniformly,
+    // even though the deny path passes its own userPermissionMatch.
+    const userAllowMatch = userPermissions?.allow?.length
+      ? matchUserAllow(userPermissions.allow, tool, input)
+      : null;
+
+    // --- Stage 0: User-deny short-circuit ------------------------------
+    // The user's local deny list ("Bash(curl:*)" etc) is authoritative
+    // for refusal — if they've explicitly denied this pattern, we don't
+    // need to run drift or the judge to confirm. Saves a judge call AND
+    // gives the user-facing reason a clear cause to point at.
+    //
+    // CANNOT override Dredd's own dangerous-combo deny — those run in
+    // Stage 1 below and never see this short-circuit (they would also
+    // produce allowed=false anyway, so the layering is sound).
+    if (userPermissions?.deny?.length) {
+      const denyMatch = matchUserDeny(userPermissions.deny, tool, input);
+      if (denyMatch.matched) {
+        const result: InterceptionResult = {
+          allowed: false,
+          tool,
+          input,
+          stage: "user-deny",
+          policyResult: {
+            decision: "deny",
+            tool,
+            reason: `user deny: ${denyMatch.rule}`,
+            matchedRule: denyMatch.rule,
+          },
+          similarity: null,
+          judgeVerdict: null,
+          evaluationMs: Date.now() - start,
+          reason: `matches your deny list: ${denyMatch.rule}`,
+          userPermissionMatch: { kind: "deny", rule: denyMatch.rule },
+        };
+        this.log(s, result, sessionId, userAllowMatch);
+        return result;
+      }
+    }
 
     // --- Stage 1: Policy engine ---
     const policyResult = evaluateToolPolicy(tool, input, projectRoot);
@@ -269,7 +336,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: policyResult.reason,
       };
-      this.log(s, result, sessionId);
+      this.log(s, result, sessionId, userAllowMatch);
       return result;
     }
 
@@ -285,7 +352,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: policyResult.reason,
       };
-      this.log(s, result, sessionId);
+      this.log(s, result, sessionId, userAllowMatch);
       return result;
     }
 
@@ -316,7 +383,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `${domainResult.matchedRule}: ${domainResult.reason}`,
       };
-      this.log(s, result, sessionId);
+      this.log(s, result, sessionId, userAllowMatch);
       return result;
     }
 
@@ -332,7 +399,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `${domainResult.matchedRule}: ${domainResult.reason}`,
       };
-      this.log(s, result, sessionId);
+      this.log(s, result, sessionId, userAllowMatch);
       return result;
     }
     // "review" (or no match) → check learned approvals before falling
@@ -358,7 +425,7 @@ export class PreToolInterceptor {
           evaluationMs: Date.now() - start,
           reason: `Previously approved: ${approval.summary}`,
         };
-        this.log(s, result, sessionId);
+        this.log(s, result, sessionId, userAllowMatch);
         return result;
       }
     }
@@ -389,7 +456,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `Similarity ${drift.similarity.toFixed(3)} >= threshold ${this.config.reviewThreshold}`,
       };
-      this.log(s, result, sessionId);
+      this.log(s, result, sessionId, userAllowMatch);
       return result;
     }
 
@@ -415,7 +482,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `Similarity ${drift.similarity.toFixed(3)} < deny threshold ${this.config.denyThreshold}`,
       };
-      this.log(s, result, sessionId);
+      this.log(s, result, sessionId, userAllowMatch);
       return result;
     }
 
@@ -433,7 +500,7 @@ export class PreToolInterceptor {
         evaluationMs: Date.now() - start,
         reason: `Similarity ${drift.similarity.toFixed(3)} in review zone, judge disabled`,
       };
-      this.log(s, result, sessionId);
+      this.log(s, result, sessionId, userAllowMatch);
       return result;
     }
 
@@ -513,7 +580,7 @@ export class PreToolInterceptor {
       evaluationMs: Date.now() - start,
       reason: `Judge: ${judgeVerdict.verdict} (${judgeVerdict.reasoning})`,
     };
-    this.log(s, result, sessionId);
+    this.log(s, result, sessionId, userAllowMatch);
     return result;
   }
 
@@ -542,7 +609,28 @@ export class PreToolInterceptor {
     }
   }
 
-  private log(s: SessionGoalState, result: InterceptionResult, sessionId: string): void {
+  private log(
+    s: SessionGoalState,
+    result: InterceptionResult,
+    sessionId: string,
+    /** When provided, attaches the user-allow match to the result as an
+     *  informational annotation. Single funnel for every evaluate() return
+     *  path so we don't have to remember the annotation step at each site. */
+    userAllowMatch?: { matched: boolean; rule: string } | null,
+  ): void {
+    // User-allow annotation — verdict is unchanged, but the dashboard
+    // wants to know the call matched the user's own allow list. When
+    // the pipeline already produced a deny, append a note so the reason
+    // text acknowledges the conflict ("user allows, but Dredd denies").
+    // Skip when userPermissionMatch is already set (user-deny path).
+    if (userAllowMatch?.matched && !result.userPermissionMatch) {
+      result.userPermissionMatch = { kind: "allow", rule: userAllowMatch.rule };
+      if (!result.allowed) {
+        result.reason +=
+          ` — note: matches your allow list (${userAllowMatch.rule}), but Dredd's checks deny`;
+      }
+    }
+
     s.toolLog.push(result);
 
     const icon =
@@ -555,9 +643,12 @@ export class PreToolInterceptor {
       ? ` judge=${result.judgeVerdict.verdict}(${result.judgeVerdict.durationMs}ms)`
       : "";
     const sessionStr = ` [${sessionId.substring(0, 8)}]`;
+    const userPermStr = result.userPermissionMatch
+      ? ` userPerm=${result.userPermissionMatch.kind}(${result.userPermissionMatch.rule})`
+      : "";
 
     console.log(
-      `   ${sessionStr} [${icon} ${result.stage}]${simStr}${judgeStr} ${result.tool}: ${result.reason} (${result.evaluationMs}ms)`
+      `   ${sessionStr} [${icon} ${result.stage}]${simStr}${judgeStr}${userPermStr} ${result.tool}: ${result.reason} (${result.evaluationMs}ms)`
     );
   }
 

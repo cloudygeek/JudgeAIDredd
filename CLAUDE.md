@@ -163,6 +163,12 @@ docker run -p 3000:3000 \
 | `DYNAMO_TABLE_NAME` | `jaid-sessions` | DynamoDB table for session state |
 | `DYNAMO_REGION` | `eu-west-1` | Region of the Dynamo table (distinct from Bedrock region) |
 | `DYNAMO_API_KEYS_TABLE_NAME` | `jaid-api-keys` | DynamoDB table for hook API keys |
+| `DYNAMO_USER_PERMISSIONS_TABLE_NAME` | `jaid-user-permissions` | DynamoDB table for per-(user, project) Claude Code allow/deny/ask lists uploaded by the hook |
+| `DREDD_USER_PERMISSIONS_ENABLED` | `false` | Phase 6 rollout flag — when `true`, the PreToolUse pipeline reads the session's user-permissions snapshot and enforces user-deny / annotates user-allow. When `false`, uploads + storage + dashboard surfacing still work but the pipeline ignores the lists. Flip to `true` once the upload path has soaked |
+| `DREDD_MANAGED_ALLOW_SCOPE` | `conservative` | **Hook-side env var.** Picks which patterns Dredd splices into the project's `.claude/settings.local.json` on every UserPromptSubmit so Claude Code stops re-prompting for tool calls Dredd already authorises. `conservative` = ~19 read-only / inspection patterns (Read, Glob, Grep, awk/sed/grep/ls/cat/head/tail/wc/echo/pwd/file/date/jq/find/rg/node --check). `off` = never splice anything |
+| `DREDD_MANAGED_ALLOW_RULES` | (unset) | **Hook-side env var.** Optional operator override — a raw JSON array that replaces the scope-driven defaults. e.g. `'["Bash(awk:*)","Read"]'` |
+| `DREDD_MANAGED_DIR` | `$HOME/.claude/dredd/managed` | **Hook-side env var.** Where Dredd writes per-(project, session) sidecars tracking which allow rules it has injected. Also holds `manage.log` for audit |
+| `DREDD_MANAGED_SIDECAR_STALE_SECS` | `86400` | **Hook-side env var.** Sidecar age (seconds) before the next UserPromptSubmit sweeps it as a crash-recovery measure. Lower for tests |
 | `DREDD_ROLE` | `hook` | Container role: `hook` (hot path + feed + mode) or `dashboard` (UI + session listing) |
 | `DREDD_HOOK_URL` | (unset) | On the dashboard container, the URL the browser will POST /api/feed + /api/mode to |
 | `DREDD_DASHBOARD_ORIGIN` | (unset) | On the hook container, the CORS Origin the dashboard is served from |
@@ -282,6 +288,79 @@ The catastrophic case (session-locked after N consecutive hijack verdicts) hard-
 
 Configurable in tracker: `<0.2` on-task, `0.2–0.3` scope-creep (inject reminder), `0.3–0.5` drifting (escalate to judge), `>0.5` hijacked (block).
 
+## User permissions — Claude Code allow/deny/ask integration
+
+Two independent features that both touch Claude Code's `permissions.{allow,deny,ask}` configuration. Both ship in the hook + server; both are env-gated.
+
+### 1. Server-side user-permissions snapshot
+
+Every UserPromptSubmit, the hook reads the merged `.permissions.{allow,deny,ask}` from `~/.claude/settings.json`, `$CWD/.claude/settings.json`, and `$CWD/.claude/settings.local.json` (local-wins precedence, sorted + deduped). Uploads a hash + payload to `/intent`:
+
+- **Always sends `user_permissions_hash`** when the user has any rules configured.
+- **Sends the full `user_permissions: { allow, deny, ask }` payload only when**:
+  - First upload for this (user, project), OR
+  - Hash differs from the local cache (`~/.claude/dredd/perm-state/<projectHash>.json`), OR
+  - Heartbeat: every 50 prompts or every 24h (whichever first).
+
+Server stores per-(ownerSub, projectRootHash) in `jaid-user-permissions` (Phase 2a). On every `/intent` it copies the lists into the session's META row so `/evaluate` can read them off the hot path without a cross-session lookup. If the hook sends a hash the server doesn't recognise, it replies `{ user_permissions_resync: true }`; the hook clears its local cache and re-sends the full payload next prompt.
+
+**Pipeline integration** (Phase 4) is gated on `DREDD_USER_PERMISSIONS_ENABLED`. When enabled:
+
+| Combination | Verdict |
+|---|---|
+| User-deny matches | **deny** (Stage 0 short-circuit, judge never runs) — forced hard-deny even in interactive mode |
+| User-allow matches a tool the pipeline already allowed | **allow** with `userPermissionMatch: { kind: "allow", rule }` annotation (informational only) |
+| User-allow matches a tool the pipeline would deny | **deny** stands; reason text gains `" — note: matches your allow list, but Dredd's checks deny"` |
+
+User-allow **never** weakens a Dredd deny — `tool-policy.ts` dangerous-combo deny and `pretool-interceptor.ts` Stage 1 deny always win. User-deny is additive: Dredd is at least as restrictive as the user.
+
+### 2. Hook-managed `settings.local.json` (Phase 7)
+
+Independent of the snapshot feature. The hook splices a conservative set of allow rules into `$CWD/.claude/settings.local.json` on every UserPromptSubmit so Claude Code stops surfacing its native permission prompt for tool calls Dredd already authorises (the friction problem behind the original 19-prompt screenshot).
+
+Scope is selected via `DREDD_MANAGED_ALLOW_SCOPE`:
+
+- `conservative` (default) — ~19 read-only / inspection patterns (`Read`, `Glob`, `Grep`, `Bash(awk:*)`, `Bash(sed:*)`, …). NOT `rm`, `curl`, `git push`, `sudo` — those still need Dredd's judgement.
+- `off` — never splice anything.
+- `DREDD_MANAGED_ALLOW_RULES='["custom","rules"]'` overrides the scope's default set entirely.
+
+**Lifecycle** (all in `hooks/dredd-managed-allow.sh`, sourced by `dredd-hook.sh`):
+
+| Event | Action |
+|---|---|
+| UserPromptSubmit (top of branch) | Sweep stale sidecars older than `DREDD_MANAGED_SIDECAR_STALE_SECS` (24h default). For each, if no other sidecars for the project, strip the stale sidecar's rules from `settings.local.json`. |
+| UserPromptSubmit (after `/intent` returns 200) | Reconcile: compute `add = desired - prior`, `remove = prior - desired`, apply both to `settings.local.json` atomically, refresh sidecar. Idempotent. |
+| SessionEnd | If no other sidecars for this project, strip this session's rules from `settings.local.json`. Always delete the sidecar. |
+
+**Refcount safety**: rules stay in `settings.local.json` as long as *any* sidecar references them. Sidecar presence is the refcount — no separate counter.
+
+**User rules are untouched**: only the rules listed in the sidecar's `rulesManaged` are added/removed. Anything else in `permissions.allow` (the user's own entries, other tools' contributions) is preserved verbatim. Atomic writes via `mktemp + mv` ensure no clobber on concurrent UserPromptSubmits.
+
+**Audit**: every add/remove appends a one-line entry to `$DREDD_MANAGED_DIR/manage.log` with action (`add` / `remove` / `session-end-*` / `sweep-*` / `manual-cleanup-*`), session, project hash, and the rules touched.
+
+**Manual recovery**: `hooks/dredd-cleanup.sh` is a standalone CLI that flushes Dredd-managed rules + sidecars on demand. `--project <path>` (default `$PWD`), `--all`, `--dry-run`, `--yes` (skip prompt), `--quiet`, `--help`. Useful when debugging or after uninstalling Dredd.
+
+### How the snapshot feature avoids hashing its own writes
+
+`build_user_permissions_payload` in `dredd-hook.sh` reads each settings layer separately and subtracts the sidecar's `rulesManaged` from the project-local layer **before** merging. Without this, every UserPromptSubmit would see new rules in `settings.local.json` (that Dredd itself just wrote), recompute a new hash, and trigger a full re-upload — defeating the cache. The subtraction means the snapshot reflects the user's intent, not Dredd's injection.
+
+Caveat: a user who manually duplicates a Dredd-managed rule into their own `settings.local.json` will see it drop from the snapshot. Their `~/.claude/settings.json` and project-shared `$CWD/.claude/settings.json` entries are unaffected.
+
+### Test surface
+
+```
+hooks/tests/test_user_permissions_upload.sh         # Phase 1: hook hash-cache + upload protocol  (34)
+hooks/tests/test_phase7a_managed_allow.sh           # primitives                                   (35)
+hooks/tests/test_phase7b_reconcile.sh               # UserPromptSubmit reconcile                   (21)
+hooks/tests/test_phase7c_cleanup.sh                 # SessionEnd + stale sweep                     (22)
+hooks/tests/test_phase7d_cleanup_cli.sh             # hooks/dredd-cleanup.sh CLI                   (17)
+hooks/tests/test_phase2b_intent.ts                  # server store + tracker round-trip           (17, npx tsx)
+hooks/tests/test_phase3_matcher.ts                  # pattern matcher                              (46, npx tsx)
+hooks/tests/test_phase4_pipeline.ts                 # interceptor integration                      (17, npx tsx)
+```
+
+All green at last full run. The bash suites are self-contained (mktemp sandboxes + python stub HTTP server); the `.ts` ones run via `npx tsx`.
+
 ## Versioning
 
 `.githooks/pre-commit` auto-bumps the patch version in `package.json` on every commit. The version prints on server startup. Don't manually edit the version field — let the hook do it.
@@ -299,4 +378,9 @@ Configurable in tracker: `<0.2` on-task, `0.2–0.3` scope-creep (inject reminde
 | `src/ollama-client.ts` / `src/bedrock-client.ts` | Backend clients |
 | `src/sensitive-env.ts` | Sensitive env-var detection (name + value heuristics) for log redaction |
 | `src/web/dashboard.html` | Dark dashboard with live feed, sessions table, policies tab, logs tab |
+| `src/user-permission-matcher.ts` | Pattern matcher for Claude Code `permissions.{allow,deny}` syntax (Bash prefix, path globs, WebFetch domain, MCP names) with asymmetric chained-Bash semantics |
+| `src/user-permissions-store.ts` | Interface + `InMemoryUserPermissionsStore` for the per-(user, project) snapshot |
+| `src/dynamo-user-permissions-store.ts` | `DynamoUserPermissionsStore` against `jaid-user-permissions` |
 | `hooks/dredd-hook.sh` | Single drop-in CLI hook for all events |
+| `hooks/dredd-managed-allow.sh` | Sourced primitives + reconcile / cleanup / sweep functions for the Phase 7 managed-allow feature |
+| `hooks/dredd-cleanup.sh` | Standalone CLI for manual recovery of managed-allow state |

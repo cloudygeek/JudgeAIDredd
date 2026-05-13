@@ -49,6 +49,74 @@ DREDD_URL="${DREDD_URL:-http://localhost:3001}"
 # Accepts: interactive | autonomous | learn
 DREDD_MODE="${DREDD_MODE:-}"
 
+# Managed-allow scope (Phase 7b). Controls which patterns Dredd splices
+# into the project's .claude/settings.local.json so Claude Code stops
+# prompting for tool calls Dredd is already authorising.
+#   "conservative" (default) — read-only / inspection patterns Dredd's
+#       own policy already allow-lists (Read, Grep, awk/sed/ls/cat …).
+#   "off"                    — Dredd never writes managed rules.
+#
+# DREDD_MANAGED_ALLOW_RULES lets an operator override with a custom
+# JSON array (e.g. via systemd EnvironmentFile or shell rc), bypassing
+# scope-driven defaults.
+DREDD_MANAGED_ALLOW_SCOPE="${DREDD_MANAGED_ALLOW_SCOPE:-conservative}"
+DREDD_MANAGED_ALLOW_RULES="${DREDD_MANAGED_ALLOW_RULES:-}"
+
+# Source the Phase 7a primitives. Path is sibling to this script.
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]:-$0}")/dredd-managed-allow.sh"
+
+# Return the JSON array of rules for a given scope name. Conservative
+# is the only non-trivial scope in v1; "off" returns an empty array
+# (reconcile then strips any previously-managed rules).
+_dredd_rules_for_scope() {
+  local scope="$1"
+  if [ -n "$DREDD_MANAGED_ALLOW_RULES" ]; then
+    # Operator override wins — trust the JSON they gave us. Validate
+    # by round-tripping through jq; on parse failure fall back to
+    # scope defaults to avoid sending garbage to the matcher.
+    if printf '%s' "$DREDD_MANAGED_ALLOW_RULES" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      printf '%s' "$DREDD_MANAGED_ALLOW_RULES" | jq -c .
+      return 0
+    fi
+  fi
+  case "$scope" in
+    off)
+      printf '[]'
+      ;;
+    conservative|*)
+      # Read-only / inspection tools that Dredd's own ALLOWED_BASH_PATTERNS
+      # already approves. Adding these to settings.local.json lets Claude
+      # Code skip its native prompt — Dredd still sees the call and can
+      # still deny via the user-deny list (Phase 4) or dangerous-combo
+      # detection. Conservative on purpose: NO rm/curl/wget/sudo/git-push.
+      cat <<'EOF'
+[
+  "Read",
+  "Glob",
+  "Grep",
+  "Bash(awk:*)",
+  "Bash(sed:*)",
+  "Bash(grep:*)",
+  "Bash(rg:*)",
+  "Bash(find:*)",
+  "Bash(ls:*)",
+  "Bash(cat:*)",
+  "Bash(head:*)",
+  "Bash(tail:*)",
+  "Bash(wc:*)",
+  "Bash(echo:*)",
+  "Bash(pwd:*)",
+  "Bash(file:*)",
+  "Bash(date:*)",
+  "Bash(jq:*)",
+  "Bash(node --check:*)"
+]
+EOF
+      ;;
+  esac
+}
+
 # Per-session ALB cookie jar. The Dredd backend is stateful: each container
 # holds an in-memory cache of the session's state. Pinning a session to a
 # container via the AWSALB cookie turns every request after the first into
@@ -280,6 +348,139 @@ build_transcript_summary() {
 }
 
 # ---------------------------------------------------------------------------
+# User-permissions upload helpers.
+#
+# Reads .permissions.{allow,deny,ask} from the three Claude Code settings
+# layers (~/.claude/settings.json, $CWD/.claude/settings.json,
+# $CWD/.claude/settings.local.json) and merges them with local > project
+# > user precedence (deduped, sorted for a stable hash).
+#
+# Upload strategy: send the full payload only when the merged hash
+# changes, or as a periodic heartbeat (every N prompts / every 24h).
+# Otherwise send just the hash so the server reuses the stored copy.
+# Cache state file lives at $DREDD_PERM_CACHE_DIR/<project-hash>.json so
+# concurrent projects don't collide.
+# ---------------------------------------------------------------------------
+DREDD_PERM_CACHE_DIR="${DREDD_PERM_CACHE_DIR:-$HOME/.claude/dredd/perm-state}"
+mkdir -p "$DREDD_PERM_CACHE_DIR" 2>/dev/null || true
+
+# Belt-and-braces against server-side amnesia (container restart, table
+# TTL expiry, etc.) — force a full re-upload every N prompts or every
+# 24h even if the hash hasn't changed.
+DREDD_PERM_FULL_REUPLOAD_EVERY_N=50
+DREDD_PERM_FULL_REUPLOAD_EVERY_SECS=86400
+
+sha256_string() {
+  # Portable SHA-256 — macOS ships shasum, Linux ships sha256sum.
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | awk '{print $1}'
+  fi
+}
+
+# Merge .permissions.{allow,deny,ask} from up to 3 settings layers.
+# Output: compact JSON {allow,deny,ask} on stdout (sorted, deduped) or
+# empty string if no readable files OR all 3 lists came back empty (no
+# point uploading nothing).
+build_user_permissions_payload() {
+  local cwd="$1"
+
+  # Read each layer separately so we can apply Dredd-managed subtraction
+  # to settings.local.json only — leaving $HOME and project-shared
+  # settings.json untouched. Without this per-file approach the
+  # reconcile-write to settings.local.json would drift the merged hash
+  # every prompt and trigger a full re-upload, defeating the cache.
+  local home_perms="{}"
+  local proj_perms="{}"
+  local local_perms="{}"
+
+  if [ -r "$HOME/.claude/settings.json" ]; then
+    home_perms=$(jq -c '.permissions // {}' "$HOME/.claude/settings.json" 2>/dev/null) || home_perms="{}"
+  fi
+  if [ -n "$cwd" ]; then
+    if [ -r "$cwd/.claude/settings.json" ]; then
+      proj_perms=$(jq -c '.permissions // {}' "$cwd/.claude/settings.json" 2>/dev/null) || proj_perms="{}"
+    fi
+    if [ -r "$cwd/.claude/settings.local.json" ]; then
+      local_perms=$(jq -c '.permissions // {}' "$cwd/.claude/settings.local.json" 2>/dev/null) || local_perms="{}"
+      # Subtract Dredd-managed rules from settings.local.json's view.
+      # Sidecar is the source of truth for "what Dredd injected for
+      # this session". A user who has manually duplicated a managed
+      # rule in their settings.local.json will see it drop from the
+      # snapshot — accepted v1 limitation.
+      if [ -n "${SESSION_ID:-}" ] && command -v dredd_sidecar_path >/dev/null 2>&1; then
+        local _sidecar
+        _sidecar=$(dredd_sidecar_path "$cwd" "$SESSION_ID")
+        if [ -r "$_sidecar" ]; then
+          local _managed
+          _managed=$(jq -c '.rulesManaged // []' "$_sidecar" 2>/dev/null)
+          if [ -n "$_managed" ] && [ "$_managed" != "[]" ]; then
+            local_perms=$(printf '%s' "$local_perms" \
+              | jq -c --argjson m "$_managed" '
+                  .allow = ((.allow // []) - $m)
+                ' 2>/dev/null) || local_perms="{}"
+          fi
+        fi
+      fi
+    fi
+  fi
+
+  local merged
+  merged=$(jq -nc \
+    --argjson h "$home_perms" \
+    --argjson p "$proj_perms" \
+    --argjson l "$local_perms" \
+    '{
+      allow: ([($h.allow // []), ($p.allow // []), ($l.allow // [])] | add | unique),
+      deny:  ([($h.deny  // []), ($p.deny  // []), ($l.deny  // [])] | add | unique),
+      ask:   ([($h.ask   // []), ($p.ask   // []), ($l.ask   // [])] | add | unique)
+    }' 2>/dev/null)
+
+  [ -z "$merged" ] && return
+  local total
+  total=$(printf '%s' "$merged" | jq '(.allow | length) + (.deny | length) + (.ask | length)' 2>/dev/null)
+  [ "${total:-0}" = "0" ] && return
+  printf '%s' "$merged"
+}
+
+perm_cache_path() {
+  local cwd="$1"
+  local key=""
+  if [ -n "$cwd" ]; then
+    key=$(sha256_string "$cwd")
+  fi
+  echo "$DREDD_PERM_CACHE_DIR/${key:-default}.json"
+}
+
+# Populates globals CACHED_HASH / CACHED_COUNTER / CACHED_LAST_FULL_AT
+# from the cache state file. All-zero defaults when the file is absent.
+read_perm_cache() {
+  local cache_file="$1"
+  CACHED_HASH=""
+  CACHED_COUNTER=0
+  CACHED_LAST_FULL_AT=0
+  if [ -r "$cache_file" ]; then
+    CACHED_HASH=$(jq -r '.hash // ""' "$cache_file" 2>/dev/null)
+    CACHED_COUNTER=$(jq -r '.promptsSinceFullUpload // 0' "$cache_file" 2>/dev/null)
+    CACHED_LAST_FULL_AT=$(jq -r '.lastFullUploadAt // 0' "$cache_file" 2>/dev/null)
+  fi
+}
+
+write_perm_cache() {
+  local cache_file="$1" hash="$2" counter="$3" last_full="$4"
+  jq -n \
+    --arg hash "$hash" \
+    --argjson counter "$counter" \
+    --argjson last_full "$last_full" \
+    '{
+      hash: $hash,
+      promptsSinceFullUpload: $counter,
+      lastFullUploadAt: $last_full
+    }' > "$cache_file" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
 # Helper: read CLAUDE.md files from the project cwd
 # ---------------------------------------------------------------------------
 read_claudemd_content() {
@@ -306,6 +507,13 @@ case "$HOOK_EVENT" in
     CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
     DREDD_DEBUG_LOG="${DREDD_DEBUG_LOG:-$HOME/.claude/dredd/hook-debug.log}"
 
+    # Phase 7c — sweep stale sidecars from crashed sessions before we
+    # do anything else. Default stale window is 24h; tunable via
+    # DREDD_MANAGED_SIDECAR_STALE_SECS for tests / fast cycles.
+    DREDD_MANAGED_SIDECAR_STALE_SECS="${DREDD_MANAGED_SIDECAR_STALE_SECS:-86400}"
+    dredd_sweep_stale_sidecars "$DREDD_MANAGED_SIDECAR_STALE_SECS" \
+      >/dev/null 2>>"$DREDD_DEBUG_LOG" || true
+
     # Build a structured backfill envelope. The server prefers this
     # over the raw JSONL transcript — ships ~5KB on a 50-prompt
     # session vs ~800KB raw, and avoids the macOS ARG_MAX truncation
@@ -330,6 +538,37 @@ case "$HOOK_EVENT" in
     fi
 
     CLAUDEMD_CONTENT=$(read_claudemd_content "$CWD")
+
+    # User-permissions snapshot. Always send the hash when we have
+    # readable settings; send the full {allow,deny,ask} payload only
+    # when the hash changed since last upload or on the periodic
+    # heartbeat. Server-side resync flag clears the cache so the next
+    # prompt re-sends the full payload.
+    USER_PERM_HASH=""
+    USER_PERM_PAYLOAD_JSON=""
+    USER_PERM_FULL_SENT=0
+    PERM_CACHE_FILE=""
+    NOW_EPOCH=$(date +%s)
+    CACHED_HASH=""
+    CACHED_COUNTER=0
+    CACHED_LAST_FULL_AT=0
+    USER_PERM_PAYLOAD=$(build_user_permissions_payload "$CWD")
+    if [ -n "$USER_PERM_PAYLOAD" ]; then
+      USER_PERM_HASH=$(sha256_string "$USER_PERM_PAYLOAD")
+      PERM_CACHE_FILE=$(perm_cache_path "$CWD")
+      read_perm_cache "$PERM_CACHE_FILE"
+      SECS_SINCE_FULL=$((NOW_EPOCH - CACHED_LAST_FULL_AT))
+      # Trigger a full upload when: no prior state, hash changed,
+      # we've sent N hash-only uploads in a row, or 24h+ since last
+      # full upload (server-side TTL hedge).
+      if [ -z "$CACHED_HASH" ] \
+        || [ "$CACHED_HASH" != "$USER_PERM_HASH" ] \
+        || [ "$CACHED_COUNTER" -ge "$DREDD_PERM_FULL_REUPLOAD_EVERY_N" ] \
+        || [ "$SECS_SINCE_FULL" -ge "$DREDD_PERM_FULL_REUPLOAD_EVERY_SECS" ]; then
+        USER_PERM_PAYLOAD_JSON="$USER_PERM_PAYLOAD"
+        USER_PERM_FULL_SENT=1
+      fi
+    fi
 
     # Compose the request body. jq reads the summary from a slurped
     # file, side-stepping argv. The full transcript is no longer sent
@@ -372,6 +611,24 @@ case "$HOOK_EVENT" in
         }' >"$REQ_BODY_FILE"
     fi
 
+    # Merge user-permissions fields into the request body. Always
+    # attaches user_permissions_hash when we have one; only attaches
+    # the full user_permissions object on full uploads.
+    if [ -n "$USER_PERM_HASH" ]; then
+      REQ_BODY_TMP=$(mktemp -t dredd-intent-req2.XXXXXX)
+      if [ -n "$USER_PERM_PAYLOAD_JSON" ]; then
+        jq --arg h "$USER_PERM_HASH" --argjson up "$USER_PERM_PAYLOAD_JSON" \
+          '. + {user_permissions_hash: $h, user_permissions: $up}' \
+          "$REQ_BODY_FILE" > "$REQ_BODY_TMP" 2>/dev/null && \
+          mv "$REQ_BODY_TMP" "$REQ_BODY_FILE" || rm -f "$REQ_BODY_TMP"
+      else
+        jq --arg h "$USER_PERM_HASH" \
+          '. + {user_permissions_hash: $h}' \
+          "$REQ_BODY_FILE" > "$REQ_BODY_TMP" 2>/dev/null && \
+          mv "$REQ_BODY_TMP" "$REQ_BODY_FILE" || rm -f "$REQ_BODY_TMP"
+      fi
+    fi
+
     # POST with --data-binary @file so the body never rides on argv.
     # macOS ARG_MAX is 1MB; the previous `-d "$(jq …)"` form
     # silently truncated the body past that boundary and the server
@@ -396,10 +653,40 @@ case "$HOOK_EVENT" in
       # Server-side state is recoverable via /evaluate's rehydration.
       echo '{}'
     else
+      # Update permission cache state on a successful upload. The
+      # server's user_permissions_resync flag means "I don't have the
+      # lists for this (user, project); send the full payload next
+      # time" — we honour it by clearing the cache file, so the next
+      # /intent unconditionally uploads.
+      if [ -n "$USER_PERM_HASH" ] && [ -n "$PERM_CACHE_FILE" ]; then
+        RESYNC=$(jq -r '.user_permissions_resync // false' "$INTENT_BODY_FILE" 2>/dev/null)
+        if [ "$RESYNC" = "true" ]; then
+          rm -f "$PERM_CACHE_FILE" 2>/dev/null || true
+        elif [ "$USER_PERM_FULL_SENT" = "1" ]; then
+          write_perm_cache "$PERM_CACHE_FILE" "$USER_PERM_HASH" 0 "$NOW_EPOCH"
+        else
+          write_perm_cache "$PERM_CACHE_FILE" "$USER_PERM_HASH" \
+            $((CACHED_COUNTER + 1)) "$CACHED_LAST_FULL_AT"
+        fi
+      fi
       # Extract just the hook fields (systemMessage etc), strip _meta.
-      jq 'del(._meta)' "$INTENT_BODY_FILE" 2>/dev/null || echo '{}'
+      jq 'del(._meta, .user_permissions_resync)' "$INTENT_BODY_FILE" 2>/dev/null || echo '{}'
     fi
     rm -f "$INTENT_BODY_FILE" "$REQ_BODY_FILE" "$SUMMARY_FILE" 2>/dev/null || true
+
+    # Phase 7b — Managed-allow reconciliation. Runs only after we've
+    # confirmed Dredd is reachable (the /health check at the top of the
+    # script gated us here), and only when both CWD and SESSION_ID are
+    # known. Silent on missing fields and on jq/IO errors — the
+    # managed-allow feature is advisory; failures don't block prompts.
+    if [ -n "$CWD" ] && [ -n "$SESSION_ID" ]; then
+      DESIRED_RULES_JSON=$(_dredd_rules_for_scope "$DREDD_MANAGED_ALLOW_SCOPE")
+      if [ -n "$DESIRED_RULES_JSON" ]; then
+        dredd_reconcile_managed_allow "$CWD" "$SESSION_ID" \
+          "$DREDD_MANAGED_ALLOW_SCOPE" "$DESIRED_RULES_JSON" \
+          >/dev/null 2>>"${DREDD_DEBUG_LOG:-$HOME/.claude/dredd/hook-debug.log}" || true
+      fi
+    fi
     ;;
 
   "PreToolUse")
@@ -553,6 +840,15 @@ case "$HOOK_EVENT" in
     # Clean up the sticky cookie jar — the session is over.
     if [ -n "$COOKIE_JAR" ] && [ -f "$COOKIE_JAR" ]; then
       rm -f "$COOKIE_JAR" 2>/dev/null || true
+    fi
+
+    # Phase 7c — strip Dredd-managed allow rules from settings.local.json
+    # for any project this session was managing (typically just one). If
+    # other sessions are still active on the same project, the rules
+    # stay; only the sidecar for this session is removed. Best-effort.
+    if [ -n "$SESSION_ID" ]; then
+      dredd_cleanup_session "$SESSION_ID" \
+        >/dev/null 2>>"${DREDD_DEBUG_LOG:-$HOME/.claude/dredd/hook-debug.log}" || true
     fi
 
     echo '{}'

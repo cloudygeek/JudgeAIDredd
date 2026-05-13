@@ -177,6 +177,27 @@ export interface EnvVarRecord {
   isSensitive: boolean;
 }
 
+/**
+ * Snapshot of the user's Claude Code .permissions.{allow,deny,ask}
+ * lists, copied into the session at /intent time from the
+ * `jaid-user-permissions` table (or directly from the hook's full
+ * upload). /evaluate reads from this in-session copy on the hot path
+ * so it never has to touch the cross-session table.
+ *
+ * Null when the hook never uploaded any permissions (either it's an
+ * old hook version pre-Phase-1, or the user has no .permissions
+ * configured anywhere).
+ */
+export interface UserPermissionsLists {
+  /** sha256 of the canonical merged payload — matches the hook's hash. */
+  hash: string;
+  allow: string[];
+  deny: string[];
+  ask: string[];
+  /** ISO-8601 of when these lists were last copied into session META. */
+  copiedAt: string;
+}
+
 export interface TurnMetrics {
   turnNumber: number;
   timestamp: string;
@@ -294,6 +315,14 @@ export interface SessionState {
    * resolved=true; the next "new-task" push then clears them.
    */
   lastStopAt: number;
+  /**
+   * Snapshot of the user's local Claude Code allow/deny/ask lists,
+   * copied in at /intent time from the cross-session
+   * `jaid-user-permissions` table. Null until the hook first uploads
+   * for this (user, project). /evaluate consults this on every tool
+   * call (Phase 4) without ever hitting the cross-session table.
+   */
+  userPermissions: UserPermissionsLists | null;
 }
 
 // ---- Constants -----------------------------------------------------------

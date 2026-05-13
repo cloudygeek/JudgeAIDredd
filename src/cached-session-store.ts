@@ -36,6 +36,7 @@ import type {
   EnvVarRecord,
   TurnMetrics,
   ImageBlock,
+  UserPermissionsLists,
 } from "./session-store.js";
 import type { ClaudeMdScanResult } from "./claudemd-scanner.js";
 
@@ -123,6 +124,7 @@ export class CachedSessionStore implements SessionStore {
       lastUserPromptAt: 0,
       lastPreToolUseAt: 0,
       lastStopAt: 0,
+      userPermissions: null,
     };
   }
 
@@ -194,6 +196,22 @@ export class CachedSessionStore implements SessionStore {
   async getClaudeMdScan(sessionId: string): Promise<ClaudeMdScanResult | null> {
     const s = await this.getOrLoad(sessionId);
     return s.claudeMdScan;
+  }
+
+  async setUserPermissions(
+    sessionId: string,
+    lists: UserPermissionsLists,
+  ): Promise<void> {
+    await this.backend.setUserPermissions(sessionId, lists);
+    const s = await this.getOrLoad(sessionId);
+    s.userPermissions = lists;
+  }
+
+  async getUserPermissions(
+    sessionId: string,
+  ): Promise<UserPermissionsLists | null> {
+    const s = await this.getOrLoad(sessionId);
+    return s.userPermissions;
   }
 
   async pivotSession(sessionId: string, reason: string): Promise<void> {

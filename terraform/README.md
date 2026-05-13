@@ -24,7 +24,7 @@ below).
 | TLS | ACM cert covering hook + dashboard hosts, DNS-validated against the supplied Route53 zone |
 | DNS | Route53 A-alias records for `var.hook_host` and `var.dashboard_host` |
 | Workloads | Two ECS task definitions + services (hook, dashboard) — default **1 replica each, no HA**, single-AZ (eu-west-1a) |
-| Storage | `jaid-sessions` and `jaid-api-keys` Dynamo tables |
+| Storage | `jaid-sessions`, `jaid-api-keys`, `jaid-approvals`, and `jaid-user-permissions` Dynamo tables |
 
 What it deliberately doesn't do:
 
@@ -159,5 +159,7 @@ terraform/
 ├── ecs-hook.tf         Hook task definition + service
 ├── ecs-dashboard.tf    Dashboard task definition + service
 ├── jaid-sessions.tf    Sessions Dynamo table
-└── jaid-api-keys.tf    API-keys Dynamo table
+├── jaid-api-keys.tf    API-keys Dynamo table
+├── jaid-approvals.tf   User-approvals Dynamo table (interactive-mode learning)
+└── jaid-user-permissions.tf  Per-(user, project) Claude allow/deny/ask snapshot table
 ```

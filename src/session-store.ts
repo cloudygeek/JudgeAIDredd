@@ -28,6 +28,7 @@ import type {
   EnvVarRecord,
   TurnMetrics,
   SessionState,
+  UserPermissionsLists,
 } from "./session-tracker.js";
 
 export type {
@@ -40,6 +41,7 @@ export type {
   EnvVarRecord,
   TurnMetrics,
   SessionState,
+  UserPermissionsLists,
 };
 
 export type DriftClassification = "on-task" | "scope-creep" | "drifting" | "hijacked";
@@ -94,6 +96,12 @@ export interface SessionStore {
 
   recordClaudeMdScan(sessionId: string, scan: ClaudeMdScanResult): Promise<void>;
   getClaudeMdScan(sessionId: string): Promise<ClaudeMdScanResult | null>;
+
+  /** Copy the user's allow/deny/ask lists into the session. Idempotent —
+   *  called on every /intent with the lists looked up from
+   *  `jaid-user-permissions`. /evaluate reads via getUserPermissions. */
+  setUserPermissions(sessionId: string, lists: UserPermissionsLists): Promise<void>;
+  getUserPermissions(sessionId: string): Promise<UserPermissionsLists | null>;
 
   pivotSession(sessionId: string, reason: string): Promise<void>;
   endSession(sessionId: string): Promise<void>;

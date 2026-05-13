@@ -695,6 +695,11 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       <div id="detail-intents"></div>
     </div>
 
+    <div class="detail-section" id="detail-section-user-perms">
+      <h3>User Permissions <span class="muted" style="font-size:0.7em;font-weight:normal">— snapshot of this session's local Claude allow/deny/ask lists. Dredd consults these on every PreToolUse: deny matches short-circuit to "blocked"; allow matches inform but don't override the judge.</span></h3>
+      <div id="detail-user-perms"></div>
+    </div>
+
     <div class="detail-section" id="detail-section-files">
       <h3>Files Written</h3>
       <div id="detail-files"></div>
@@ -992,6 +997,14 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         : '';
       const stageText = isIntent ? (f.reason ?? '') : (f.stage ?? '');
       const stageHtml = stageText ? `<span class="muted">[${esc(stageText)}]</span> ` : '';
+      // Phase 5: user-permission side badge. kind="deny" decisions show
+      // a red badge; kind="allow" annotations show a green badge. The
+      // rule text appears in the title attribute so hovering reveals
+      // which pattern matched.
+      const userPerm = f.userPermission ?? null;
+      const userPermHtml = userPerm
+        ? `<span class="badge ${userPerm.kind === 'deny' ? 'badge-deny' : 'badge-allow'}" style="margin-right:6px" title="user ${esc(userPerm.kind)}: ${esc(userPerm.rule)}">user-${esc(userPerm.kind)}</span>`
+        : '';
       const sid = f.sessionId ?? '';
       const sidShort = sid ? (sid.length > 8 ? sid.substring(0, 8) : sid) : '';
       const showSid = opts && opts.showSessionId !== false;
@@ -1005,7 +1018,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       // double quotes into &quot; which browsers decode automatically
       // when the value is read via .dataset, so JSON.parse round-trips.
       const dataFeed = esc(JSON.stringify(f));
-      return `<div class="feed-entry" data-feed="${dataFeed}" onclick="openFeedDetail(this)" title="Click for full details"><span class="feed-time">${time}</span> ${sidHtml}<span class="${cls}">${icon}</span> <span class="feed-tool">${esc(f.tool ?? f.type ?? '')}</span> ${intentKindHtml}${stageHtml}<span class="muted" title="${msgEsc}">${msgEsc}</span></div>`;
+      return `<div class="feed-entry" data-feed="${dataFeed}" onclick="openFeedDetail(this)" title="Click for full details"><span class="feed-time">${time}</span> ${sidHtml}<span class="${cls}">${icon}</span> <span class="feed-tool">${esc(f.tool ?? f.type ?? '')}</span> ${intentKindHtml}${userPermHtml}${stageHtml}<span class="muted" title="${msgEsc}">${msgEsc}</span></div>`;
     }
 
     // Settings modal — fetches /api/whoami and renders the OIDC JWT claims
@@ -1294,9 +1307,17 @@ mv .claude/settings.json .claude/settings.json.dredd-off
             const modeOpts = ['', 'interactive', 'autonomous', 'learn']
               .map(m => `<option value="${m}"${m === sessionMode ? ' selected' : ''}>${m || '(global)'}</option>`)
               .join('');
+            // Phase 5: tiny "U" badge after the session id when the
+            // session has any user-permissions uploaded. Hover shows
+            // the counts; clicking the row still opens the detail page.
+            const up = s.userPermissions ?? null;
+            const upCount = up ? ((up.allow ?? []).length + (up.deny ?? []).length + (up.ask ?? []).length) : 0;
+            const upHtml = upCount > 0
+              ? ` <span class="badge" title="User permissions uploaded: ${(up.allow ?? []).length} allow / ${(up.deny ?? []).length} deny / ${(up.ask ?? []).length} ask">U</span>`
+              : '';
             return `<tr>
               <td class="mono muted">${time}</td>
-              <td class="mono muted cell-link" title="${sidEsc}" onclick="showDetail('${sidEsc}')">${esc(sidShort)}</td>
+              <td class="mono muted cell-link" title="${sidEsc}" onclick="showDetail('${sidEsc}')">${esc(sidShort)}${upHtml}</td>
               <td class="task-text cell-link" title="${esc(s.originalTask ?? '')}" onclick="showDetail('${sidEsc}')">${esc(task)}</td>
               <td style="text-align:center">${s.summary?.turns ?? 0}</td>
               <td style="text-align:center" class="tooltip"><span class="cell-link" onclick="showDetail('${sidEsc}','tools')">${tools}</span><div class="tip">${toolTip || 'No tools'}</div></td>
@@ -1330,16 +1351,214 @@ mv .claude/settings.json .claude/settings.json.dredd-off
             feedData.map(f => renderFeedRow(f, { showSessionId: true })).reverse().join('');
         }
 
-        // If detail page is open, refresh the per-session feed from the same data.
+        // If detail page is open, refresh the per-session feed AND the
+        // session-log payload (cards + Tool Calls + Turn Metrics +
+        // Goals + Files + Raw) so they stay in sync with the live feed
+        // instead of being frozen at the moment the detail page was
+        // first opened.
         if (currentDetailSessionId) {
-          const filtered = feedData.filter(f => f.sessionId === currentDetailSessionId);
+          const sid = currentDetailSessionId;
+          const filtered = feedData.filter(f => f.sessionId === sid);
           document.getElementById('detail-feed-count').textContent = filtered.length;
           document.getElementById('detail-feed').innerHTML = filtered.length === 0
             ? '<div class="empty">No feed events for this session yet</div>'
             : filtered.map(f => renderFeedRow(f, { showSessionId: false })).reverse().join('');
+          refreshSessionDetail(sid);
         }
       } catch (err) {
         console.error('Refresh failed:', err);
+      }
+    }
+
+    // Renders the session-log payload into the detail page. Called by
+    // showDetail() on first open (preserveTableState=false → resets the
+    // tool-table filter/page) and by the 5s refresh loop while the
+    // detail page is open (preserveTableState=true → keeps the user's
+    // current filter/page so auto-refresh doesn't yank them).
+    function renderSessionDetailData(data, opts) {
+      const preserveTableState = !!(opts && opts.preserveTableState);
+
+      document.getElementById('detail-task').textContent = data.currentTask ?? data.originalTask ?? '';
+
+      // Stats — clickable. Each card maps to the action labelled on
+      // its hover tooltip. Allowed/Denied filter the Tool Calls
+      // table; Tool Calls clears the filter and scrolls to the
+      // table; Files / Turns scroll to their sections.
+      const s = data.summary ?? {};
+      const allowed = (s.toolCalls ?? 0) - (s.denied ?? 0);
+      document.getElementById('detail-stats').innerHTML = `
+        <div class="stat clickable" onclick="scrollToSection('detail-section-turns')" title="Jump to Turn Metrics">
+          <div class="stat-value">${s.turns ?? 0}</div><div class="stat-label">Turns</div>
+        </div>
+        <div class="stat clickable" onclick="setToolFilter(null)" title="Show all tool calls">
+          <div class="stat-value">${s.toolCalls ?? 0}</div><div class="stat-label">Tool Calls</div>
+        </div>
+        <div class="stat clickable" onclick="setToolFilter('allow')" title="Filter Tool Calls to allowed">
+          <div class="stat-value green">${allowed}</div><div class="stat-label">Allowed</div>
+        </div>
+        <div class="stat clickable" onclick="setToolFilter('deny')" title="Filter Tool Calls to denied">
+          <div class="stat-value red">${s.denied ?? 0}</div><div class="stat-label">Denied</div>
+        </div>
+        <div class="stat clickable" onclick="scrollToSection('detail-section-files')" title="Jump to Files Written">
+          <div class="stat-value">${s.filesWritten ?? 0}</div><div class="stat-label">Files</div>
+        </div>
+        <div class="stat" title="No dedicated section; count only">
+          <div class="stat-value">${s.envVarsSet ?? 0}</div><div class="stat-label">Env Vars</div>
+        </div>
+      `;
+
+      // Tool calls table — paginated. Cache the full list so filter /
+      // page changes don't re-fetch. On auto-refresh, keep the user's
+      // current filter + page; on first open, reset them.
+      detailToolsCache = data.toolHistory ?? data.interceptorLog ?? [];
+      if (!preserveTableState) {
+        detailToolFilter = null;
+        detailToolPage = 0;
+      }
+      renderDetailTools();
+
+      // Turn metrics
+      const turns = data.turnMetrics ?? data.summary?.turnMetrics ?? [];
+      document.getElementById('detail-turns').innerHTML = turns.length === 0
+        ? '<tr><td colspan="7" class="empty">No turn metrics</td></tr>'
+        : turns.map(t => `<tr>
+            <td>${esc(t.turnNumber)}</td>
+            <td class="mono muted">${t.timestamp ? new Date(t.timestamp).toLocaleTimeString() : '-'}</td>
+            <td><span class="badge badge-${esc(t.classification)}">${esc(t.classification)}</span></td>
+            <td class="mono">${t.driftFromOriginal !== null ? t.driftFromOriginal.toFixed(3) : '-'}</td>
+            <td>${esc(t.toolCallCount)}</td>
+            <td>${t.toolCallsDenied > 0 ? `<span class="badge badge-deny">${esc(t.toolCallsDenied)}</span>` : '0'}</td>
+            <td>${t.goalReminderInjected ? '✓' : ''}</td>
+          </tr>`).join('');
+
+      // Active Intent Stack — interactive/learn only. The judge
+      // authorises tool calls against this set (any-goal-match). Each
+      // entry's `kind` tells you whether it was appended (queued /
+      // continuation / open-followup), adopted (confirmation), or a
+      // replacement (new-task). Resolved entries are dimmed — they're
+      // post-Stop and only kept until the next new-task push or TTL.
+      const activeIntents = data.activeIntents ?? [];
+      const turnState = data.turnState ?? null;
+      const stackHeader = activeIntents.length > 0 && turnState
+        ? `<div style="padding:6px 0 10px;color:var(--muted);font-size:0.85em">turn-state: <span class="badge">${esc(turnState)}</span> · stack size: ${activeIntents.length}</div>`
+        : '';
+      const kindBadge = (kind) => {
+        const cls = kind === 'new-task' ? 'badge-deny'
+          : kind === 'queued' || kind === 'continuation' || kind === 'open-followup' ? 'badge-allow'
+          : kind === 'confirmation' ? 'badge'
+          : 'badge';
+        return `<span class="badge ${cls}">${esc(kind)}</span>`;
+      };
+      document.getElementById('detail-active-intents').innerHTML = activeIntents.length === 0
+        ? '<div class="empty">No active intent stack — autonomous-mode session, or no /intent yet recorded.</div>'
+        : stackHeader + activeIntents.map((e, i) => {
+            const ts = e.registeredAt ? new Date(e.registeredAt).toLocaleString() : '';
+            const opacity = e.resolved ? '0.6' : '1';
+            const resolvedTag = e.resolved ? '<span class="badge muted">resolved</span>' : '';
+            return `<div style="padding:8px 0;border-bottom:1px solid var(--border);opacity:${opacity}">
+              <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">
+                <span class="mono muted" style="min-width:48px">#${i + 1}</span>
+                ${kindBadge(e.kind)}
+                ${resolvedTag}
+                <span class="muted" style="margin-left:auto;font-size:0.85em">${esc(ts)}</span>
+              </div>
+              <div style="white-space:pre-wrap;word-break:break-word">${esc(e.prompt ?? '')}</div>
+            </div>`;
+          }).join('');
+
+      // Goals — every user prompt that registered an intent.
+      const intents = data.turnIntents ?? data.intentHistory ?? data.summary?.intents ?? [];
+      let liveGoalTurn = -1;
+      for (let i = intents.length - 1; i >= 0; i--) {
+        if (!intents[i]?.isConfirmation) { liveGoalTurn = intents[i]?.turnNumber ?? i; break; }
+      }
+      document.getElementById('detail-intents').innerHTML = intents.length === 0
+        ? '<div class="empty">No goals recorded</div>'
+        : intents.map((intent, i) => {
+            if (typeof intent === 'string') {
+              return `<div style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge badge-allow">Turn ${esc(i)}</span> ${esc(intent)}</div>`;
+            }
+            const turnNum = intent.turnNumber ?? intent.turn ?? i;
+            const text = intent.prompt ?? intent.intent ?? '';
+            const isOriginal = turnNum === 0;
+            const isConfirmation = !!intent.isConfirmation;
+            const isLive = turnNum === liveGoalTurn && !isOriginal;
+            const ts = intent.timestamp ? new Date(intent.timestamp).toLocaleString() : '';
+            const tagBits = [];
+            if (isOriginal) tagBits.push('<span class="badge badge-allow">original</span>');
+            if (isLive) tagBits.push('<span class="badge badge-allow">current</span>');
+            if (isConfirmation) tagBits.push('<span class="badge muted">confirmation</span>');
+            const opacity = isConfirmation ? '0.55' : '1';
+            return `<div style="padding:8px 0;border-bottom:1px solid var(--border);opacity:${opacity}">
+              <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">
+                <span class="mono muted" style="min-width:60px">Turn ${esc(turnNum)}</span>
+                ${tagBits.join(' ')}
+                <span class="muted" style="margin-left:auto;font-size:0.85em">${esc(ts)}</span>
+              </div>
+              <div style="white-space:pre-wrap;word-break:break-word">${esc(text)}</div>
+            </div>`;
+          }).join('');
+
+      // User Permissions — the snapshot copied from jaid-user-permissions
+      // at /intent time. Three lists (allow / deny / ask) plus the upload
+      // hash and a timestamp of when the lists were last copied in.
+      const up = data.userPermissions ?? null;
+      const renderRuleList = (rules, badgeClass) => {
+        if (!rules || rules.length === 0) {
+          return '<span class="muted">(none)</span>';
+        }
+        return rules.map(r => `<span class="badge ${badgeClass}" style="margin:2px 4px 2px 0">${esc(r)}</span>`).join('');
+      };
+      if (!up || (!up.allow?.length && !up.deny?.length && !up.ask?.length)) {
+        document.getElementById('detail-user-perms').innerHTML =
+          '<div class="empty">No user permissions uploaded for this session yet. The hook uploads on UserPromptSubmit; the session-detail page reflects what the server has stored.</div>';
+      } else {
+        const copiedAt = up.copiedAt ? new Date(up.copiedAt).toLocaleString() : '';
+        const hashShort = (up.hash ?? '').substring(0, 12);
+        document.getElementById('detail-user-perms').innerHTML = `
+          <div style="display:flex;gap:12px;align-items:center;margin-bottom:8px;font-size:0.85em">
+            <span class="muted">hash:</span><span class="mono">${esc(hashShort)}…</span>
+            ${copiedAt ? `<span class="muted" style="margin-left:auto">copied ${esc(copiedAt)}</span>` : ''}
+          </div>
+          <div style="padding:8px 0;border-bottom:1px solid var(--border)">
+            <div style="margin-bottom:4px"><span class="muted">allow</span> <span class="muted">(${(up.allow ?? []).length})</span></div>
+            <div>${renderRuleList(up.allow, 'badge-allow')}</div>
+          </div>
+          <div style="padding:8px 0;border-bottom:1px solid var(--border)">
+            <div style="margin-bottom:4px"><span class="muted">deny</span> <span class="muted">(${(up.deny ?? []).length})</span></div>
+            <div>${renderRuleList(up.deny, 'badge-deny')}</div>
+          </div>
+          <div style="padding:8px 0">
+            <div style="margin-bottom:4px"><span class="muted">ask</span> <span class="muted">(${(up.ask ?? []).length})</span></div>
+            <div>${renderRuleList(up.ask, 'badge')}</div>
+          </div>
+        `;
+      }
+
+      // Files
+      const files = data.filesWritten ?? [];
+      document.getElementById('detail-files').innerHTML = files.length === 0
+        ? '<div class="empty">No files written</div>'
+        : files.map(f => `<div style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="mono">${esc(f.path)}</span> <span class="muted">(${esc(f.writeCount)}x)</span>${f.containsCanary ? ' <span class="badge badge-deny">CANARY</span>' : ''}</div>`).join('');
+
+      // Raw
+      document.getElementById('detail-raw').textContent = JSON.stringify(data, null, 2);
+    }
+
+    // Re-fetch /api/session-log/:id and re-render the detail page.
+    // Called by the 5s refresh loop while the detail page is open so
+    // the cards + Tool Calls + Turn Metrics + Goals + Files stay in
+    // sync with the live feed instead of being frozen at first-open.
+    async function refreshSessionDetail(sessionId) {
+      try {
+        const data = await (await dreddFetch(`${API}/api/session-log/${encodeURIComponent(sessionId)}`)).json();
+        // The user may have navigated away during the fetch; bail if
+        // we're no longer on this detail page.
+        if (currentDetailSessionId !== sessionId) return;
+        renderSessionDetailData(data, { preserveTableState: true });
+      } catch (err) {
+        // Network blip — leave the existing render alone, try again
+        // next tick.
       }
     }
 
@@ -1362,7 +1581,6 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         document.getElementById('detail-page').classList.add('active');
 
         document.getElementById('detail-title').textContent = `Session ${sessionId.substring(0, 8)}`;
-        document.getElementById('detail-task').textContent = data.currentTask ?? data.originalTask ?? '';
 
         // Prime the per-session feed from current global feed state.
         try {
@@ -1374,136 +1592,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
             : filtered.map(f => renderFeedRow(f, { showSessionId: false })).reverse().join('');
         } catch {}
 
-        // Stats — clickable. Each card maps to the action labelled on
-        // its hover tooltip. Allowed/Denied filter the Tool Calls
-        // table; Tool Calls clears the filter and scrolls to the
-        // table; Files / Turns scroll to their sections.
-        const s = data.summary ?? {};
-        const allowed = (s.toolCalls ?? 0) - (s.denied ?? 0);
-        document.getElementById('detail-stats').innerHTML = `
-          <div class="stat clickable" onclick="scrollToSection('detail-section-turns')" title="Jump to Turn Metrics">
-            <div class="stat-value">${s.turns ?? 0}</div><div class="stat-label">Turns</div>
-          </div>
-          <div class="stat clickable" onclick="setToolFilter(null)" title="Show all tool calls">
-            <div class="stat-value">${s.toolCalls ?? 0}</div><div class="stat-label">Tool Calls</div>
-          </div>
-          <div class="stat clickable" onclick="setToolFilter('allow')" title="Filter Tool Calls to allowed">
-            <div class="stat-value green">${allowed}</div><div class="stat-label">Allowed</div>
-          </div>
-          <div class="stat clickable" onclick="setToolFilter('deny')" title="Filter Tool Calls to denied">
-            <div class="stat-value red">${s.denied ?? 0}</div><div class="stat-label">Denied</div>
-          </div>
-          <div class="stat clickable" onclick="scrollToSection('detail-section-files')" title="Jump to Files Written">
-            <div class="stat-value">${s.filesWritten ?? 0}</div><div class="stat-label">Files</div>
-          </div>
-          <div class="stat" title="No dedicated section; count only">
-            <div class="stat-value">${s.envVarsSet ?? 0}</div><div class="stat-label">Env Vars</div>
-          </div>
-        `;
-
-        // Tool calls table — paginated. Cache the full list so filter /
-        // page changes don't re-fetch.
-        detailToolsCache = data.toolHistory ?? data.interceptorLog ?? [];
-        detailToolFilter = null;  // reset on session open
-        detailToolPage = 0;
-        renderDetailTools();
-
-        // Turn metrics
-        const turns = data.turnMetrics ?? data.summary?.turnMetrics ?? [];
-        document.getElementById('detail-turns').innerHTML = turns.length === 0
-          ? '<tr><td colspan="7" class="empty">No turn metrics</td></tr>'
-          : turns.map(t => `<tr>
-              <td>${esc(t.turnNumber)}</td>
-              <td class="mono muted">${t.timestamp ? new Date(t.timestamp).toLocaleTimeString() : '-'}</td>
-              <td><span class="badge badge-${esc(t.classification)}">${esc(t.classification)}</span></td>
-              <td class="mono">${t.driftFromOriginal !== null ? t.driftFromOriginal.toFixed(3) : '-'}</td>
-              <td>${esc(t.toolCallCount)}</td>
-              <td>${t.toolCallsDenied > 0 ? `<span class="badge badge-deny">${esc(t.toolCallsDenied)}</span>` : '0'}</td>
-              <td>${t.goalReminderInjected ? '✓' : ''}</td>
-            </tr>`).join('');
-
-        // Active Intent Stack — interactive/learn only. The judge
-        // authorises tool calls against this set (any-goal-match). Each
-        // entry's `kind` tells you whether it was appended (queued /
-        // continuation / open-followup), adopted (confirmation), or a
-        // replacement (new-task). Resolved entries are dimmed — they're
-        // post-Stop and only kept until the next new-task push or TTL.
-        const activeIntents = data.activeIntents ?? [];
-        const turnState = data.turnState ?? null;
-        const stackHeader = activeIntents.length > 0 && turnState
-          ? `<div style="padding:6px 0 10px;color:var(--muted);font-size:0.85em">turn-state: <span class="badge">${esc(turnState)}</span> · stack size: ${activeIntents.length}</div>`
-          : '';
-        const kindBadge = (kind) => {
-          // Colour-code: replacements/new tasks in red-ish, additive in
-          // green, confirmations in blue, original in neutral.
-          const cls = kind === 'new-task' ? 'badge-deny'
-            : kind === 'queued' || kind === 'continuation' || kind === 'open-followup' ? 'badge-allow'
-            : kind === 'confirmation' ? 'badge'
-            : 'badge';
-          return `<span class="badge ${cls}">${esc(kind)}</span>`;
-        };
-        document.getElementById('detail-active-intents').innerHTML = activeIntents.length === 0
-          ? '<div class="empty">No active intent stack — autonomous-mode session, or no /intent yet recorded.</div>'
-          : stackHeader + activeIntents.map((e, i) => {
-              const ts = e.registeredAt ? new Date(e.registeredAt).toLocaleString() : '';
-              const opacity = e.resolved ? '0.6' : '1';
-              const resolvedTag = e.resolved ? '<span class="badge muted">resolved</span>' : '';
-              return `<div style="padding:8px 0;border-bottom:1px solid var(--border);opacity:${opacity}">
-                <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">
-                  <span class="mono muted" style="min-width:48px">#${i + 1}</span>
-                  ${kindBadge(e.kind)}
-                  ${resolvedTag}
-                  <span class="muted" style="margin-left:auto;font-size:0.85em">${esc(ts)}</span>
-                </div>
-                <div style="white-space:pre-wrap;word-break:break-word">${esc(e.prompt ?? '')}</div>
-              </div>`;
-            }).join('');
-
-        // Goals — every user prompt that registered an intent. The first one
-        // is the immutable original task; subsequent non-confirmation prompts
-        // update the rolling currentGoal that the judge scores against.
-        // Confirmation entries are rendered muted so real goal pivots stand out.
-        const intents = data.turnIntents ?? data.intentHistory ?? data.summary?.intents ?? [];
-        // Find the last non-confirmation entry — that's the live currentGoal.
-        let liveGoalTurn = -1;
-        for (let i = intents.length - 1; i >= 0; i--) {
-          if (!intents[i]?.isConfirmation) { liveGoalTurn = intents[i]?.turnNumber ?? i; break; }
-        }
-        document.getElementById('detail-intents').innerHTML = intents.length === 0
-          ? '<div class="empty">No goals recorded</div>'
-          : intents.map((intent, i) => {
-              if (typeof intent === 'string') {
-                return `<div style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge badge-allow">Turn ${esc(i)}</span> ${esc(intent)}</div>`;
-              }
-              const turnNum = intent.turnNumber ?? intent.turn ?? i;
-              const text = intent.prompt ?? intent.intent ?? '';
-              const isOriginal = turnNum === 0;
-              const isConfirmation = !!intent.isConfirmation;
-              const isLive = turnNum === liveGoalTurn && !isOriginal;
-              const ts = intent.timestamp ? new Date(intent.timestamp).toLocaleString() : '';
-              const tagBits = [];
-              if (isOriginal) tagBits.push('<span class="badge badge-allow">original</span>');
-              if (isLive) tagBits.push('<span class="badge badge-allow">current</span>');
-              if (isConfirmation) tagBits.push('<span class="badge muted">confirmation</span>');
-              const opacity = isConfirmation ? '0.55' : '1';
-              return `<div style="padding:8px 0;border-bottom:1px solid var(--border);opacity:${opacity}">
-                <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">
-                  <span class="mono muted" style="min-width:60px">Turn ${esc(turnNum)}</span>
-                  ${tagBits.join(' ')}
-                  <span class="muted" style="margin-left:auto;font-size:0.85em">${esc(ts)}</span>
-                </div>
-                <div style="white-space:pre-wrap;word-break:break-word">${esc(text)}</div>
-              </div>`;
-            }).join('');
-
-        // Files
-        const files = data.filesWritten ?? [];
-        document.getElementById('detail-files').innerHTML = files.length === 0
-          ? '<div class="empty">No files written</div>'
-          : files.map(f => `<div style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="mono">${esc(f.path)}</span> <span class="muted">(${esc(f.writeCount)}x)</span>${f.containsCanary ? ' <span class="badge badge-deny">CANARY</span>' : ''}</div>`).join('');
-
-        // Raw
-        document.getElementById('detail-raw').textContent = JSON.stringify(data, null, 2);
+        renderSessionDetailData(data, { preserveTableState: false });
 
         // Scroll to section if specified
         if (section) {
@@ -1600,11 +1689,17 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         const tsCell = ts
           ? `<span class="mono muted">${esc(new Date(ts).toLocaleString())}</span>`
           : '<span class="muted">-</span>';
+        // Phase 5: per-tool user-permission badge alongside the stage
+        // tag. Lives in the Decision cell to keep the row narrow.
+        const upm = t.userPermissionMatch ?? null;
+        const upmHtml = upm
+          ? ` <span class="badge ${upm.kind === 'deny' ? 'badge-deny' : 'badge-allow'}" title="user ${esc(upm.kind)}: ${esc(upm.rule)}">user-${esc(upm.kind)}</span>`
+          : '';
         return `<tr class="clickable-row" onclick="openToolDetail(${i})" title="Click for full details">
           <td>${esc(t.turn ?? t.turnNumber ?? '-')}</td>
           <td>${tsCell}</td>
           <td class="mono">${esc(t.tool)}</td>
-          <td><span class="badge badge-${esc(badgeCls)}">${esc(decision)}</span> ${t.stage ? `<span class="muted">${esc(t.stage)}</span>` : ''}</td>
+          <td><span class="badge badge-${esc(badgeCls)}">${esc(decision)}</span> ${t.stage ? `<span class="muted">${esc(t.stage)}</span>` : ''}${upmHtml}</td>
           <td class="mono">${t.similarity !== null && t.similarity !== undefined ? t.similarity.toFixed(3) : '-'}</td>
           <td class="mono muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(JSON.stringify(t.input ?? '').substring(0, 80))}</td>
         </tr>`;

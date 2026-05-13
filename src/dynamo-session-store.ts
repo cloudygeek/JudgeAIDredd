@@ -78,6 +78,7 @@ import type {
   EnvVarRecord,
   TurnMetrics,
   ImageBlock,
+  UserPermissionsLists,
 } from "./session-store.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isSensitiveEnvVar } from "./sensitive-env.js";
@@ -189,6 +190,7 @@ export class DynamoSessionStore implements SessionStore {
       lastUserPromptAt: 0,
       lastPreToolUseAt: 0,
       lastStopAt: 0,
+      userPermissions: null,
     };
   }
 
@@ -559,6 +561,8 @@ export class DynamoSessionStore implements SessionStore {
       lastUserPromptAt: meta?.lastUserPromptAt ?? 0,
       lastPreToolUseAt: meta?.lastPreToolUseAt ?? 0,
       lastStopAt: meta?.lastStopAt ?? 0,
+      userPermissions:
+        (meta?.userPermissions as SessionState["userPermissions"] | undefined) ?? null,
     };
 
     // Lazy migration trigger: if the legacy META blob is still
@@ -648,6 +652,20 @@ export class DynamoSessionStore implements SessionStore {
 
   async recordClaudeMdScan(sessionId: string, scan: ClaudeMdScanResult): Promise<void> {
     await this.updateMeta(sessionId, { claudeMdScan: scan });
+  }
+
+  async setUserPermissions(
+    sessionId: string,
+    lists: UserPermissionsLists,
+  ): Promise<void> {
+    await this.updateMeta(sessionId, { userPermissions: lists });
+  }
+
+  async getUserPermissions(
+    sessionId: string,
+  ): Promise<UserPermissionsLists | null> {
+    const meta = await this.getMeta(sessionId);
+    return (meta?.userPermissions as UserPermissionsLists | undefined) ?? null;
   }
 
   async getClaudeMdScan(sessionId: string): Promise<ClaudeMdScanResult | null> {

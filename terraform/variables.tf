@@ -120,6 +120,12 @@ variable "approvals_table_name" {
   default     = "jaid-approvals"
 }
 
+variable "user_permissions_table_name" {
+  description = "Name of the per-(user, project) user-permissions Dynamo table — holds the user's Claude Code allow/deny/ask lists uploaded by the hook."
+  type        = string
+  default     = "jaid-user-permissions"
+}
+
 variable "sse_kms_key_arn" {
   description = "Optional customer-managed KMS CMK for DynamoDB SSE. Empty string = use AWS-owned key."
   type        = string

@@ -106,6 +106,11 @@ import {
 } from "./approval-store.js";
 import { DynamoApprovalStore } from "./dynamo-approval-store.js";
 import { CachedApprovalStore } from "./cached-approval-store.js";
+import {
+  type UserPermissionsStore,
+  InMemoryUserPermissionsStore,
+} from "./user-permissions-store.js";
+import { DynamoUserPermissionsStore } from "./dynamo-user-permissions-store.js";
 import { pruneExpiredPendingApprovals } from "./pending-approvals.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
 import type { PromptVariant } from "./intent-judge.js";
@@ -370,6 +375,13 @@ export type FeedEntry = {
   classifierLatencyMs?: number;
   classifierOverridden?: boolean;
   classifierEmbeddingKind?: string;
+  /** Phase 4: which of the user's local permission rules matched this
+   *  tool call, if any. kind="deny" means the call was short-circuited
+   *  by the user's deny list (stage = "user-deny"); kind="allow" is a
+   *  pure annotation that doesn't change the verdict. Set on
+   *  type="tool" entries; absent when the user has no lists or no rule
+   *  matched. Drives the Phase 5 dashboard side-badge. */
+  userPermission?: { kind: "allow" | "deny"; rule: string };
 };
 
 export const feed: FeedEntry[] = [];
@@ -506,6 +518,39 @@ console.log(
     (STORE_BACKEND === "dynamo"
       ? ` (table=${DYNAMO_APPROVALS_TABLE_NAME}, region=${DYNAMO_REGION})`
       : ""),
+);
+
+// ---- user-permissions store ----------------------------------------------
+// Per-(user, project) snapshot of the user's local Claude Code allow/deny/
+// ask lists, uploaded by the hook. /intent does the cross-session lookup
+// against this; the session META gets a copy so /evaluate doesn't have to.
+
+export const DYNAMO_USER_PERMISSIONS_TABLE_NAME =
+  process.env.DYNAMO_USER_PERMISSIONS_TABLE_NAME ?? "jaid-user-permissions";
+
+export const userPermissions: UserPermissionsStore = STORE_BACKEND === "dynamo"
+  ? new DynamoUserPermissionsStore({
+      tableName: DYNAMO_USER_PERMISSIONS_TABLE_NAME,
+      region: DYNAMO_REGION,
+    })
+  : new InMemoryUserPermissionsStore();
+
+console.log(
+  `  [USERPERM] User-permissions store: ${STORE_BACKEND}` +
+    (STORE_BACKEND === "dynamo"
+      ? ` (table=${DYNAMO_USER_PERMISSIONS_TABLE_NAME}, region=${DYNAMO_REGION})`
+      : ""),
+);
+
+// Phase 6 rollout gate. When false (default), the hook can still upload
+// snapshots and the dashboard can still surface them, but the PreToolUse
+// pipeline does NOT consult them — user-deny short-circuit and user-allow
+// annotation are both skipped in handlers/evaluate.ts. Flip to "true"
+// once the upload path has soaked.
+export const USER_PERMISSIONS_ENFORCED =
+  (process.env.DREDD_USER_PERMISSIONS_ENABLED ?? "false").toLowerCase() === "true";
+console.log(
+  `  [USERPERM] Pipeline enforcement: ${USER_PERMISSIONS_ENFORCED ? "ON" : "OFF (rollout)"}`,
 );
 
 // Periodically purge expired pending-approval candidates (the 60s
@@ -838,6 +883,11 @@ export async function buildSessionLogShape(sessionId: string): Promise<Record<st
     envVars: await tracker.getEnvVars(sessionId),
     driftHistory,
     turnMetrics: summary.turnMetrics,
+    // Snapshot of the user's local Claude allow/deny/ask lists copied
+    // in from jaid-user-permissions at /intent time. Drives the Phase 5
+    // "User Permissions" section on the session-detail page. Null when
+    // the hook hasn't uploaded any settings for this session.
+    userPermissions: state.userPermissions ?? null,
     interceptorLog: interceptor.getLog(sessionId).map((r) => ({
       tool: r.tool,
       input: r.input,
@@ -846,6 +896,7 @@ export async function buildSessionLogShape(sessionId: string): Promise<Record<st
       similarity: r.similarity,
       reason: r.reason,
       evaluationMs: r.evaluationMs,
+      userPermissionMatch: r.userPermissionMatch,
     })),
   };
 }

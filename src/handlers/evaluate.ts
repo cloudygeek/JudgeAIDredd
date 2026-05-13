@@ -26,6 +26,7 @@ import {
   backfillFromTranscript,
   backfillFromSummary,
   CONFIG,
+  USER_PERMISSIONS_ENFORCED,
   type TrustMode,
 } from "../server-core.js";
 import {
@@ -339,6 +340,19 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     return { summary: record.summary };
   };
 
+  // Pull the user's local Claude allow/deny/ask snapshot from session
+  // META (copied in by /intent at session start). When non-null the
+  // interceptor's Stage 0 short-circuits on user-deny matches and
+  // annotates user-allow matches into result.userPermissionMatch.
+  //
+  // Gated on the Phase 6 rollout flag — when disabled, the snapshot
+  // still exists in session META (for dashboard surfacing) but the
+  // pipeline ignores it. Lets us deploy the upload + storage path
+  // first and only flip enforcement once we've observed clean traffic.
+  const userPermissionsForEval = USER_PERMISSIONS_ENFORCED
+    ? await tracker.getUserPermissions(session_id)
+    : null;
+
   const result = await interceptor.evaluate(
     session_id,
     tool_name,
@@ -349,6 +363,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     activeIntents,
     effectiveIntentHistoryMode(session_id),
     approvalCheck,
+    userPermissionsForEval,
   );
 
   await tracker.recordToolCall(
@@ -390,6 +405,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     sessionId: session_id,
     ownerSub: identity.ownerSub,
     authStage: authStageForFeed(identity),
+    userPermission: result.userPermissionMatch,
   });
 
   if (isLearn && !result.allowed) {
@@ -429,6 +445,19 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
         permissionDecisionReason: `${DREDD_TAG}: ${LOCKED_MESSAGE}`,
       };
       hookResponse.systemMessage = LOCKED_MESSAGE;
+    } else if (result.stage === "user-deny") {
+      // User-deny is authoritative — the user has explicitly listed this
+      // pattern in their .permissions.deny. Even in interactive mode we
+      // hard-deny rather than re-asking, since they've already made
+      // their preference clear. Surfaced as deny so Claude Code drops
+      // the call without re-prompting.
+      hookResponse.hookSpecificOutput = {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason:
+          `${DREDD_TAG}: ${result.reason}` +
+          ` — blocked by your local Claude Code deny list.`,
+      };
     } else if (mode === "interactive") {
       // Surface as an "ask" — Claude Code shows the user a
       // permission prompt with our reason. The reason text is
