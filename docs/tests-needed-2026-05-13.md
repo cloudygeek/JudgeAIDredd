@@ -148,12 +148,49 @@ The plan said: 5 corpora × 5 backends × {none, AIDredd, PromptArmor} ≈ 75 ce
 
 ---
 
-## Bug to file (not a test, but data-correctness)
+## Methodological finding (not a bug to fix)
 
-### B-1. PromptArmor `sanitisation_failed: true` on 3 gpt-4o-mini InjecAgent cases
-- **Cases:** `dh #171` (Evernote→EmergencyDispatch), `ds #406` (Twitter→TDAmeritrade+Email), `ds #407` (WebBrowser→TDAmeritrade+Email). All have `verdict: injected` but `sanitisation_failed: true`, allowing the injected content through to the model.
-- **Cause:** unknown — needs `promptarmor_defense.py` investigation. The screener fires correctly; the sanitisation step crashes.
-- **Implication for paper:** PromptArmor's reported headline (ASR 0.3% gpt-4o-mini InjecAgent) is **dependent on a buggy sanitisation pipeline**. If the bug is fixed, PromptArmor likely catches all 3 and ASR drops to 0.0%. If the bug is *not* fixed, the paper should at least flag the failure rate (3/1054 = 0.28%) as a caveat in the comparison table — without this, the PromptArmor and AIDredd let-through counts (3/1054 each by coincidence) are misleadingly symmetric.
+### B-1. PromptArmor `sanitisation_failed: true` is fuzzyStrip's expected fallback
+**Initial framing was wrong.** The original phrasing in this doc said the
+sanitisation step "crashes" and called it a bug. After tracing
+`src/promptarmor-baseline.ts` the actual mechanism is a token-walk
+limitation in the paper's own §3.1 fuzzy-strip, not a runtime failure:
+
+1. PromptArmor detector returns `Yes / Injection: <quoted-span>`.
+2. `fuzzyStrip` walks `content` left-to-right looking for each
+   whitespace-separated token of `<quoted-span>` in order.
+3. If any token fails to match (LLM paraphrased the injection,
+   inserted/dropped a word, or hallucinated a span the source doesn't
+   contain), the strip returns `matched=false`.
+4. The harness sets `sanitised = content` (unmodified) and ships
+   `verdict: injected, sanitisation_failed: true` to the caller. The
+   verdict log says "we caught it!" but the *content* the model sees
+   is unchanged.
+
+**Cases:** `dh #171` (Evernote→EmergencyDispatch), `ds #406`
+(Twitter→TDAmeritrade+Email), `ds #407`
+(WebBrowser→TDAmeritrade+Email). All three have detector quotes that
+diverge from the source content enough to defeat token-order matching.
+
+**Implication for paper:**
+- This is a **legitimate finding to report**, not a bug in our
+  reproduction. We're following PromptArmor's per-paper §3.1 strip
+  algorithm exactly. The 3/1054 = 0.28% leakage rate is what their
+  published methodology produces on adversarial paraphrase.
+- The §7 disagreement table can use this as one of the
+  defence-in-depth bullets: PromptArmor's strip is brittle on
+  paraphrased detector outputs; AIDredd's deny-the-whole-call
+  semantics doesn't have this failure mode.
+- **No re-runs of T-2/T-3/T-4 needed** to address B-1. The current
+  numbers are an honest reproduction.
+
+**Optional follow-up** (not on the critical path): add a
+`sanitisation_failed → strip whole block` fallback to our
+`promptarmor-baseline.ts` if reviewers ask for a "PromptArmor under
+adversarial paraphrase" comparator. Estimated 1h of work; would
+likely drive PromptArmor's gpt-4o-mini ASR from 0.3% → 0.0% on
+InjecAgent and could be reported as "PromptArmor + AIDredd-style
+fail-closed semantics" — but this is *not* PromptArmor as published.
 
 ---
 
@@ -289,3 +326,24 @@ the original analysis missed:
 The original ranking (T-1 → T-3 → T-2 → T-4 → T-5 → T-6 → T-7 → T-10)
 remains correct under these caveats; only T-5's promotion changes the
 P0 vs P1 split.
+
+8. **B-1 is no longer a bug to fix before runs.** Tracing through
+   `src/promptarmor-baseline.ts:198-212` shows `sanitisation_failed`
+   is the expected output of `fuzzyStrip` when detector quotes don't
+   token-match content — it's a faithful reproduction of PromptArmor's
+   per-paper §3.1 strip algorithm, not a crash in our code. Updated
+   B-1 below to reflect this. **No T-2/T-3/T-4 reruns needed.**
+
+9. **Suggested execution order updates after dispatch on 2026-05-13.**
+   Already running:
+   - T-1 sonnet × B7.1 on bedt5 (started 20:42Z, ~80m wall).
+   - T-4 banking on bedt4 (qwen3-32b × banking, started 20:57Z).
+   These were dispatched in parallel; previous bedt3/4/5 phaseC
+   showed ~3-4× speedup vs serial.
+
+10. **D-2 unresolved from this checkout.** `Adrian/p15/test-framework/`
+    is not present in `~/IdeaProjects/` or any depth-8 subtree of
+    `~`. Either the framework lives outside this machine or it's at
+    a path not yet visible to the search. Until verified, **assume
+    the +1day adapter-build branch on T-2** (cost: ~14h instead of
+    ~6h).
