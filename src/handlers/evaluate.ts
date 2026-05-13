@@ -157,7 +157,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
 
     if (!registeredSessions.has(session_id)) {
       const projectRoot = await tracker.getProjectRoot(session_id);
-      const policyOnly = (await import("./tool-policy.js")).evaluateToolPolicy(tool_name, tool_input ?? {}, projectRoot);
+      const policyOnly = (await import("../tool-policy.js")).evaluateToolPolicy(tool_name, tool_input ?? {}, projectRoot);
       const noGoalDetail = transcriptContent
         ? "backfill from transcript content failed"
         : transcript_path

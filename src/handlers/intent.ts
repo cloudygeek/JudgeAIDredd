@@ -302,7 +302,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
 
   // Hoisted so the feed entry below can include the classification —
   // null in autonomous mode (single-goal, no stack semantics).
-  let stackUpdate: import("./server-core.js").IntentStackUpdateResult | null = null;
+  let stackUpdate: import("../server-core.js").IntentStackUpdateResult | null = null;
   if (mode === "interactive" || mode === "learn") {
     // Stack-aware intent update. The stack absorbs queued prompts (the
     // LLM combines them at the next generation boundary), adopts the
