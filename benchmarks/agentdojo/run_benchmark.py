@@ -567,14 +567,37 @@ def main():
 
     print(f"\n  Total time: {elapsed:.1f}s")
 
-    # Save summary JSON
-    summary_path = logdir / f"summary-{model_id}-{defense or 'none'}-{attack_name or 'none'}.json"
+    # Save summary JSON.
+    #
+    # The cell label has to disambiguate `defense=none + promptarmor`
+    # from plain `defense=none`, otherwise the second cell silently
+    # overwrites the first when an orchestrator runs all three of
+    # {none, B7.1, promptarmor} into the same logdir. (We hit exactly
+    # this on the phaseC head-to-head 2026-05-12 — the named JSON for
+    # the `none` cell was clobbered by the `promptarmor` run, leaving
+    # only per-cell `.log` files for the headline numbers.)
+    cell = defense or "none"
+    if args.promptarmor_backend:
+        # Mirror the orchestrator's cell vocabulary (none|B7|B7.1|promptarmor):
+        # presence of a promptarmor backend is the signal, regardless of
+        # whether the agent's system prompt is also hardened.
+        cell = "promptarmor" if cell == "none" else f"{cell}+promptarmor"
+    summary_path = logdir / f"summary-{model_id}-{cell}-{attack_name or 'none'}.json"
     with open(summary_path, "w") as f:
         json.dump({
             "agentdojo_commit": AGENTDOJO_COMMIT,
             "benchmark_version": BENCHMARK_VERSION,
             "model": model_id,
+            "cell": cell,
             "defense": defense or "none",
+            "promptarmor": (
+                {
+                    "backend": args.promptarmor_backend,
+                    "model": args.promptarmor_model,
+                }
+                if args.promptarmor_backend
+                else None
+            ),
             "attack": attack_name or "none",
             "suites": all_summaries,
             "elapsed_seconds": elapsed,
