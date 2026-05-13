@@ -334,6 +334,133 @@ def _plot(series, x_key_label, title, out_path, log_x=False):
     print(f"  Saved: {out_path}")
 
 
+def _plot_faceted_by_model(series, x_key_label, title, out_path):
+    """Render a faceted Pareto plot, one subplot per model.
+
+    The single-panel version overlapped the per-point ``prompt v1`` /
+    ``prompt v2`` labels into illegible piles. Here, baseline points keep
+    their effort-level labels (one per point) but prompt v1 / prompt v2
+    points get their identity from the marker shape and the shared
+    legend, not from per-point text. The Pareto frontier is computed
+    once over the union of all points and drawn on every subplot so that
+    each model's relationship to the overall envelope is visible.
+    """
+    models_in_order = ["Claude Haiku 4.5", "Claude Sonnet 4.6", "Claude Opus 4.7"]
+    models = [m for m in models_in_order if m in series]
+    n = len(models)
+    if n == 0:
+        return
+
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 5.5), sharey=True)
+    if n == 1:
+        axes = [axes]
+    fig.patch.set_facecolor("white")
+
+    all_points_global = []
+    for model in series:
+        for prompt, pts in series[model].items():
+            for x, y, _lo, _hi, _eff in pts:
+                all_points_global.append((x, y))
+
+    frontier_idx = compute_pareto_frontier(all_points_global)
+    frontier_pts = sorted([all_points_global[i] for i in frontier_idx],
+                          key=lambda p: p[0])
+
+    if all_points_global:
+        x_min = min(p[0] for p in all_points_global)
+        x_max = max(p[0] for p in all_points_global)
+        x_pad = max((x_max - x_min) * 0.08, 50)
+        x_lo, x_hi = x_min - x_pad, x_max + x_pad
+    else:
+        x_lo, x_hi = 0, 3000
+
+    for ax, model in zip(axes, models):
+        ax.set_facecolor("white")
+        ax.grid(True, alpha=0.3, linestyle="--")
+        color = MODEL_COLORS.get(model, "#333333")
+
+        if len(frontier_pts) >= 2:
+            fx = [p[0] for p in frontier_pts]
+            fy = [p[1] for p in frontier_pts]
+            ax.plot(fx, fy, color="#999999", linestyle=":", linewidth=2,
+                    alpha=0.6, zorder=1)
+            ax.scatter(fx, fy, facecolors="none", edgecolors="#999999",
+                       s=200, linewidths=1.2, zorder=1)
+
+        for prompt in sorted(series[model].keys()):
+            pts = series[model][prompt]
+            if not pts:
+                continue
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            ci_los = [p[2] for p in pts]
+            ci_his = [p[3] for p in pts]
+            efforts = [p[4] for p in pts]
+            yerr_lo = [y - lo for y, lo in zip(ys, ci_los)]
+            yerr_hi = [hi - y for y, hi in zip(ys, ci_his)]
+
+            is_b71 = prompt == "B7.1-hardened"
+            is_b7 = prompt == "B7-hardened"
+            marker = "D" if is_b71 else ("*" if is_b7 else "o")
+            ms = 11 if is_b71 else (13 if is_b7 else 8)
+            linestyle = "-." if is_b71 else ("--" if is_b7 else "-")
+
+            if len(xs) > 1:
+                ax.plot(xs, ys, color=color, linestyle=linestyle,
+                        linewidth=1.5, alpha=0.6, zorder=2)
+            ax.errorbar(xs, ys, yerr=[yerr_lo, yerr_hi], fmt="none",
+                        ecolor=color, elinewidth=1.0, capsize=3,
+                        alpha=0.5, zorder=3)
+            ax.scatter(xs, ys, c=color, marker=marker, s=ms ** 2,
+                       edgecolors="white", linewidths=0.5, zorder=4)
+
+            if not (is_b7 or is_b71):
+                for x, y, effort in zip(xs, ys, efforts):
+                    txt = ax.annotate(
+                        effort, (x, y),
+                        textcoords="offset points", xytext=(6, 6),
+                        fontsize=8, color=color, fontweight="bold",
+                        zorder=5,
+                    )
+                    txt.set_path_effects([
+                        pe.withStroke(linewidth=2, foreground="white"),
+                    ])
+
+        ax.set_title(model, fontsize=12, fontweight="bold")
+        ax.set_xlim(x_lo, x_hi)
+        ax.set_ylim(-2, 105)
+        ax.set_xlabel(x_key_label, fontsize=10)
+
+    axes[0].set_ylabel("Adversarial Catch Rate (%)", fontsize=11)
+
+    proxy_handles = [
+        plt.Line2D([0], [0], marker="o", linestyle="-", color="#666666",
+                   markersize=8, alpha=0.7, markerfacecolor="#666666",
+                   markeredgecolor="white"),
+        plt.Line2D([0], [0], marker="*", linestyle="--", color="#666666",
+                   markersize=12, alpha=0.7, markerfacecolor="#666666",
+                   markeredgecolor="white"),
+        plt.Line2D([0], [0], marker="D", linestyle="-.", color="#666666",
+                   markersize=10, alpha=0.7, markerfacecolor="#666666",
+                   markeredgecolor="white"),
+        plt.Line2D([0], [0], color="#999999", linestyle=":", linewidth=2,
+                   alpha=0.6),
+    ]
+    proxy_labels = [
+        "baseline (effort levels labelled)",
+        "prompt v1",
+        "prompt v2",
+        "Pareto frontier",
+    ]
+    fig.legend(proxy_handles, proxy_labels, loc="lower center", ncol=4,
+               fontsize=10, framealpha=0.9, bbox_to_anchor=(0.5, -0.02))
+    fig.suptitle(title, fontsize=14, fontweight="bold")
+    fig.tight_layout(rect=[0, 0.06, 1, 0.95])
+    fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"  Saved: {out_path}")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -369,9 +496,9 @@ def main():
               f"catch={rec['catch_rate']*100:5.1f}%  tokens={rec['mean_total']:.0f}  "
               f"n={rec['total']}")
 
-    # --- Plot 1: Total tokens vs catch rate ---
+    # --- Plot 1: Total tokens vs catch rate (faceted by model) ---
     series1 = _build_model_series(groups, "mean_total")
-    _plot(series1,
+    _plot_faceted_by_model(series1,
           x_key_label="Mean Total Tokens per Call",
           title="Token Budget vs Adversarial Catch Rate",
           out_path=os.path.join(docs_dir, "pareto-tokens-vs-catch.png"))
