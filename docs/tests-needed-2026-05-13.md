@@ -227,3 +227,65 @@ To avoid scope creep:
 - Phase B/C runbooks: `docs/phase-b-results-2026-05-11.md`, `docs/phase-c-results-2026-05-12.md`.
 
 This document is the input to a "phase D" planning conversation. It does not commit to any of the listed runs; it just enumerates what's needed to make the plan's promises fully match what's on disk.
+
+---
+
+## Edits / caveats (2026-05-13, post-review)
+
+Caveats applied after a second pass on the doc. Substantive corrections
+the original analysis missed:
+
+1. **T-1 framing fix.** The doc says *"sonnet × none is already 0.0%; AIDredd
+   cannot make it worse"*. The missing cell is sonnet × **B7.1** (a defended
+   cell, AIDredd-on), not a baseline comparator. Expected ~0% is right; the
+   reasoning sentence is muddled. Treat T-1 as confirming AIDredd ≤ none (the
+   "no regression" sanity check), not as a "can't make it worse" tautology.
+
+2. **D-2 (T3e PromptArmor adapter) is a hard blocker for T-2.** The
+   "1 day to build" estimate is contingent on whether
+   `Adrian/p15/test-framework/src/promptarmor-baseline.ts` already exists.
+   Verify *before* costing T-2 — a 30-second `ls` of that directory pins
+   the estimate.
+
+3. **T-3 has a hidden second branch.** `benchmarks/mt_agentrisk/runs/`
+   being empty while the paper cites MT-AgentRisk numbers means the
+   AIDredd baseline data may not be reproducibly stored. If we can't
+   locate the historical AIDredd MT-AgentRisk runs, **both arms** need
+   rerunning, doubling T-3's cost from ~6h → ~12h and ~$25 → ~$50. The
+   inventory step is non-negotiable; budget the worst case.
+
+4. **T-5 (composite PromptArmor ∥ AIDredd) belongs in P0, not P1.** The
+   defence-in-depth claim is one of the paper's distinctive contributions
+   vs PromptArmor's standalone framing. ~2h / ~$7 is low enough that
+   demoting it to "recommended, not strictly required" reads as budget
+   dressing. Promote to P0; it gives the paper the orthogonality
+   evidence the §7 claim leans on.
+
+5. **Wall-time vs serial-time.** Estimates in the table are serial
+   compute, not wall-clock. The phaseC-2026-05-12 head-to-head ran
+   three independent runs concurrently on bedt3/4/5; the same dispatch
+   pattern collapses 25–33h serial → ~6–10h wall if T-2/T-3/T-4 are
+   parallelised across containers. Plan accordingly when scheduling.
+
+6. **All new runs must be on v0.1.363+.** Two bugs landed in the
+   v0.1.360 → 0.1.363 sequence that affect any benchmark run with a
+   long transcript or many intent entries:
+   - DynamoDB META 400KB ceiling (fixed by per-row INTENT# split,
+     v0.1.360).
+   - macOS ARG_MAX truncation of UserPromptSubmit body for transcripts
+     >1MB (fixed by `transcript_summary` envelope + tempfile POST,
+     v0.1.362).
+   Pre-v0.1.363 runs of T-3 / T-4 / T-5 risk silent state loss on
+   sessions that exceed either threshold. **Confirm the deployed hook
+   image is v0.1.363+ before kicking off P0 runs.**
+
+7. **Total budget likely under-stated in the table.** T-3's worst-case
+   branch (rerun both arms) and T-2's adapter-build branch both add
+   meaningful time. Realistic ceiling for P0+P1 with worst-case
+   contingencies: ~40h serial / ~$130 spend, vs the doc's 25–33h /
+   ~$100. Still well under the $250 plan cap, but worth flagging
+   before sign-off.
+
+The original ranking (T-1 → T-3 → T-2 → T-4 → T-5 → T-6 → T-7 → T-10)
+remains correct under these caveats; only T-5's promotion changes the
+P0 vs P1 split.
