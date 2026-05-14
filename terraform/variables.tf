@@ -135,6 +135,18 @@ variable "user_permissions_enforced" {
   default     = true
 }
 
+variable "pattern_learning_enabled" {
+  description = "Phase 8b umbrella flag. When true, /evaluate queries jaid-approvals for prior approvals in scope on every call, embeds the incoming tool call, and folds matches >= SOFT_THRESHOLD (0.6) into the judge prompt as evidence of legitimate intent. Costs one Dynamo Query + one Bedrock embed per /evaluate when enabled. When false, the umbrella is off and Phase 8 is a no-op. Default false — flip after soak."
+  type        = bool
+  default     = false
+}
+
+variable "pattern_learning_hard_enabled" {
+  description = "Phase 8b hard-mode flag. Only meaningful when pattern_learning_enabled is true. When true, >=HARD_MIN_COUNT (2) matches at HARD_THRESHOLD (0.85) short-circuit to stage=pattern-trust-allow BEFORE Stage 1 policy — overrides Dredd's hard denies (rm -rf etc) by design. Default false — observe the soft signal in production first, then flip."
+  type        = bool
+  default     = false
+}
+
 variable "sse_kms_key_arn" {
   description = "Optional customer-managed KMS CMK for DynamoDB SSE. Empty string = use AWS-owned key."
   type        = string

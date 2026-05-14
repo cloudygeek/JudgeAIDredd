@@ -165,6 +165,8 @@ docker run -p 3000:3000 \
 | `DYNAMO_API_KEYS_TABLE_NAME` | `jaid-api-keys` | DynamoDB table for hook API keys |
 | `DYNAMO_USER_PERMISSIONS_TABLE_NAME` | `jaid-user-permissions` | DynamoDB table for per-(user, project) Claude Code allow/deny/ask lists uploaded by the hook |
 | `DREDD_USER_PERMISSIONS_ENABLED` | `false` | Phase 6 rollout flag — when `true`, the PreToolUse pipeline reads the session's user-permissions snapshot and enforces user-deny / annotates user-allow. When `false`, uploads + storage + dashboard surfacing still work but the pipeline ignores the lists. Flip to `true` once the upload path has soaked |
+| `DREDD_PATTERN_LEARNING_ENABLED` | `false` | Phase 8b umbrella flag. When `true`, `/evaluate` does one `listForScope` Query on `jaid-approvals` + one Bedrock embed per call, and folds matches with cosine ≥ 0.6 into the judge prompt as `<prior_approvals>` evidence of legitimate intent. Verdicts unchanged in soft-only mode |
+| `DREDD_PATTERN_LEARNING_HARD_ENABLED` | `false` | Phase 8b hard-mode flag. Only consulted when the umbrella is `true`. When `true`, ≥2 matches with cosine ≥ 0.85 short-circuit the pipeline to `stage=pattern-trust-allow` BEFORE Stage 1 policy — overrides Dredd's hard denies (`rm -rf`, dangerous combinations) by design. Flip only after observing soft-mode telemetry |
 | `DREDD_MANAGED_ALLOW_SCOPE` | `conservative` | **Hook-side env var.** Picks which patterns Dredd splices into the project's `.claude/settings.local.json` on every UserPromptSubmit so Claude Code stops re-prompting for tool calls Dredd already authorises. `conservative` = ~19 read-only / inspection patterns (Read, Glob, Grep, awk/sed/grep/ls/cat/head/tail/wc/echo/pwd/file/date/jq/find/rg/node --check). `off` = never splice anything |
 | `DREDD_MANAGED_ALLOW_RULES` | (unset) | **Hook-side env var.** Optional operator override — a raw JSON array that replaces the scope-driven defaults. e.g. `'["Bash(awk:*)","Read"]'` |
 | `DREDD_MANAGED_DIR` | `$HOME/.claude/dredd/managed` | **Hook-side env var.** Where Dredd writes per-(project, session) sidecars tracking which allow rules it has injected. Also holds `manage.log` for audit |
@@ -346,6 +348,31 @@ Scope is selected via `DREDD_MANAGED_ALLOW_SCOPE`:
 
 Caveat: a user who manually duplicates a Dredd-managed rule into their own `settings.local.json` will see it drop from the snapshot. Their `~/.claude/settings.json` and project-shared `$CWD/.claude/settings.json` entries are unaffected.
 
+### 3. Approval pattern-trust (Phase 8)
+
+Layers on top of the existing approval-learning (`src/approval-store.ts`, `jaid-approvals`). Every PostToolUse that promotes a pending approval to a durable record now also stores an **embedding** of `JSON({tool, fingerprintJson})` alongside the existing `goalEmbedding` (Phase 8a, `src/handlers/track.ts`). Best-effort: a Bedrock blip stores `[]` and the approval still lands.
+
+At `/evaluate` time (Phase 8b), with `DREDD_PATTERN_LEARNING_ENABLED=true`:
+
+1. **Stage 0.5: pattern-trust** runs after user-deny, before Stage 1 policy. `approvals.listForScope({ownerSub, projectRoot})` returns every live approval in scope; the interceptor embeds the current call once and cosine-similar-compares against each.
+2. **Soft path** (always when umbrella on): top 5 matches with cosine ≥ `SOFT_THRESHOLD` (0.6) get rendered into `<prior_approvals>` in the judge's system prompt as evidence of legitimate intent. The judge still decides — soft context is one signal among several.
+3. **Hard path** (`DREDD_PATTERN_LEARNING_HARD_ENABLED=true`): ≥ `HARD_MIN_COUNT` (2) matches at cosine ≥ `HARD_THRESHOLD` (0.85) short-circuit to `stage="pattern-trust-allow"` — **overrides Dredd's hard denies** (`DENIED_BASH_PATTERNS`, dangerous combinations). By design: a user who has consented to `rm -rf` twice in this project is trusted to do it again.
+
+What still wins over pattern-trust:
+
+| Signal | Beats pattern-trust? |
+|---|---|
+| `userPermissions.deny` rule match | Yes — Stage 0 user-deny fires first |
+| Hijack-locked session (autonomous mode) | Yes — handled in the handler before interceptor runs |
+| Hard path disabled | Yes — only soft signal flows |
+| Empty `priorApprovals` (umbrella off OR no rows) | Yes — Stage 0.5 is a no-op |
+| Intent-drift backstop on the existing fingerprint-exact path | Approval lookup excludes drift-stale rows — applies to the pattern-trust lookup too via `listForScope` |
+
+Thresholds (constants in `pretool-interceptor.ts` for now; env-tunable later when telemetry warrants):
+- `SOFT_THRESHOLD = 0.6`, `HARD_THRESHOLD = 0.85`, `HARD_MIN_COUNT = 2`, `JUDGE_CONTEXT_LIMIT = 5`.
+
+`InterceptionResult.patternTrust` carries `{ hard, matched, topSim, topSummary }`; the dashboard renders a `trust×N` chip on the live feed + Tool Calls table (Phase 8c). The session-detail JSON's `interceptorLog` includes the same field per call so historical analysis is straightforward.
+
 ### Test surface
 
 ```
@@ -357,6 +384,8 @@ hooks/tests/test_phase7d_cleanup_cli.sh             # hooks/dredd-cleanup.sh CLI
 hooks/tests/test_phase2b_intent.ts                  # server store + tracker round-trip           (17, npx tsx)
 hooks/tests/test_phase3_matcher.ts                  # pattern matcher                              (46, npx tsx)
 hooks/tests/test_phase4_pipeline.ts                 # interceptor integration                      (17, npx tsx)
+hooks/tests/test_phase8a_approval_embedding.ts      # ApprovalRecord.inputEmbedding round-trip      (8, npx tsx)
+hooks/tests/test_phase8b_pattern_trust.ts           # Stage 0.5 against stub /api/embed           (10, npx tsx)
 ```
 
 All green at last full run. The bash suites are self-contained (mktemp sandboxes + python stub HTTP server); the `.ts` ones run via `npx tsx`.

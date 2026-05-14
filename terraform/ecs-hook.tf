@@ -37,6 +37,8 @@ resource "aws_ecs_task_definition" "hook" {
       { name = "DYNAMO_API_KEYS_TABLE_NAME", value = aws_dynamodb_table.jaid_api_keys.name },
       { name = "DYNAMO_USER_PERMISSIONS_TABLE_NAME", value = aws_dynamodb_table.jaid_user_permissions.name },
       { name = "DREDD_USER_PERMISSIONS_ENABLED", value = tostring(var.user_permissions_enforced) },
+      { name = "DREDD_PATTERN_LEARNING_ENABLED", value = tostring(var.pattern_learning_enabled) },
+      { name = "DREDD_PATTERN_LEARNING_HARD_ENABLED", value = tostring(var.pattern_learning_hard_enabled) },
       { name = "DREDD_AUTH_MODE", value = var.dredd_auth_mode },
       { name = "DREDD_DASHBOARD_ORIGIN", value = "https://${var.dashboard_host}" },
     ]
