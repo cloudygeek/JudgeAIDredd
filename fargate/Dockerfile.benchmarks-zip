@@ -1,0 +1,86 @@
+# Unified benchmark runner image — bakes BOTH the AgentDojo
+# (`promptarmor-bedrock`) and InjecAgent runners into one image so a
+# container can be repurposed across either workload via the /run
+# body's `test` field. Replaces the previous role-specific
+# Dockerfile.injecagent-zip / Dockerfile.promptarmor-bedrock-zip
+# split (which forced bedt5 to be InjecAgent-only and bedt3/4 to be
+# AgentDojo-only).
+#
+# Flat layout for the AI Sandbox CodeBuild pipeline. Build context
+# is the unzipped contents of judge-ai-dredd-benchmarks.zip:
+#   /Dockerfile
+#   /docker-entrypoint-injecagent.sh
+#   /docker-entrypoint-promptarmor-bedrock.sh
+#   /server.js                   (was fargate/api-server.cjs)
+#   /package.json
+#   /benchmarks/
+#   /python-wheels/
+
+FROM 891377407345.dkr.ecr.eu-west-1.amazonaws.com/cko-pull-through/docker-hub/library/python:3.11-slim-bookworm
+
+WORKDIR /app
+
+# ── System packages ────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python wheels (vendored) ───────────────────────────────────────────────
+# Same wheel set both runners rely on (agentdojo + boto3 + requests +
+# openai). Install with --no-deps so closure conflicts (e.g. cohere
+# wants pydantic-core<2.44 but we ship 2.46 by design) don't trip.
+COPY python-wheels/ /tmp/python-wheels/
+RUN pip3 install --no-index --find-links /tmp/python-wheels/ \
+        --no-deps /tmp/python-wheels/*.whl \
+    && python3 -c "from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline; print('agentdojo import OK')" \
+    && python3 -c "import boto3, requests; print('boto3', boto3.__version__, 'requests', requests.__version__)" \
+    && rm -rf /tmp/python-wheels/
+
+# ── Application source ──────────────────────────────────────────────────────
+COPY benchmarks/ ./benchmarks/
+COPY package.json ./package.json
+
+# Smoke-import the InjecAgent package too (vendored copy + inlined
+# ngrams replacement), so both runner toolchains are validated at
+# build time.
+RUN python3 -c "import sys; sys.path.insert(0, 'benchmarks'); \
+    from injecagent.utils import get_tool_dict; \
+    from injecagent.output_parsing import evaluate_output_prompted; \
+    from injecagent.prompts.agent_prompts import PROMPT_DICT; \
+    td = get_tool_dict(); \
+    print(f'InjecAgent: {len(td)} tools, prompts={list(PROMPT_DICT.keys())}')"
+
+# ── Build provenance ────────────────────────────────────────────────────────
+ARG GIT_COMMIT=unknown
+ARG GIT_DIRTY=false
+ENV GIT_COMMIT=${GIT_COMMIT}
+ENV GIT_DIRTY=${GIT_DIRTY}
+
+# No TEST_NUM default — the /run body's `test` field picks the
+# entrypoint each time. server.js's ENTRYPOINTS map handles
+# dispatching `injecagent` vs `promptarmor-bedrock` by filename.
+ENV DREDD_URL="https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal" \
+    AWS_REGION="eu-west-2" \
+    AGENTDOJO_LOGDIR="/app/runs" \
+    PYTHONUNBUFFERED=1
+
+RUN mkdir -p /app/runs
+
+# ── Entrypoints (BOTH baked in) ─────────────────────────────────────────────
+COPY docker-entrypoint-injecagent.sh /docker-entrypoint-injecagent.sh
+COPY docker-entrypoint-promptarmor-bedrock.sh /docker-entrypoint-promptarmor-bedrock.sh
+RUN chmod +x /docker-entrypoint-injecagent.sh /docker-entrypoint-promptarmor-bedrock.sh
+
+# server.js is the renamed api-server.cjs.
+COPY server.js /app/server.js
+
+# Non-root user.
+RUN useradd -m -s /bin/bash dredd \
+    && chown -R dredd:dredd /app \
+                            /docker-entrypoint-injecagent.sh \
+                            /docker-entrypoint-promptarmor-bedrock.sh
+USER dredd
+
+EXPOSE 3000
+
+CMD ["node", "/app/server.js"]

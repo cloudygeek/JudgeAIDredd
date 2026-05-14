@@ -576,13 +576,23 @@ def main():
     # this on the phaseC head-to-head 2026-05-12 — the named JSON for
     # the `none` cell was clobbered by the `promptarmor` run, leaving
     # only per-cell `.log` files for the headline numbers.)
+    #
+    # Suite slug is also part of the filename: the orchestrator
+    # currently spawns one Python invocation per (model × defence ×
+    # attack × suite) cell with `--suite <one>`, so every cell
+    # writes its own JSON. Without the suite slug, slack and travel
+    # runs sharing a (model, cell, attack) triple would clobber each
+    # other (we hit this on phase-D 2026-05-13). When the script is
+    # invoked with multiple suites (--all-suites or `--suite a,b`)
+    # the slug is the joined list so a single JSON covers them all.
     cell = defense or "none"
     if args.promptarmor_backend:
         # Mirror the orchestrator's cell vocabulary (none|B7|B7.1|promptarmor):
         # presence of a promptarmor backend is the signal, regardless of
         # whether the agent's system prompt is also hardened.
         cell = "promptarmor" if cell == "none" else f"{cell}+promptarmor"
-    summary_path = logdir / f"summary-{model_id}-{cell}-{attack_name or 'none'}.json"
+    suite_slug = "+".join(suites) if len(suites) > 1 else suites[0]
+    summary_path = logdir / f"summary-{model_id}-{cell}-{attack_name or 'none'}-{suite_slug}.json"
     with open(summary_path, "w") as f:
         json.dump({
             "agentdojo_commit": AGENTDOJO_COMMIT,
