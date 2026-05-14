@@ -2,13 +2,15 @@
 # build-benchmarks-zip.sh — build judge-ai-dredd-benchmarks.zip
 #
 # Unified benchmark runner zip. The image baked from this zip
-# supports BOTH the AgentDojo (`promptarmor-bedrock`) and InjecAgent
-# runners — bedt3/4/5 can be repurposed across either workload via
-# the /run body's `test` field. Replaces the previous role-specific
-# Dockerfile.injecagent-zip / Dockerfile.promptarmor-bedrock-zip
+# supports the AgentDojo (`promptarmor-bedrock`), InjecAgent, and
+# MT-AgentRisk runners — bedt3/4/5 can be repurposed across any of
+# those workloads via the /run body's `test` field. Replaces the
+# previous role-specific Dockerfile.{injecagent,promptarmor-bedrock}-zip
 # split.
 #
-# Output: $PROJECT_ROOT/judge-ai-dredd-benchmarks.zip (~56 MB).
+# Output: $PROJECT_ROOT/judge-ai-dredd-benchmarks.zip (~120 MB —
+# bigger than the two-runner version because it bakes in the
+# 59 MB MT-AgentRisk dataset).
 # Upload via the AI Sandbox UI; CodeBuild builds + pushes.
 #
 # Layout (flat — every path is at the zip root):
@@ -16,8 +18,10 @@
 #   /server.js                                        (renamed api-server.cjs)
 #   /docker-entrypoint-injecagent.sh
 #   /docker-entrypoint-promptarmor-bedrock.sh
+#   /docker-entrypoint-mt-agentrisk.sh
 #   /package.json
-#   /benchmarks/{agentdojo,injecagent,...}/
+#   /benchmarks/{agentdojo,injecagent,mt_agentrisk,...}/
+#   /datasets/mt-agentrisk/                           (~59 MB)
 #   /python-wheels/                                   (~49 MB)
 
 set -euo pipefail
@@ -33,16 +37,24 @@ echo "[build] target:  $ZIP_PATH"
 # Always blow the old zip away — zip appends rather than replaces.
 rm -f "$ZIP_PATH"
 
-# Bulk content shared between both runners.
+# Bulk content shared across all three runners.
 cp -r "$PROJECT_ROOT/python-wheels" "$STAGING/python-wheels"
 cp -r "$PROJECT_ROOT/benchmarks"    "$STAGING/benchmarks"
 cp    "$PROJECT_ROOT/package.json"  "$STAGING/package.json"
 
-# Both entrypoints — the whole point of this image.
+# MT-AgentRisk dataset (~59 MB). Only the mt-agentrisk runner uses
+# it, but staging it once means the image build doesn't need a
+# separate dataset-fetch step.
+mkdir -p "$STAGING/datasets"
+cp -r "$PROJECT_ROOT/datasets/mt-agentrisk" "$STAGING/datasets/mt-agentrisk"
+
+# All three entrypoints — the whole point of this image.
 cp "$PROJECT_ROOT/fargate/docker-entrypoint-injecagent.sh" \
    "$STAGING/docker-entrypoint-injecagent.sh"
 cp "$PROJECT_ROOT/fargate/docker-entrypoint-promptarmor-bedrock.sh" \
    "$STAGING/docker-entrypoint-promptarmor-bedrock.sh"
+cp "$PROJECT_ROOT/fargate/docker-entrypoint-mt-agentrisk.sh" \
+   "$STAGING/docker-entrypoint-mt-agentrisk.sh"
 
 # api-server.cjs renamed to server.js (flat-layout convention).
 cp "$PROJECT_ROOT/fargate/api-server.cjs" "$STAGING/server.js"
@@ -50,21 +62,33 @@ cp "$PROJECT_ROOT/fargate/api-server.cjs" "$STAGING/server.js"
 # Unified Dockerfile.
 cp "$PROJECT_ROOT/fargate/Dockerfile.benchmarks-zip" "$STAGING/Dockerfile"
 
+# Drop __pycache__ / *.pyc from the staged tree so the image build
+# doesn't carry stale bytecode (Python regenerates on first import).
+find "$STAGING" -name __pycache__ -type d -prune -exec rm -rf {} \; 2>/dev/null || true
+find "$STAGING" -name '*.pyc' -delete 2>/dev/null || true
+
 # Build it.
 ( cd "$STAGING" && zip -qr "$ZIP_PATH" . )
 
 # Cleanup staging.
 rm -rf "$STAGING"
 
-# Sanity: verify both entrypoints are at the zip root.
+# Sanity: verify all three entrypoints are at the zip root.
 echo "[build] verifying flat layout..."
 for f in Dockerfile server.js docker-entrypoint-injecagent.sh \
-         docker-entrypoint-promptarmor-bedrock.sh package.json; do
+         docker-entrypoint-promptarmor-bedrock.sh \
+         docker-entrypoint-mt-agentrisk.sh package.json; do
   if ! unzip -l "$ZIP_PATH" "$f" >/dev/null 2>&1; then
     echo "[build] ERROR: $f missing from zip root" >&2
     exit 1
   fi
 done
+
+# Verify dataset present for the mt-agentrisk runner.
+if ! unzip -l "$ZIP_PATH" 'datasets/mt-agentrisk/*' >/dev/null 2>&1; then
+  echo "[build] ERROR: datasets/mt-agentrisk/ missing from zip" >&2
+  exit 1
+fi
 
 VERSION=$(grep '"version"' "$PROJECT_ROOT/package.json" | head -1 | sed -E 's/.*"([^"]+)".*/\1/' | head -2 | tail -1)
 SIZE=$(du -h "$ZIP_PATH" | awk '{print $1}')

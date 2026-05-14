@@ -53,6 +53,7 @@ const ENTRYPOINTS = {
   "29": "/docker-entrypoint-test29.sh",
   "promptarmor-bedrock": "/docker-entrypoint-promptarmor-bedrock.sh",
   "injecagent": "/docker-entrypoint-injecagent.sh",
+  "mt-agentrisk": "/docker-entrypoint-mt-agentrisk.sh",
 };
 const DEFAULT_TEST = process.env.TEST_NUM || "7";
 const BUILD_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;

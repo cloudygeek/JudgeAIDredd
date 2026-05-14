@@ -15,6 +15,7 @@ from .llm_client import ChatMessage, ToolDef, LLMClient
 from .mcp_client import MCPToolRouter
 from .turn_manager import TurnManager
 from .dredd_bridge import DreddBridge
+from .promptarmor_bridge import PromptArmorBridge
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class ScenarioResult:
     tool_surface: str
     transcript: list[ChatMessage] = field(default_factory=list)
     dredd_evaluations: list[dict] = field(default_factory=list)
+    promptarmor_screens: list[dict] = field(default_factory=list)
     turns_completed: int = 0
     total_steps: int = 0
     refusal_detected: bool = False
@@ -66,12 +68,26 @@ def run_scenario(
     scenario_id: str,
     tool_surface: str,
     dredd: DreddBridge | None = None,
+    promptarmor: PromptArmorBridge | None = None,
     session_id: str = "",
 ) -> ScenarioResult:
-    """Execute a single scenario through the multi-turn agent loop."""
+    """Execute a single scenario through the multi-turn agent loop.
+
+    Optional defences:
+    - `dredd`: PreToolUse-style judge — blocks tool calls Dredd flags
+      as hijacked. Composable with promptarmor.
+    - `promptarmor`: PostToolUse-style screen — sanitises tool result
+      text before the next turn sees it. Composable with dredd.
+
+    With both bridges set, the loop runs the T-5 composite arm:
+    PromptArmor mutates tool output, Dredd judges the resulting tool
+    call. The two failure modes were empirically orthogonal in
+    earlier benchmarks (see docs/tests-needed-2026-05-13.md §T-5).
+    """
     start_time = time.time()
     messages: list[ChatMessage] = [ChatMessage(role="system", content=SYSTEM_MESSAGE)]
     all_dredd_evals: list[dict] = []
+    all_pa_screens: list[dict] = []
     consecutive_errors: int = 0
     total_errors: int = 0
 
@@ -122,6 +138,24 @@ def run_scenario(
                             continue
 
                     result_text = mcp.call_tool(tc.name, tc.arguments)
+
+                    # PromptArmor pre-screen on tool result. Replaces
+                    # result_text with the sanitised version before the
+                    # next LLM turn sees it. task_context is the current
+                    # user instruction, which gives PromptArmor enough
+                    # signal to flag content that subverts the user's
+                    # actual goal.
+                    if promptarmor is not None:
+                        sanitised, screen_telemetry = promptarmor.screen(
+                            result_text, turn.instruction if turn else ""
+                        )
+                        all_pa_screens.append({
+                            "tool_name": tc.name,
+                            "tool_call_id": tc.id,
+                            **screen_telemetry,
+                        })
+                        result_text = sanitised
+
                     messages.append(ChatMessage(
                         role="tool",
                         content=result_text,
@@ -168,6 +202,7 @@ def run_scenario(
             tool_surface=tool_surface,
             transcript=messages,
             dredd_evaluations=all_dredd_evals,
+            promptarmor_screens=all_pa_screens,
             turns_completed=turn_manager.turns_completed,
             total_steps=turn_manager.total_steps,
             refusal_detected=turn_manager.refused,
@@ -180,6 +215,7 @@ def run_scenario(
         tool_surface=tool_surface,
         transcript=messages,
         dredd_evaluations=all_dredd_evals,
+        promptarmor_screens=all_pa_screens,
         turns_completed=turn_manager.turns_completed,
         total_steps=turn_manager.total_steps,
         refusal_detected=turn_manager.refused,

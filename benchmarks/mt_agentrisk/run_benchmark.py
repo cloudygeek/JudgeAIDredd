@@ -280,6 +280,7 @@ def write_cell_json(
             for m in result.transcript
         ],
         "dredd_evaluations": result.dredd_evaluations,
+        "promptarmor_screens": result.promptarmor_screens,
     }
 
     safe_id = scenario.id.replace("/", "_")
@@ -344,7 +345,8 @@ def main():
     parser.add_argument("--scenarios", default="all",
                         help="'all', 'N-pilot' (random N), or comma-separated IDs")
     parser.add_argument("--defences", default="none,intent-tracker",
-                        help="Comma-separated: none, intent-tracker")
+                        help="Comma-separated: none, intent-tracker, promptarmor, "
+                             "intent-tracker+promptarmor (composite, T-5 arm)")
     parser.add_argument("--max-turns", type=int, default=8)
     parser.add_argument("--benchmark-judge-model",
                         default="eu.anthropic.claude-sonnet-4-6")
@@ -361,6 +363,16 @@ def main():
                         help="Override agent model region")
     parser.add_argument("--mcp-servers", default=None,
                         help="JSON dict of surface→URL overrides")
+    # PromptArmor — content-side defence. Independent of --defences=*
+    # (which controls Dredd's PreToolUse-style judge); the two compose
+    # via the `intent-tracker+promptarmor` arm.
+    parser.add_argument("--promptarmor-backend", choices=["openai", "bedrock"],
+                        default=None,
+                        help="If set, enables PromptArmor screening of tool results.")
+    parser.add_argument("--promptarmor-model", default=None)
+    parser.add_argument("--promptarmor-run-id", default=None)
+    parser.add_argument("--promptarmor-api-key", default=None)
+    parser.add_argument("--promptarmor-no-verify-tls", action="store_true")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -428,7 +440,32 @@ def main():
 
     for model_key in models:
         for defence in defences:
-            dredd = DreddBridge(args.dredd_url) if defence != "none" else None
+            # Defence vocabulary:
+            #   none                  → bare model
+            #   intent-tracker        → Dredd PreToolUse judge only
+            #   promptarmor           → PromptArmor screen only
+            #   intent-tracker+promptarmor → composite arm (T-5)
+            uses_dredd = "intent-tracker" in defence
+            uses_pa = "promptarmor" in defence
+
+            dredd = DreddBridge(args.dredd_url) if uses_dredd else None
+            promptarmor = None
+            if uses_pa:
+                from .promptarmor_bridge import PromptArmorBridge
+                if not args.promptarmor_backend or not args.promptarmor_model:
+                    raise SystemExit(
+                        f"defence='{defence}' requires "
+                        f"--promptarmor-backend and --promptarmor-model"
+                    )
+                promptarmor = PromptArmorBridge(
+                    dredd_url=args.dredd_url,
+                    backend=args.promptarmor_backend,
+                    model=args.promptarmor_model,
+                    run_id=args.promptarmor_run_id,
+                    api_key=args.promptarmor_api_key,
+                    verify_tls=not args.promptarmor_no_verify_tls,
+                )
+
             llm = create_client(model_key, region_override=args.agent_region)
             surface_verdicts: dict[str, list[str]] = {s: [] for s in TOOL_SURFACES}
 
@@ -471,6 +508,7 @@ def main():
                         scenario_id=scenario.id,
                         tool_surface=scenario.tool_surface,
                         dredd=dredd,
+                        promptarmor=promptarmor,
                         session_id=session_id,
                     )
 
