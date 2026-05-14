@@ -2,14 +2,15 @@
 # InjecAgent Phase B (Bedrock subset) entrypoint.
 #
 # Iterates the cell matrix:
-#   AGENT_MODELS  ∈ {sonnet, opus-4-7}
-#   DEFENCES      ∈ {none, promptarmor}      (B7/B7.1 deferred — InjecAgent
-#                                             has no PreToolUse gate to
-#                                             plug them into; the test
-#                                             plan §B5 calls for "our
-#                                             defence and PromptArmor only"
-#                                             on InjecAgent)
-#   SETTINGS      ∈ {base}                   (enhanced is harder; defer)
+#   AGENT_MODELS  ∈ {sonnet, opus-4-7, gpt-4o-mini, qwen3-32b, qwen3-235b}
+#   DEFENCES      ∈ {none, promptarmor, B7, B7.1,
+#                    B7+promptarmor, B7.1+promptarmor}
+#                  composite tokens enable both arms simultaneously
+#                  (the runner pipeline screens Tool Response with
+#                  PromptArmor AND post-judges the resulting tool
+#                  call via Dredd) — used for the T-5 defence-in-depth
+#                  cell from docs/tests-needed-2026-05-13.md
+#   SETTINGS      ∈ {base, enhanced}         (base is the default benchmark protocol)
 #   ATTACKS       ∈ {dh, ds}                 (single token; runner takes
 #                                             both as a comma-list)
 #
@@ -158,8 +159,28 @@ run_cell() {
         args+=(--promptarmor-api-key "$DREDD_API_KEY")
       fi
       ;;
+    B7+promptarmor|B7.1+promptarmor)
+      # Composite arm — both PromptArmor pre-screen on tool response AND
+      # Dredd post-output judge on the resulting tool call. Tests
+      # whether the failure modes are orthogonal (T-5 in
+      # docs/tests-needed-2026-05-13.md). The runner pipeline already
+      # supports both being active simultaneously: PromptArmor mutates
+      # Tool Response (line ~478), model runs, Dredd judges the
+      # resulting tool call (line ~512). Output suffix becomes
+      # `-promptarmor+dredd-B7.1`.
+      local dredd_variant="${defence%+promptarmor}"
+      args+=(--promptarmor-backend "$PROMPTARMOR_BACKEND")
+      args+=(--promptarmor-model "$PROMPTARMOR_MODEL")
+      args+=(--promptarmor-run-id "$RUN_ID")
+      args+=(--dredd-defense "$dredd_variant")
+      args+=(--dredd-mode "${DREDD_MODE:-autonomous}")
+      args+=(--promptarmor-no-verify-tls)
+      if [[ -n "${DREDD_API_KEY:-}" ]]; then
+        args+=(--promptarmor-api-key "$DREDD_API_KEY")
+      fi
+      ;;
     *)
-      fail "Unknown defence: $defence (expected: none|promptarmor|B7|B7.1)"
+      fail "Unknown defence: $defence (expected: none|promptarmor|B7|B7.1|B7+promptarmor|B7.1+promptarmor)"
       ;;
   esac
 
