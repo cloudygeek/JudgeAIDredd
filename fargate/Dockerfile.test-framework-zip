@@ -1,0 +1,97 @@
+# P15 test-framework runner — for T-2 (T3e × PromptArmor on the
+# paper's own corpus) and any other test-framework workload.
+#
+# Different shape from Dockerfile.benchmarks-zip:
+#   - Node 20 base (the test-framework is TypeScript/SDK driven,
+#     not Python like the InjecAgent / AgentDojo / MT-AgentRisk
+#     runners).
+#   - The Claude Agent SDK shells out to the `claude` Code CLI for
+#     the inner agent loop. We install it globally so the SDK's
+#     query() finds it on PATH at runtime (mirrors agent-hal's
+#     setup; see /Users/adrian.asher/IdeaProjects/agent-hal/agent/Dockerfile).
+#   - Bedrock auth via env (CLAUDE_CODE_USE_BEDROCK=1 + AWS creds).
+#     Anthropic direct API also works if ANTHROPIC_API_KEY is set
+#     and CLAUDE_CODE_USE_BEDROCK is unset.
+#   - Path C observational PromptArmor — see
+#     docs/plan-promptarmor-test-framework-2026-05-13.md and the
+#     T-0 probe script at test-framework/scripts/probe-posttooluse-rewrite.ts
+#     for why we don't enforce inline.
+#
+# Flat layout for the AI Sandbox CodeBuild pipeline:
+#   /Dockerfile                     this file
+#   /server.js                      api-server.cjs renamed
+#   /docker-entrypoint-test-framework.sh
+#   /package.json                   project root package.json (for version banner)
+#   /test-framework/                full test-framework subtree
+
+FROM 891377407345.dkr.ecr.eu-west-1.amazonaws.com/cko-pull-through/docker-hub/library/node:20-bookworm-slim
+
+WORKDIR /app
+
+# ── System packages ────────────────────────────────────────────────────────
+# curl: ALB health check + manual debugging.
+# ca-certificates: TLS to *.amazonaws.com / dredd ALB.
+# git: Anthropic SDK installs occasionally pull packages from git URLs.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Claude Code CLI (global) ───────────────────────────────────────────────
+# The SDK's query() spawns this binary as a subprocess. With
+# CLAUDE_CODE_USE_BEDROCK=1 set in env, the CLI routes its
+# /v1/messages calls through AWS Bedrock instead of api.anthropic.com.
+# (Keep this layer separate so package source changes don't bust it.)
+RUN npm install -g --registry=https://registry.npmjs.org \
+        @anthropic-ai/claude-code
+
+# ── Application source ──────────────────────────────────────────────────────
+COPY package.json ./package.json
+COPY test-framework/ ./test-framework/
+
+# Install test-framework's own dependencies (Anthropic Agent SDK, tsx, etc).
+# Use the public registry; the CKO CodeArtifact mirror would also work but
+# requires a per-build token refresh.
+RUN cd test-framework \
+    && npm install --registry=https://registry.npmjs.org \
+    && test -f node_modules/@anthropic-ai/claude-agent-sdk/cli.js
+
+# Smoke-import the runner + observer at build time so a typo / missing
+# import surfaces here rather than at first /run.
+RUN cd test-framework \
+    && node -e "import('./src/promptarmor-observer.js').then(m => console.log('promptarmor-observer:', Object.keys(m)))" \
+    && node -e "import('./src/turn-logger.js').then(m => console.log('turn-logger:', Object.keys(m)))"
+
+# ── Build provenance ────────────────────────────────────────────────────────
+ARG GIT_COMMIT=unknown
+ARG GIT_DIRTY=false
+ENV GIT_COMMIT=${GIT_COMMIT}
+ENV GIT_DIRTY=${GIT_DIRTY}
+
+# Defaults — entrypoint env can override. Bedrock routing for the
+# Claude CLI; the test-framework itself doesn't need AWS_REGION but
+# the spawned claude subprocess does.
+ENV CLAUDE_CODE_USE_BEDROCK=1 \
+    AWS_REGION=eu-west-2 \
+    NODE_ENV=production \
+    NODE_OPTIONS=--max-old-space-size=4096
+
+RUN mkdir -p /app/runs
+
+# ── Entrypoint + AI Sandbox HTTP wrapper ───────────────────────────────────
+COPY docker-entrypoint-test-framework.sh /docker-entrypoint-test-framework.sh
+RUN chmod +x /docker-entrypoint-test-framework.sh
+
+# server.js is the renamed api-server.cjs. Same wrapper as the
+# Python benchmarks images — reads /run requests, dispatches the
+# named entrypoint with the supplied env.
+COPY server.js /app/server.js
+
+# Non-root user. Doesn't have ~/.aws by default; AWS creds come from
+# the Fargate task role (instance metadata) which doesn't need a home.
+RUN useradd -m -s /bin/bash dredd \
+    && chown -R dredd:dredd /app /docker-entrypoint-test-framework.sh
+USER dredd
+
+EXPOSE 3000
+
+CMD ["node", "/app/server.js"]
