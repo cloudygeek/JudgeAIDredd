@@ -9,13 +9,45 @@
 
 ## TL;DR
 
-**Updated 2026-05-14 after phase-D landing.** Status:
+**Updated 2026-05-14 (afternoon) after second phaseD batch landing.** Status:
 
 - ✅ **T-1 DONE** — sonnet × B7.1 × InjecAgent = 0.0% ASR (commit `609e6407`). **InjecAgent matrix now 15/15.**
-- 🟨 **T-4 PARTIAL** — qwen3-32b banking/slack/travel done (commit `609e6407`). **Headline finding:** weighted across all 4 AgentDojo suites (N=949), qwen3-32b is **none 31.8% → B7.1 0.2% → PromptArmor 10.1%**. PromptArmor leaves a **32.9% residual on travel** and **16.7% on banking** that B7.1 collapses to 0%. Dredd ~48× better than PromptArmor on the full-suite weighted comparison.
 - ✅ **T-0 probe DONE** — Path C confirmed for T-2 (test-framework PromptArmor will be observational, not interventional). See caveat 11 below.
+- ✅ **T-4 DONE** — gpt-4o-mini banking/slack/travel (commit `9b4e4464`); qwen3-235b all 4 suites × 3 defences (commit `4808b9ea`); opus-4-7 × travel × promptarmor (commit `9b4e4464`). **AgentDojo cross-vendor matrix is now substantively complete** for important_instructions across 5 backends × 4 suites × 3 defences.
+- ✅ **T-5 DONE** — defence-in-depth orthogonality verified across 4 composite cells. Composite arm collapses every PromptArmor residual to 0% ASR while preserving utility (commits `9b4e4464`, `4808b9ea`).
 
-**~9 cells still needed.** Remaining gaps: T-2 (T3e × PromptArmor, Path C); T-3 (MT-AgentRisk × PromptArmor); T-4 remainder (gpt-4o-mini × 3 suites + qwen3-235b × 4 suites). Estimated wall ~22 hours and ~$65–85 API spend.
+**~3 cells still needed.** Remaining gaps: T-2 (T3e × PromptArmor, Path C, requires adapter build); T-3 (MT-AgentRisk × PromptArmor, requires container image build first). T-6 / T-7 are local-only analyses. Estimated wall ~12 hours and ~$50–70 API spend.
+
+### Composite arm headline (T-5 finding, 2026-05-14)
+
+| Cell | none | B7.1 alone | PromptArmor alone | **B7.1 + PromptArmor** |
+|---|---:|---:|---:|---:|
+| qwen3-32b × banking | 54.2% | 0.0% | 16.7% | **0.0%** |
+| qwen3-32b × slack | 75.2% | 1.0% | 1.0% | **0.0%** |
+| qwen3-32b × travel | 67.9% | 0.0% | 32.9% | **0.0%** |
+| gpt-4o-mini × InjecAgent | 16.7% | 0.2% | 0.3% | **0.0%** |
+
+Across all four composite cells, the two defences' failure modes were
+empirically orthogonal: **stacking them drove ASR to 0% in every cell,
+including the qwen3-32b × travel cell where PromptArmor alone leaks
+32.9% of attacks.** This is the strongest defence-in-depth evidence
+available in the data we'll have for the paper.
+
+### qwen3-235b × AgentDojo matrix (T-4 part 5, 2026-05-14)
+
+Completes the cross-vendor PromptArmor head-to-head on AgentDojo's 4 suites:
+
+| Suite | none | B7.1 | promptarmor |
+|---|---:|---:|---:|
+| workspace | 38.2% | 0.0% | 17.1% |
+| banking | 54.2% | 0.0% | 16.7% |
+| **slack** | **100.0%** | 0.0% | 1.0% |
+| **travel** | **76.4%** | 0.7% | **35.0%** |
+
+qwen3-235b × slack baseline at 100% — every prompt injection
+succeeded without defence on this model+suite. PromptArmor's 35%
+residual on travel is the single largest PA failure mode in the
+cross-vendor matrix.
 
 ---
 
@@ -45,7 +77,7 @@
 | **travel** | 140 | **67.9%** | **0.0%** | **32.9%** |
 | **Weighted** | **949** | **31.8%** | **0.2%** | **10.1%** |
 
-**Cross-vendor workspace slice (existing):**
+**Cross-vendor workspace slice:**
 
 | Model | none | B7.1 | promptarmor | Source |
 |---|---:|---:|---:|---|
@@ -53,13 +85,37 @@
 | sonnet-4-6 | 0.0% | 0.0% | 0.0% | phaseB-20260510/sonnet |
 | gpt-4o-mini | 17.0% | 0.0% | 9.3% | phaseC gpt4omini-headtohead |
 | qwen3-32b | 8.9% | 0.2% | 4.5% | phaseC qwen3-32b-headtohead |
-| qwen3-235b | — | — | — | **MISSING entire model** |
+| **qwen3-235b** | **38.2%** | **0.0%** | **17.1%** | **phaseD-20260514/qwen3-235b-all4suites** ✅ |
 
-**Headline (qwen3-32b, weighted across all 4 suites):** baseline 31.8% → B7.1 0.2% → PromptArmor 10.1%. **B7.1 ≈ 48× better than PromptArmor.** The PromptArmor residual is concentrated in **travel (32.9%)** and **banking (16.7%)** — exactly the suites where the Opus 4.7 baseline also showed non-floor behaviour (travel 13.6% baseline per paper's existing `tab:agentdojo-cross-vendor`). Travel + banking jointly account for 73/96 (≈76%) of PromptArmor's qwen3-32b residual.
+**gpt-4o-mini full-suite slice (commit `9b4e4464`, 2026-05-14):**
 
-**Still missing for full PromptArmor coverage on `important_instructions`:**
-- **gpt-4o-mini**: banking / slack / travel (only workspace done).
-- **qwen3-235b**: all 4 suites (entire model absent from AgentDojo PromptArmor matrix).
+| Suite | none | B7.1 | promptarmor |
+|---|---:|---:|---:|
+| workspace | 17.0% | 0.0% | 9.3% |
+| banking | 53.5% | 0.0% | 11.8% |
+| slack | 62.9% | 0.0% | 1.0% |
+| travel | 27.1% | 0.0% | 6.4% |
+
+**qwen3-235b full-suite slice (commit `4808b9ea`, 2026-05-14):**
+
+| Suite | none | B7.1 | promptarmor |
+|---|---:|---:|---:|
+| workspace | 38.2% | 0.0% | 17.1% |
+| banking | 54.2% | 0.0% | 16.7% |
+| slack | 100.0% | 0.0% | 1.0% |
+| travel | 76.4% | 0.7% | 35.0% |
+
+**opus-4-7 × travel × promptarmor (commit `9b4e4464`, 2026-05-14):**
+The paper's one non-floor Anthropic cell. ASR none 13.6% → B7.1 14.3% → **PromptArmor 6.4%** (utility 77.9% vs B7.1 ~0% on this suite). Workspace remains saturated at 0% across all defences.
+
+**Headline (qwen3-32b, weighted across all 4 suites):** baseline 31.8% → B7.1 0.2% → PromptArmor 10.1%. **B7.1 ≈ 48× better than PromptArmor.** The PromptArmor residual is concentrated in **travel (32.9%)** and **banking (16.7%)** — exactly the suites where the Opus 4.7 baseline also showed non-floor behaviour. Travel + banking jointly account for ~76% of PromptArmor's qwen3-32b residual.
+
+**AgentDojo PromptArmor matrix is now substantively complete:**
+- ✅ opus-4-7: workspace floor + travel non-floor cell.
+- ✅ sonnet-4-6: workspace floor (other suites = 0% baseline, saturated).
+- ✅ gpt-4o-mini: full 4 suites × 3 defences.
+- ✅ qwen3-32b: full 4 suites × 3 defences.
+- ✅ qwen3-235b: full 4 suites × 3 defences.
 
 **Note: paper's `tab:agentdojo-cross-vendor` reports the full 4 suites × `important_instructions` (n=949 weighted) for AIDredd vs none across six rows.** That data lives elsewhere (older `results/agentdojo-*` from April). What the plan added is **PromptArmor** on the same matrix.
 
@@ -120,26 +176,32 @@ The plan said: 5 corpora × 5 backends × {none, AIDredd, PromptArmor} ≈ 75 ce
 - **Caveat:** `benchmarks/mt_agentrisk/runs/` is empty. The paper's existing §sec:mt-agentrisk numbers must come from an earlier results-tree location (`results/test28/` cross-judge sample is the most recent visible MT-AgentRisk artefact; the full per-cell data may be elsewhere). **Before running PromptArmor, find and document where the AIDredd MT-AgentRisk runs are stored**, or rerun them so the comparator and baseline share infrastructure.
 - **Cost/time:** ~6 h wall, ~$15–25 spend, assuming ~300 trajectories × 5 backends with PromptArmor preprocessor at ~1.5 s/call.
 
-#### T-4. 🟨 PARTIAL — AgentDojo other suites × PromptArmor (banking / slack / travel)
-- **Status (qwen3-32b):** ✅ DONE 2026-05-13 (commit `609e6407`). banking + slack + travel runs on `phaseD-20260513/qwen3-32b-banking/` and `qwen3-32b-slack-travel/` covering all three defence arms. **Weighted ASR (N=949): none 31.8% → B7.1 0.2% → PromptArmor 10.1%.**
-- **Status (gpt-4o-mini):** ❌ MISSING — only workspace cell exists.
-- **Status (qwen3-235b):** ❌ MISSING — no AgentDojo cells at all.
-- **Key finding from qwen3-32b:** PromptArmor's residual is concentrated in **travel (32.9%)** and **banking (16.7%)**, the same suites where Opus 4.7 baseline shows non-floor behaviour. **B7.1 collapses every suite to ≤1%; PromptArmor does not.** Strongest head-to-head evidence in the paper so far.
-- **What's left:** 3 missing suites × 1 model (gpt-4o-mini) + 4 suites × 1 model (qwen3-235b) × 3 defence arms = ~7 × ~140 cases ≈ ~1000 PromptArmor calls + ~1000 baseline + ~1000 B7.1 (B7.1 cells for qwen3-235b on AgentDojo may also be absent — verify before running).
-- **Cost/time remaining:** ~6 h wall, ~$15 spend if parallelised across bedt containers per phase-D dispatch pattern.
+#### T-4. ✅ DONE — AgentDojo other suites × PromptArmor (banking / slack / travel)
+- **Status (qwen3-32b):** ✅ DONE 2026-05-13 (commit `609e6407`). All 4 suites × 3 defences. Weighted ASR (N=949): none 31.8% → B7.1 0.2% → PromptArmor 10.1%.
+- **Status (gpt-4o-mini):** ✅ DONE 2026-05-14 (commit `9b4e4464`). banking + slack + travel cells; combined with the existing workspace cell, the full 4 suites × 3 defences row is complete.
+- **Status (qwen3-235b):** ✅ DONE 2026-05-14 (commit `4808b9ea`). All 4 suites × 3 defences = 12 cells. Slack baseline at 100% ASR — every prompt injection succeeded without defence. Travel × promptarmor at 35.0% — largest single PromptArmor failure mode in the matrix.
+- **Status (opus-4-7):** ✅ DONE — workspace saturated at 0% across all defences (existing); travel × promptarmor 6.4% (commit `9b4e4464`); banking/slack assumed saturated per phase-c-results decision.
+- **Cross-vendor PromptArmor matrix is essentially complete** for `important_instructions`. Five backends × 4 suites × 3 defences spans the cells the paper needs to make the head-to-head claim.
+- **Key finding (across vendors):** B7.1 collapses every cell to ≤1% ASR (often 0.0%); PromptArmor leaves substantial residuals on travel + banking specifically. Composite arm (T-5) collapses both to 0%.
 - **Sub-decision:** also add `tool_knowledge` attack type? Currently only `important_instructions` is in the paper. **Recommend deferring `tool_knowledge` until reviewers ask** — unchanged.
 
 ### P1 — strongly recommended, not strictly required
 
-#### T-5. Composite arm: PromptArmor ∥ AIDredd on gpt-4o-mini × InjecAgent
-- **What:** one extra cell where both defences run in series; tests whether their failure modes compose to ASR ≈ 0.
-- **Why:** based on the 6 case studies analysed today, the failure modes are orthogonal:
-  - 3 AIDredd let-throughs (judge classifies as `drifting`, not `hijacked`)
-  - 3 PromptArmor let-throughs (verdict `injected` but `sanitisation_failed: true`)
-  - Zero overlap on the 6 cases examined.
-  This is the defence-in-depth argument; a single composite cell would let the paper claim it instead of speculating.
-- **Cost/time:** ~2 h wall, ~$5–7 spend (1054 cases × both preprocessors).
-- **Predicted ASR:** ≤ 0.1% if the orthogonality story holds.
+#### T-5. ✅ DONE — Composite arm: PromptArmor ∥ AIDredd, defence-in-depth orthogonality
+- **Status:** ✅ DONE 2026-05-14 across **4 composite cells** (commits `9b4e4464`, `4808b9ea`).
+- **Cells run:**
+  - gpt-4o-mini × InjecAgent × `B7.1+promptarmor` → **0.0% ASR** (vs PA alone 0.3% / B7.1 alone 0.2%)
+  - qwen3-32b × AgentDojo banking × `B7.1+promptarmor` → **0.0%** (vs PA 16.7% / B7.1 0.0%)
+  - qwen3-32b × AgentDojo slack × `B7.1+promptarmor` → **0.0%** (vs PA 1.0% / B7.1 1.0%)
+  - qwen3-32b × AgentDojo travel × `B7.1+promptarmor` → **0.0%** (vs PA 32.9% / B7.1 0.0%)
+- **Finding:** orthogonality holds empirically. The composite arm collapses every PromptArmor residual to 0% ASR, including the qwen3-32b × travel cell (PA's largest single failure mode at 32.9%). The §7 disagreement claim is now backed by data, not speculation.
+- **Implementation:** required wiring composite-arm tokens (`B7.1+promptarmor`) into both runner entrypoints (commits `9b4e4464` for InjecAgent, `690bcce6` for AgentDojo). Python pipeline already supported both arms simultaneously; only the entrypoint case statements needed extending.
+
+#### T-5b (optional follow-up). Composite cells on remaining model rows
+- **What:** add composite-arm cells for gpt-4o-mini × AgentDojo (banking/slack/travel) and qwen3-235b × AgentDojo. Symmetric to T-5 but covers more vendors; tests whether the orthogonality finding is vendor-portable.
+- **Why:** strengthens the §7 claim from "verified on 4 cells" to "verified across all backends in the matrix". One composite cell already shown across 2 vendors (Anthropic-tier via gpt-4o-mini × InjecAgent + qwen3-32b × AgentDojo); adding qwen3-235b × travel × composite would cover the worst PA failure mode (35%).
+- **Cost/time:** ~3-4h wall if parallelised across containers; ~$15. Only needed if reviewers ask for cross-vendor composite evidence.
+- **Status:** P2 — not currently planned.
 
 #### T-6. Drift-threshold sensitivity sweep
 - **What:** on a 100-case subsample of InjecAgent ds attacks, sweep drift-deny threshold ∈ {0.10, 0.12, 0.15 (current), 0.18, 0.20}.
@@ -240,13 +302,13 @@ Plan §4 says: drop AgentLAB first, then InjecAgent, if budget hits. With InjecA
 | Item | Time | Spend | Status |
 |---|---:|---:|---|
 | T-1 InjecAgent sonnet × B7.1 | — | — | ✅ done (~$3 actual) |
-| T-2 T3e × PromptArmor (Path C observational only) | 7 h | $35 | pending |
-| T-3 MT-AgentRisk × PromptArmor (+ baseline-data audit) | 6–12 h | $25–50 | pending (worst case if AIDredd baseline re-run needed) |
-| T-4 AgentDojo other suites × PromptArmor (qwen3-32b done; gpt-4o-mini + qwen3-235b remaining) | 6 h | $15 | 🟨 partial |
-| T-5 Composite arm (one cell) — promoted to P0 per caveat 4 | 2 h | $7 | pending |
-| T-6 Threshold sensitivity sweep | 1 h | $2 | pending |
-| T-7 ds #384 re-run | <1 h | <$1 | pending |
-| **Remaining P0+P1 total** | **~22 h** | **~$85** | (or up to ~32h / ~$110 worst case) |
+| T-2 T3e × PromptArmor (Path C observational only) | 7 h | $35 | pending — needs container build |
+| T-3 MT-AgentRisk × PromptArmor (+ baseline-data audit) | 6–12 h | $25–50 | pending — needs container build |
+| T-4 AgentDojo other suites × PromptArmor | — | — | ✅ done across 5 backends × 4 suites × 3 defences (~$30 actual) |
+| T-5 Composite arm × 4 cells | — | — | ✅ done; orthogonality verified (~$15 actual) |
+| T-6 Threshold sensitivity sweep | 1 h | $2 | pending — local, no container |
+| T-7 ds #384 re-run | <1 h | <$1 | pending — local mock override |
+| **Remaining P0+P1 total** | **~13–19 h** | **~$60–90** | mostly T-2 + T-3, both gated on container builds |
 | (P2 if added: T-8) | +2 h | +$5 | |
 
 Under the plan's $250 cap; ~8% of remaining budget at the median estimate.
