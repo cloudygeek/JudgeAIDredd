@@ -177,8 +177,23 @@ run_cell() {
       args+=(--promptarmor-model "$PROMPTARMOR_MODEL")
       args+=(--promptarmor-run-id "$RUN_ID")
       ;;
+    B7+promptarmor|B7.1+promptarmor|standard+promptarmor)
+      # Composite arm — Dredd post-judge AND PromptArmor pre-screen.
+      # The runner's build_pipeline (run_benchmark.py:220-294) stacks
+      # both defences when both flags are set: PromptArmor mutates
+      # tool outputs before the next LLM step, Dredd judges the
+      # resulting tool call. T-5 in docs/tests-needed-2026-05-13.md
+      # promotes this to P0 as the defence-in-depth claim. Output
+      # filename suffix becomes `-dredd-B7.1-promptarmor-bedrock-...`.
+      local dredd_variant="${defence%+promptarmor}"
+      args+=(--defense "$dredd_variant")
+      args+=(--dredd-mode "${DREDD_MODE:-autonomous}")
+      args+=(--promptarmor-backend "$PROMPTARMOR_BACKEND")
+      args+=(--promptarmor-model "$PROMPTARMOR_MODEL")
+      args+=(--promptarmor-run-id "$RUN_ID")
+      ;;
     *)
-      fail "Unknown defence: $defence (expected: none|B7|B7.1|promptarmor)"
+      fail "Unknown defence: $defence (expected: none|B7|B7.1|promptarmor|B7+promptarmor|B7.1+promptarmor|standard+promptarmor)"
       ;;
   esac
 
