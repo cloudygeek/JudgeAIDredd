@@ -36,33 +36,40 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Claude Code CLI (global) + test-framework deps ─────────────────────────
-# The SDK's query() spawns the @anthropic-ai/claude-code binary as a
-# subprocess. With CLAUDE_CODE_USE_BEDROCK=1 set in env, the CLI
-# routes its /v1/messages calls through AWS Bedrock instead of
-# api.anthropic.com.
+# ── Claude Code CLI (vendored) + test-framework deps (vendored) ─────────────
+# CodeArtifact's `cko-engineering-main` mirror does not currently proxy
+# @anthropic-ai/* — and CodeBuild rewrites any `--registry=...` arg back
+# to the mirror, so we can't reach public npm directly. Workaround:
+# vendor everything into the zip (see scripts/build-test-framework-zip.sh).
 #
-# Both this and the test-framework's local deps install through the
-# CKO CodeArtifact mirror that CodeBuild injects via `.npmrc`. The
-# CodeArtifact "cko-engineering-main" repository must have an
-# upstream connection to the public npm registry for @anthropic-ai
-# packages to resolve — if this RUN 401s on @anthropic-ai/*, an
-# admin needs to add the upstream connection in CodeArtifact (or
-# allowlist npm.npmjs.org as an external connection).
-RUN npm install -g @anthropic-ai/claude-code
+# The zip's `vendor/claude-code-pkg/` and `vendor/claude-code-linux-x64-pkg/`
+# trees are the unpacked tarballs of @anthropic-ai/claude-code and its
+# linux-x64 native optionalDependency. We drop them into
+# /usr/local/lib/node_modules and run claude-code's install.cjs by hand
+# so the wrapper's bin/claude.exe stub is replaced with the real ELF.
+COPY vendor/claude-code-pkg/ /usr/local/lib/node_modules/@anthropic-ai/claude-code/
+COPY vendor/claude-code-linux-x64-pkg/ /usr/local/lib/node_modules/@anthropic-ai/claude-code-linux-x64/
+RUN node /usr/local/lib/node_modules/@anthropic-ai/claude-code/install.cjs \
+    && ln -sf /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/local/bin/claude \
+    && claude --version
 
 COPY package.json ./package.json
 COPY test-framework/ ./test-framework/
+# Test-framework's node_modules — pre-resolved for linux-x64 so we can
+# skip `npm install` entirely. The build script vendors these alongside
+# the test-framework subtree.
+COPY vendor/test-framework-node_modules/ ./test-framework/node_modules/
 
-RUN cd test-framework \
-    && npm install \
-    && test -f node_modules/@anthropic-ai/claude-agent-sdk/cli.js
+RUN test -f /app/test-framework/node_modules/@anthropic-ai/claude-agent-sdk/cli.js \
+    || (echo "ERROR: vendored test-framework node_modules missing claude-agent-sdk" >&2 && exit 1)
 
-# Smoke-import the runner + observer at build time so a typo / missing
-# import surfaces here rather than at first /run.
-RUN cd test-framework \
-    && node -e "import('./src/promptarmor-observer.js').then(m => console.log('promptarmor-observer:', Object.keys(m)))" \
-    && node -e "import('./src/turn-logger.js').then(m => console.log('turn-logger:', Object.keys(m)))"
+# Smoke-check that the test-framework source + runtime are on disk.
+# Source files are .ts (consumed by `npx tsx` at runtime); a node -e
+# import would need them compiled, so just verify presence.
+RUN test -f /app/test-framework/src/runner.ts \
+    && test -f /app/test-framework/src/promptarmor-observer.ts \
+    && test -f /app/test-framework/src/turn-logger.ts \
+    && test -x /app/test-framework/node_modules/.bin/tsx
 
 # ── Build provenance ────────────────────────────────────────────────────────
 ARG GIT_COMMIT=unknown
