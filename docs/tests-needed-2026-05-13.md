@@ -85,12 +85,20 @@ The plan said: 5 corpora × 5 backends × {none, AIDredd, PromptArmor} ≈ 75 ce
   ```
 
 #### T-2. T3e × PromptArmor across vendors
-- **What:** wire `promptarmor_defense.py` into the T3e runner (paper's own corpus, `Adrian/p15/test-framework/`), then run T3e.2–T3e.4 across:
+- **What:** wire PromptArmor into the T3e test-framework (`test-framework/`), then run T3e.2–T3e.4 across:
   - Sonnet 4.6, Opus 4.7, Qwen3-32B, Qwen3-235B, GPT-4o-mini (5 backends), arm = PromptArmor, N=60 per scenario per cell (= ~900 invocations × 5 backends ≈ 4,500 calls).
 - **Why:** the plan promised T3e × PromptArmor; without it, the paper cannot claim PromptArmor was tested on the paper's own corpus, which is the most defensible head-to-head ground.
-- **Expected outcome:** PromptArmor at near-zero on Anthropic-floor agents, measurable on Qwen rows; the comparator to AIDredd's reported `exfiltrationDetected = 0/360` defended cell.
-- **Cost/time:** ~6 h wall, ~$25–35 spend (Sonnet preprocessor calls dominate; ~1500ms × 4500 ≈ 6h serial, parallelise across backends).
-- **Blocker:** **PromptArmor screening is not yet wired into the T3e test-framework**. `test-framework/src/` has no `promptarmor-baseline.ts`. Plan B1 anticipated this as ~1 day of implementation work. **Build that first, then run.**
+- **Expected outcome (revised after T-0):** PromptArmor **detection rate** at near-zero on Anthropic-floor agents, measurable on Qwen rows. **Defence rate is not directly comparable** with AIDredd because of T-0's verdict (see below).
+- **Cost/time:** ~7 h wall, ~$25–35 spend (Path C; Sonnet preprocessor calls dominate; ~1500ms × 4500 ≈ 6h serial, parallelise across backends).
+- **T-0 probe verdict (2026-05-14):** **Path C only.** The Claude Agent SDK's `PostToolUse.updatedMCPToolOutput` field **does not rewrite built-in tool outputs** (Read/Bash/Glob etc.) — confirmed via `test-framework/scripts/probe-posttooluse-rewrite.ts`. Hook fired correctly but the agent received the original (un-sanitised) content regardless of the rewrite payload. So a clean inline integration is not viable through the SDK.
+- **Implementation reality:**
+  - **Path A** (clean, ~8.5h) — ❌ ruled out by T-0.
+  - **Path C** (observational, ~7h) — ✅ viable. Run PromptArmor on each captured tool output, log verdict + sanitised-content alongside `ToolCallLog`. The agent receives the original output.
+  - **Path B** (manual conversation rewrite) — not recommended in plan; would require forking the SDK's `query()` loop.
+- **Methodological caveat for the paper:** PromptArmor's T3e numbers under Path C report **detection rate**, not enforcement / ASR. Other corpora (InjecAgent, AgentDojo) have symmetric enforcement data because their runners (Python) execute the agent loop themselves. Either:
+  1. Report PromptArmor T3e as "detected N injection attempts; SDK did not surface a tool-output-rewrite hook for built-in tools so injection-suppression rate is not measured." Footnote in §limitations.
+  2. Skip T3e × PromptArmor entirely and document the asymmetry.
+  Recommendation: **(1) — partial data is more informative than no data**, and the asymmetry mirrors a real deployment-medium difference reviewers will recognise.
 
 #### T-3. MT-AgentRisk × PromptArmor (and verify AIDredd run reproducibility)
 - **What:** run MT-AgentRisk benchmarks with PromptArmor preprocessor across the same 5 defended-agent rows the paper reports for AIDredd vs none.
@@ -216,7 +224,7 @@ Plan §4 says: drop AgentLAB first, then InjecAgent, if budget hits. With InjecA
 | Item | Time | Spend |
 |---|---:|---:|
 | T-1 InjecAgent sonnet × B7.1 | 2 h | $5 |
-| T-2 T3e × PromptArmor (incl. 1 day build if needed) | 6–14 h | $35 |
+| T-2 T3e × PromptArmor (Path C observational only) | 7 h | $35 |
 | T-3 MT-AgentRisk × PromptArmor (+ baseline-data audit) | 6 h | $25 |
 | T-4 AgentDojo other suites × PromptArmor | 8 h | $25 |
 | T-5 Composite arm (one cell) | 2 h | $7 |
@@ -344,6 +352,29 @@ P0 vs P1 split.
 10. **D-2 unresolved from this checkout.** `Adrian/p15/test-framework/`
     is not present in `~/IdeaProjects/` or any depth-8 subtree of
     `~`. Either the framework lives outside this machine or it's at
-    a path not yet visible to the search. Until verified, **assume
-    the +1day adapter-build branch on T-2** (cost: ~14h instead of
-    ~6h).
+    a path not yet visible to the search. ~~Until verified, assume
+    the +1day adapter-build branch on T-2~~ → **superseded by caveat 11
+    below.**
+
+11. **T-0 probe ran 2026-05-14: Path C confirmed.** The framework was
+    found at `test-framework/` (root of repo, not `Adrian/p15/...`).
+    `test-framework/scripts/probe-posttooluse-rewrite.ts` ran cleanly
+    against `eu.anthropic.claude-sonnet-4-6` via Bedrock once a stale
+    `AWS_BEARER_TOKEN_BEDROCK` was unset and a clean env (`env -i` +
+    explicit AWS creds + `CLAUDE_CODE_USE_BEDROCK=1`) was used.
+    Result: **PostToolUse hook fires for built-in tools but
+    `updatedMCPToolOutput` is silently ignored by the SDK** for those
+    tools. Agent receives original (un-rewritten) content.
+
+    Consequences:
+    - Path A (clean integration ~8.5h) **not viable**.
+    - Path C (observational, ~7h) is the only path.
+    - T-2 budget revised: ~7h, ~$25-35. No adapter-build day.
+    - PromptArmor T3e numbers will be **detection rate**, not
+      enforcement rate. Footnote in §limitations.
+
+    Operational lesson: a stale `AWS_BEARER_TOKEN_BEDROCK` env var
+    silently breaks the SDK with `UND_ERR_INVALID_ARG` — that env var
+    takes precedence over IAM creds and the SDK's bundled HTTP client
+    surfaces auth failures as a confusing undici error rather than
+    "403 authentication_failed". Worth a memory entry.

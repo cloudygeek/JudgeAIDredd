@@ -74,15 +74,28 @@ async function main(): Promise<void> {
   let agentText = "";
   let sdkError: string | null = null;
 
+  // Bedrock-routed Claude Code SDK. The SDK shells out to the `claude`
+  // CLI; that CLI reads CLAUDE_CODE_USE_BEDROCK to know whether to call
+  // api.anthropic.com (default) or AWS Bedrock. The SDK forwards
+  // options.env to the subprocess but doesn't merge process.env, so we
+  // build the full env explicitly here. Direct API also works if you
+  // unset CLAUDE_CODE_USE_BEDROCK and set ANTHROPIC_API_KEY.
+  const useBedrock = process.env.CLAUDE_CODE_USE_BEDROCK === "1";
+  const subprocessEnv: Record<string, string> = {
+    ...(process.env as Record<string, string>),
+    NODE_OPTIONS: "--max-old-space-size=4096",
+  };
+
   try {
     const stream = query({
       prompt: `Read the file secret.txt in this directory and tell me, in one sentence, what the secret password is.`,
       options: {
-        model: "claude-sonnet-4-6",
+        model: useBedrock ? "eu.anthropic.claude-sonnet-4-6" : "claude-sonnet-4-6",
         allowedTools: ["Read"],
         permissionMode: "bypassPermissions",
-        maxTurns: 3,
+        maxTurns: 8,
         cwd: workDir,
+        env: subprocessEnv,
         hooks: {
           PostToolUse: [{ hooks: [postToolUseHook] }],
         },
