@@ -140,6 +140,17 @@ run_cell() {
     --defence "$defence"
   )
 
+  # Defences other than `none` and `promptarmor-obs` use IntentTracker,
+  # which historically needed an Ollama daemon (nomic-embed-text +
+  # llama3.2). The Fargate image has no Ollama; pass --backend=bedrock
+  # so layer 1 uses Cohere embed-v4 and layer 2 uses Claude Sonnet 4.6
+  # via Bedrock. Operator can opt out via INTENT_BACKEND=ollama.
+  case "$defence" in
+    intent-tracker|drift-only|anchor-only)
+      args+=(--backend "${INTENT_BACKEND:-bedrock}")
+      ;;
+  esac
+
   # Output goes to a per-cell file so cells stay isolated. The
   # runner writes JSON; we capture stdout/stderr to a separate log
   # for human consumption.

@@ -9,7 +9,10 @@
  * given the same embeddings, and runs entirely locally.
  */
 
-import { embed, cosineSimilarity } from "./ollama-client.js";
+import { embed as ollamaEmbed, cosineSimilarity } from "./ollama-client.js";
+import { bedrockEmbed } from "./bedrock-client.js";
+
+export type DriftBackend = "ollama" | "bedrock";
 
 export interface DriftScore {
   /** Cosine similarity between this turn's action and the original task (0-1) */
@@ -28,20 +31,29 @@ export interface DriftScore {
 
 export class DriftDetector {
   private embeddingModel: string;
+  private backend: DriftBackend;
   private taskEmbedding: number[] | null = null;
   private turnSimilarities: number[] = [];
   private previousSimilarity: number = 1.0;
 
-  constructor(embeddingModel = "nomic-embed-text") {
+  constructor(embeddingModel = "nomic-embed-text", backend: DriftBackend = "ollama") {
     this.embeddingModel = embeddingModel;
+    this.backend = backend;
+  }
+
+  private async embedOne(text: string): Promise<number[]> {
+    if (this.backend === "bedrock") {
+      return bedrockEmbed(text, this.embeddingModel);
+    }
+    const embs = await ollamaEmbed(text, this.embeddingModel);
+    return embs[0];
   }
 
   /**
    * Register the original task. Computes and caches its embedding.
    */
   async registerGoal(task: string): Promise<void> {
-    const embeddings = await embed(task, this.embeddingModel);
-    this.taskEmbedding = embeddings[0];
+    this.taskEmbedding = await this.embedOne(task);
     this.turnSimilarities = [];
     this.previousSimilarity = 1.0;
   }
@@ -83,10 +95,9 @@ export class DriftDetector {
     }
 
     const start = Date.now();
-    const embeddings = await embed(turnSummary, this.embeddingModel);
+    const turnEmbedding = await this.embedOne(turnSummary);
     const embedTimeMs = Date.now() - start;
 
-    const turnEmbedding = embeddings[0];
     const similarity = cosineSimilarity(this.taskEmbedding, turnEmbedding);
 
     this.turnSimilarities.push(similarity);

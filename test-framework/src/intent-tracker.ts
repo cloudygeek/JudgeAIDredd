@@ -18,12 +18,20 @@ import { TurnLogger } from "./turn-logger.js";
 import { DriftDetector } from "./drift-detector.js";
 import { IntentJudge, type JudgeVerdict } from "./intent-judge.js";
 import { checkOllama } from "./ollama-client.js";
+import { checkBedrock } from "./bedrock-client.js";
 import type { TurnLog, IntentVerdict } from "./types.js";
 
+export type IntentBackend = "ollama" | "bedrock";
+
 export interface IntentTrackerConfig {
-  /** Embedding model for drift detection (default: nomic-embed-text) */
+  /** Backend for embedding + judge (default: ollama). Bedrock uses
+   *  Cohere v4 embeddings + Claude Sonnet 4.6 Converse for the judge. */
+  backend?: IntentBackend;
+  /** Embedding model. Defaults: nomic-embed-text (ollama) or
+   *  eu.cohere.embed-v4:0 (bedrock). */
   embeddingModel?: string;
-  /** Chat model for LLM judge (default: llama3.2) */
+  /** Chat model for LLM judge. Defaults: llama3.2 (ollama) or
+   *  eu.anthropic.claude-sonnet-4-6 (bedrock). */
   judgeModel?: string;
   /** Cumulative drift threshold to trigger judge (default: 0.3) */
   thetaWarn?: number;
@@ -37,7 +45,7 @@ export interface IntentTrackerConfig {
   enableBlocking?: boolean;
 }
 
-const DEFAULTS: Required<IntentTrackerConfig> = {
+const OLLAMA_DEFAULTS: Required<Omit<IntentTrackerConfig, "backend">> = {
   embeddingModel: "nomic-embed-text",
   judgeModel: "llama3.2",
   thetaWarn: 0.3,
@@ -47,8 +55,19 @@ const DEFAULTS: Required<IntentTrackerConfig> = {
   enableBlocking: true,
 };
 
+const BEDROCK_DEFAULTS: Required<Omit<IntentTrackerConfig, "backend">> = {
+  embeddingModel: "eu.cohere.embed-v4:0",
+  judgeModel: "eu.anthropic.claude-sonnet-4-6",
+  thetaWarn: 0.3,
+  thetaBlock: 0.5,
+  deltaWarn: 0.2,
+  enableGoalAnchoring: true,
+  enableBlocking: true,
+};
+
 export class IntentTracker extends TurnLogger {
-  private config: Required<IntentTrackerConfig>;
+  private backend: IntentBackend;
+  private config: Required<Omit<IntentTrackerConfig, "backend">>;
   private driftDetector: DriftDetector;
   private judge: IntentJudge;
   private actionSummaries: string[] = [];
@@ -58,18 +77,37 @@ export class IntentTracker extends TurnLogger {
 
   constructor(config?: IntentTrackerConfig) {
     super();
-    this.config = { ...DEFAULTS, ...config };
-    this.driftDetector = new DriftDetector(this.config.embeddingModel);
-    this.judge = new IntentJudge(this.config.judgeModel);
+    this.backend = config?.backend ?? "ollama";
+    const defaults = this.backend === "bedrock" ? BEDROCK_DEFAULTS : OLLAMA_DEFAULTS;
+    const { backend: _b, ...rest } = config ?? {};
+    this.config = { ...defaults, ...rest };
+    this.driftDetector = new DriftDetector(this.config.embeddingModel, this.backend);
+    this.judge = new IntentJudge(this.config.judgeModel, this.backend);
   }
 
   /**
-   * Check that Ollama is running and required models are available.
+   * Confirm the chosen backend is reachable and the named models exist.
+   * Ollama: hits /api/tags. Bedrock: issues a one-token embed call so
+   * we surface IAM/region issues here rather than mid-run.
    */
   async preflight(): Promise<void> {
+    if (this.backend === "bedrock") {
+      const { ok, error } = await checkBedrock(
+        this.config.embeddingModel,
+        this.config.judgeModel,
+      );
+      if (!ok) {
+        console.error(`\n  Bedrock preflight failed: ${error}`);
+        throw new Error(`Bedrock preflight failed: ${error}`);
+      }
+      console.log(
+        `\n  Bedrock OK: embedding=${this.config.embeddingModel}, judge=${this.config.judgeModel}`,
+      );
+      return;
+    }
     const { ok, missing } = await checkOllama(
       this.config.embeddingModel,
-      this.config.judgeModel
+      this.config.judgeModel,
     );
     if (!ok) {
       console.error(`\n  Ollama models not found: ${missing.join(", ")}`);
@@ -80,7 +118,7 @@ export class IntentTracker extends TurnLogger {
       throw new Error(`Missing Ollama models: ${missing.join(", ")}`);
     }
     console.log(
-      `\n  Ollama OK: embedding=${this.config.embeddingModel}, judge=${this.config.judgeModel}`
+      `\n  Ollama OK: embedding=${this.config.embeddingModel}, judge=${this.config.judgeModel}`,
     );
   }
 

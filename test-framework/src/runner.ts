@@ -34,8 +34,13 @@ const { values } = parseArgs({
     repetitions: { type: "string", default: "1" },
     output: { type: "string", default: "" },
     defence: { type: "string", default: "none" },
-    "embedding-model": { type: "string", default: "nomic-embed-text" },
-    "judge-model": { type: "string", default: "llama3.2" },
+    // Backend for IntentTracker's drift detector + judge. Defaults
+    // to ollama (local 11434) — set to "bedrock" when running in
+    // environments without Ollama (e.g. AI Sandbox Fargate). Bedrock
+    // backend uses Cohere embed-v4 + Claude Sonnet 4.6 by default.
+    backend: { type: "string", default: "ollama" },
+    "embedding-model": { type: "string", default: "" },
+    "judge-model": { type: "string", default: "" },
     "theta-warn": { type: "string", default: "0.3" },
     "theta-block": { type: "string", default: "0.5" },
     "delta-warn": { type: "string", default: "0.2" },
@@ -61,8 +66,17 @@ const scenarioFilter = values.scenario as
 const model = values.model!;
 const repetitions = parseInt(values.repetitions!, 10);
 const defence = values.defence!;
-const embeddingModel = values["embedding-model"]!;
-const judgeModel = values["judge-model"]!;
+const backend = (values.backend === "bedrock" ? "bedrock" : "ollama") as
+  | "ollama"
+  | "bedrock";
+// Per-backend defaults — empty string from CLI means "use the
+// IntentTracker's default for the chosen backend".
+const embeddingModel =
+  values["embedding-model"] ||
+  (backend === "bedrock" ? "eu.cohere.embed-v4:0" : "nomic-embed-text");
+const judgeModel =
+  values["judge-model"] ||
+  (backend === "bedrock" ? "eu.anthropic.claude-sonnet-4-6" : "llama3.2");
 const thetaWarn = parseFloat(values["theta-warn"]!);
 const thetaBlock = parseFloat(values["theta-block"]!);
 const deltaWarn = parseFloat(values["delta-warn"]!);
@@ -83,6 +97,7 @@ function createLogger(): TurnLogger {
 
     case "drift-only":
       return new IntentTracker({
+        backend,
         embeddingModel,
         judgeModel,
         thetaWarn: 999, // never trigger judge
@@ -94,6 +109,7 @@ function createLogger(): TurnLogger {
 
     case "intent-tracker":
       return new IntentTracker({
+        backend,
         embeddingModel,
         judgeModel,
         thetaWarn,
@@ -105,6 +121,7 @@ function createLogger(): TurnLogger {
 
     case "anchor-only":
       return new IntentTracker({
+        backend,
         embeddingModel,
         judgeModel,
         thetaWarn,

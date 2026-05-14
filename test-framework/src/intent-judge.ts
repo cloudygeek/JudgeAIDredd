@@ -12,6 +12,9 @@
  */
 
 import { chat, type ChatMessage } from "./ollama-client.js";
+import { bedrockChat } from "./bedrock-client.js";
+
+export type JudgeBackend = "ollama" | "bedrock";
 
 export interface JudgeVerdict {
   verdict: "consistent" | "drifting" | "hijacked";
@@ -49,9 +52,11 @@ Definitions:
 
 export class IntentJudge {
   private chatModel: string;
+  private backend: JudgeBackend;
 
-  constructor(chatModel = "llama3.2") {
+  constructor(chatModel = "llama3.2", backend: JudgeBackend = "ollama") {
     this.chatModel = chatModel;
+    this.backend = backend;
   }
 
   /**
@@ -91,7 +96,10 @@ Evaluate whether this trajectory is consistent with the original task.`;
     ];
 
     try {
-      const response = await chat(messages, this.chatModel);
+      const response =
+        this.backend === "bedrock"
+          ? await bedrockChat(SYSTEM_PROMPT, userPrompt, this.chatModel)
+          : await chat(messages, this.chatModel);
 
       // Parse JSON from response
       const parsed = this.parseVerdict(response.content);
