@@ -117,6 +117,7 @@ function itemToRecord(item: Record<string, any>): ApprovalRecord {
     expiresAt: item.expiresAt,
     intentSnapshot: item.intentSnapshot ?? "",
     goalEmbedding: Array.isArray(item.goalEmbedding) ? item.goalEmbedding : [],
+    inputEmbedding: Array.isArray(item.inputEmbedding) ? item.inputEmbedding : [],
     revokedAt: item.revokedAt ?? null,
     revokedBy: item.revokedBy ?? null,
   };
@@ -158,7 +159,7 @@ export class DynamoApprovalStore implements ApprovalStore {
           "tool = :tool, fingerprintHash = :fh, fingerprintJson = :fj, " +
           "summary = :sum, " +
           "lastUsedAt = :now, expiresAt = :exp, #ttl = :ttl, " +
-          "intentSnapshot = :is, goalEmbedding = :ge, " +
+          "intentSnapshot = :is, goalEmbedding = :ge, inputEmbedding = :ie, " +
           "gsi1pk = :gpk, gsi1sk = :gsk, " +
           "useCount = if_not_exists(useCount, :zero) + :one, " +
           "grantedAt = if_not_exists(grantedAt, :now) " +
@@ -177,6 +178,7 @@ export class DynamoApprovalStore implements ApprovalStore {
           ":ttl": ttl,
           ":is": input.intentSnapshot,
           ":ge": input.goalEmbedding,
+          ":ie": input.inputEmbedding ?? [],
           ":gpk": userGsiPk(input.scope.ownerSub),
           ":gsk": userGsiSk(grantedAt, input.fingerprintHash),
           ":zero": 0,
@@ -199,6 +201,7 @@ export class DynamoApprovalStore implements ApprovalStore {
       expiresAt,
       intentSnapshot: input.intentSnapshot,
       goalEmbedding: input.goalEmbedding,
+      inputEmbedding: input.inputEmbedding ?? [],
       revokedAt: null,
       revokedBy: null,
     };
@@ -282,6 +285,28 @@ export class DynamoApprovalStore implements ApprovalStore {
     } while (cursor);
     items.sort((a, b) => String(b.grantedAt ?? "").localeCompare(String(a.grantedAt ?? "")));
     return items.slice(0, limit).map(itemToRecord);
+  }
+
+  async listForScope(scope: ApprovalScope, limit = 200): Promise<ApprovalRecord[]> {
+    // Hot path for pattern-trust learning. pk encodes (ownerSub,
+    // projectRoot) so a single Query returns every approval in scope.
+    // Filter out revoked / expired in code — keeps the FilterExpression
+    // off the read path so we get accurate Limit semantics.
+    const r = await this.client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: "pk = :pk",
+        ExpressionAttributeValues: { ":pk": pk(scope) },
+        Limit: limit * 2, // headroom for revoked rows we'll filter out
+      }),
+    );
+    const nowMs = Date.now();
+    const live = (r.Items ?? [])
+      .filter((it) => !it.revokedAt)
+      .filter((it) => new Date(String(it.expiresAt ?? "")).getTime() >= nowMs)
+      .sort((a, b) => String(b.grantedAt ?? "").localeCompare(String(a.grantedAt ?? "")))
+      .slice(0, limit);
+    return live.map(itemToRecord);
   }
 
   async revoke(scope: ApprovalScope, fingerprintHash: string, revokedBy: string): Promise<boolean> {

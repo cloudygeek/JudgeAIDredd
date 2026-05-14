@@ -65,6 +65,15 @@ export interface ApprovalRecord {
    *  distance > APPROVAL_INTENT_DRIFT_THRESHOLD at lookup time rejects
    *  the approval even though the fingerprint matches. */
   goalEmbedding: number[];
+  /** Phase 8a — embedding of `tool + JSON(toolInput)` at consent time.
+   *  Drives the pattern-trust learning in Phase 8b/c: similarity of the
+   *  current /evaluate call against this vector decides whether the
+   *  judge gets prior-approval context (soft) and whether enough
+   *  similar prior approvals short-circuit the pipeline (hard).
+   *  Empty array `[]` for legacy records written before this field
+   *  existed — those rows fall through to the existing fingerprint
+   *  match path. */
+  inputEmbedding: number[];
 
   /** Set when revoked from the dashboard. Active records have null. */
   revokedAt: string | null;
@@ -81,6 +90,11 @@ export interface RecordApprovalInput {
   tool: string;
   intentSnapshot: string;
   goalEmbedding: number[];
+  /** Phase 8a — see ApprovalRecord.inputEmbedding. Callers compute
+   *  this via embedAny(JSON({tool,input})) just before recordApproval.
+   *  Pass [] if the embed call failed; the row is still persisted but
+   *  won't contribute to pattern-trust matching. */
+  inputEmbedding: number[];
 }
 
 export interface ApprovalStore {
@@ -105,6 +119,14 @@ export interface ApprovalStore {
 
   /** Admin listing — every owner. Best-effort ordering. */
   listAll(limit?: number): Promise<ApprovalRecord[]>;
+
+  /** Phase 8a — list every LIVE (non-revoked, non-expired) approval
+   *  for one (ownerSub, projectRoot). Hot path: called on every
+   *  /evaluate that has pattern-trust enabled to compute embedding
+   *  similarity against the incoming tool call. Implementations must
+   *  exclude revoked rows. limit defaults to 200 — well above the
+   *  expected steady-state of approvals per project. */
+  listForScope(scope: ApprovalScope, limit?: number): Promise<ApprovalRecord[]>;
 
   /** Soft-revoke. Sets revokedAt/revokedBy; returns true if a live
    *  record was found and revoked, false otherwise. */
@@ -158,6 +180,7 @@ export class InMemoryApprovalStore implements ApprovalStore {
       expiresAt,
       intentSnapshot: input.intentSnapshot,
       goalEmbedding: input.goalEmbedding,
+      inputEmbedding: input.inputEmbedding ?? [],
       revokedAt: null,
       revokedBy: null,
     };
@@ -196,6 +219,20 @@ export class InMemoryApprovalStore implements ApprovalStore {
     const out: ApprovalRecord[] = [];
     for (const r of this.records.values()) {
       if (r.revokedAt) continue;
+      out.push(r);
+    }
+    out.sort((a, b) => b.grantedAt.localeCompare(a.grantedAt));
+    return out.slice(0, limit);
+  }
+
+  async listForScope(scope: ApprovalScope, limit = 200): Promise<ApprovalRecord[]> {
+    const now = Date.now();
+    const out: ApprovalRecord[] = [];
+    for (const r of this.records.values()) {
+      if (r.ownerSub !== scope.ownerSub) continue;
+      if (r.projectRoot !== scope.projectRoot) continue;
+      if (r.revokedAt) continue;
+      if (new Date(r.expiresAt).getTime() < now) continue;
       out.push(r);
     }
     out.sort((a, b) => b.grantedAt.localeCompare(a.grantedAt));

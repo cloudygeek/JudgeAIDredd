@@ -18,8 +18,10 @@ import {
   json,
   rejectInvalidSessionId,
   authenticateHookRequest,
+  CONFIG,
 } from "../server-core.js";
 import { consumePendingApproval } from "../pending-approvals.js";
+import { embedAny } from "../ollama-client.js";
 
 export async function handleTrack(req: IncomingMessage, res: ServerResponse) {
   const identity = await authenticateHookRequest(req, res);
@@ -80,6 +82,20 @@ export async function handleTrack(req: IncomingMessage, res: ServerResponse) {
         const projectRoot = await tracker.getProjectRoot(session_id);
         const { ownerSub, ownerEmail } = await tracker.getSessionOwner(session_id);
         if (projectRoot && ownerSub) {
+          // Phase 8a — embed the (tool, input) JSON so future /evaluate
+          // calls can find pattern-similar prior approvals. Best-effort:
+          // an embed failure stores `[]` and the approval still lands
+          // (just won't contribute to pattern-trust matching).
+          let inputEmbedding: number[] = [];
+          try {
+            const embedText = JSON.stringify({ tool: pending.tool, input: pending.fingerprintJson });
+            const vecs = await embedAny(embedText, CONFIG.embeddingModel);
+            if (vecs?.[0]?.length) inputEmbedding = vecs[0];
+          } catch (err) {
+            console.warn(
+              `  [${session_id.substring(0, 8)}] [APPRV] inputEmbedding failed (storing []): ${(err as Error)?.message ?? err}`,
+            );
+          }
           await approvals.recordApproval({
             scope: { ownerSub, projectRoot },
             ownerEmail,
@@ -89,9 +105,11 @@ export async function handleTrack(req: IncomingMessage, res: ServerResponse) {
             tool: pending.tool,
             intentSnapshot: pending.intentSnapshot,
             goalEmbedding: pending.goalEmbedding,
+            inputEmbedding,
           });
           console.log(
-            `  [${session_id.substring(0, 8)}] [APPRV] learned: ${pending.summary}`,
+            `  [${session_id.substring(0, 8)}] [APPRV] learned: ${pending.summary}` +
+            (inputEmbedding.length ? ` (+${inputEmbedding.length}-dim embedding)` : ""),
           );
         }
       } catch (err) {

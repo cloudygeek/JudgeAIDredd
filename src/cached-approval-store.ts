@@ -126,6 +126,13 @@ export class CachedApprovalStore implements ApprovalStore {
     return this.backend.listAll(limit);
   }
 
+  async listForScope(scope: ApprovalScope, limit?: number): Promise<ApprovalRecord[]> {
+    // Pure read pass-through. Hot enough that callers should cache the
+    // result themselves for a single /evaluate, but the underlying
+    // Dynamo Query is keyed on pk so it's O(1) per session-project.
+    return this.backend.listForScope(scope, limit);
+  }
+
   async revoke(scope: ApprovalScope, fingerprintHash: string, revokedBy: string): Promise<boolean> {
     const ok = await this.backend.revoke(scope, fingerprintHash, revokedBy);
     // Invalidate locally; remote containers stay stale up to positive TTL.
