@@ -382,6 +382,11 @@ export type FeedEntry = {
    *  type="tool" entries; absent when the user has no lists or no rule
    *  matched. Drives the Phase 5 dashboard side-badge. */
   userPermission?: { kind: "allow" | "deny"; rule: string };
+  /** Phase 8b: pattern-trust learning signal. Set when the interceptor
+   *  found prior approvals similar enough to inform / short-circuit
+   *  this decision. hard=true → short-circuit to pattern-trust-allow;
+   *  hard=false → judge was given soft context but verdict unchanged. */
+  patternTrust?: { hard: boolean; matched: number; topSim: number; topSummary: string };
 };
 
 export const feed: FeedEntry[] = [];
@@ -551,6 +556,26 @@ export const USER_PERMISSIONS_ENFORCED =
   (process.env.DREDD_USER_PERMISSIONS_ENABLED ?? "false").toLowerCase() === "true";
 console.log(
   `  [USERPERM] Pipeline enforcement: ${USER_PERMISSIONS_ENFORCED ? "ON" : "OFF (rollout)"}`,
+);
+
+// Phase 8b rollout. Umbrella controls whether the interceptor reads
+// prior approvals at /evaluate at all (a Dynamo Query per call when on).
+// When the umbrella is on:
+//   - SOFT path always runs: top matches are stitched into the judge
+//     prompt as evidence of legitimate intent. Verdict unchanged.
+//   - HARD path runs only when the second flag is also true:
+//     ≥ HARD_MIN_COUNT matches at HARD_THRESHOLD short-circuit to
+//     stage="pattern-trust-allow" before Stage 1 policy — overrides
+//     Dredd's hard denies (rm -rf etc) by design.
+export const PATTERN_LEARNING_ENABLED =
+  (process.env.DREDD_PATTERN_LEARNING_ENABLED ?? "false").toLowerCase() === "true";
+export const PATTERN_LEARNING_HARD =
+  PATTERN_LEARNING_ENABLED &&
+  (process.env.DREDD_PATTERN_LEARNING_HARD_ENABLED ?? "false").toLowerCase() === "true";
+console.log(
+  `  [PATTRN] Pattern-trust learning: ${PATTERN_LEARNING_ENABLED
+    ? `ON (soft${PATTERN_LEARNING_HARD ? " + hard" : ""})`
+    : "OFF (rollout)"}`,
 );
 
 // Periodically purge expired pending-approval candidates (the 60s

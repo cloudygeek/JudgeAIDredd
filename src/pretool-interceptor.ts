@@ -28,11 +28,27 @@ import {
 } from "./tool-policy.js";
 import { evaluateDomainPolicy } from "./domain-policy.js";
 import { DriftDetector } from "./drift-detector.js";
-import { IntentJudge, type JudgeVerdict, type JudgeBackend, type PromptVariant } from "./intent-judge.js";
-import { checkOllama, embedAny, isBedrockModel, chat } from "./ollama-client.js";
+import {
+  IntentJudge,
+  type JudgeVerdict,
+  type JudgeBackend,
+  type PromptVariant,
+  type JudgePriorApproval,
+} from "./intent-judge.js";
+import { checkOllama, embedAny, cosineSimilarity, isBedrockModel, chat } from "./ollama-client.js";
 import { checkBedrock, bedrockChat, bedrockEmbed } from "./bedrock-client.js";
 import type { ImageBlock, IntentEntry, UserPermissionsLists } from "./session-tracker.js";
 import { matchUserAllow, matchUserDeny } from "./user-permission-matcher.js";
+import type { ApprovalRecord } from "./approval-store.js";
+
+// Phase 8b pattern-trust thresholds. Tuned conservatively for v1; once
+// telemetry shows how soft signal shifts judge verdicts these become
+// env-tunable. cohere-v4 embeddings on tool-call JSON cluster tightly,
+// so 0.85 is meaningful similarity, not "vaguely related."
+const SOFT_THRESHOLD = 0.6;
+const HARD_THRESHOLD = 0.85;
+const HARD_MIN_COUNT = 2;
+const JUDGE_CONTEXT_LIMIT = 5;
 
 export interface InterceptorConfig {
   embeddingModel?: string;
@@ -73,7 +89,8 @@ export interface InterceptionResult {
     | "approval-allow"
     | "drift-allow" | "drift-deny"
     | "judge-allow" | "judge-deny"
-    | "user-deny";
+    | "user-deny"
+    | "pattern-trust-allow";
   policyResult: PolicyResult;
   /** Embedding similarity (null if not evaluated) */
   similarity: number | null;
@@ -98,6 +115,32 @@ export interface InterceptionResult {
    * Undefined when the user has no lists, or no rule matched.
    */
   userPermissionMatch?: { kind: "allow" | "deny"; rule: string };
+  /**
+   * Phase 8b pattern-trust signal. When the interceptor finds prior
+   * approvals in this (ownerSub, projectRoot) whose stored
+   * inputEmbedding is similar to the current call:
+   *
+   *   - HARD mode (umbrella ON + hard ON, count of sim≥HARD_THRESHOLD
+   *     ≥ HARD_MIN_COUNT): the call short-circuits to
+   *     stage="pattern-trust-allow" BEFORE Stage 1 policy — overriding
+   *     Dredd's hard denies (rm -rf etc). Verdict allowed=true.
+   *   - SOFT mode (umbrella ON, irrespective of hard): the top matches
+   *     are stitched into the judge prompt as evidence of legitimate
+   *     intent. Verdict is unchanged; this field is informational so
+   *     the dashboard can show "judge saw N prior approvals".
+   *
+   * Undefined when umbrella is off OR no matches above SOFT_THRESHOLD.
+   */
+  patternTrust?: {
+    /** true when we short-circuited (hard); false when we only informed the judge. */
+    hard: boolean;
+    /** Number of matches at-or-above SOFT_THRESHOLD. */
+    matched: number;
+    /** Highest cosine similarity observed. */
+    topSim: number;
+    /** Summary of the top-matching prior approval (for the dashboard). */
+    topSummary: string;
+  };
 }
 
 /**
@@ -274,6 +317,19 @@ export class PreToolInterceptor {
      *  only annotate the final result. See InterceptionResult.userPermissionMatch.
      *  Undefined or null = no user policy to consult. */
     userPermissions?: UserPermissionsLists | null,
+    /** Phase 8b — prior approvals for the (ownerSub, projectRoot) scope.
+     *  When non-empty AND patternTrustHard is true, the interceptor
+     *  embeds the current call and checks cosine similarity; ≥
+     *  HARD_MIN_COUNT matches at HARD_THRESHOLD short-circuit before
+     *  Stage 1 policy (overriding hard denies — by design). Soft
+     *  matches (≥ SOFT_THRESHOLD) are folded into the judge prompt as
+     *  context. Empty array or undefined disables both paths. */
+    priorApprovals?: ApprovalRecord[],
+    /** Phase 8b hard-flip. When false (default), pattern-trust runs in
+     *  soft mode only: judge sees prior approvals but pipeline order is
+     *  unchanged. When true, ≥ HARD_MIN_COUNT high-sim matches return
+     *  pattern-trust-allow before Stage 1. */
+    patternTrustHard?: boolean,
   ): Promise<InterceptionResult> {
     const start = Date.now();
     const s = this.getSession(sessionId);
@@ -318,6 +374,82 @@ export class PreToolInterceptor {
         };
         this.log(s, result, sessionId, userAllowMatch);
         return result;
+      }
+    }
+
+    // --- Stage 0.5: Pattern-trust learning -----------------------------
+    // For each prior approval in scope with a stored inputEmbedding,
+    // compute cosine similarity against the current call. Above
+    // SOFT_THRESHOLD the match becomes context for the judge (later
+    // in the pipeline). HARD_MIN_COUNT matches at HARD_THRESHOLD
+    // short-circuit to pattern-trust-allow — overrides Stage 1's hard
+    // denies by design. Best-effort: embed errors silently fall through
+    // to the rest of the pipeline (no pattern-trust signal that call).
+    //
+    // Skipped entirely when priorApprovals is empty (umbrella flag off
+    // or no rows for the scope). Embed cost is one Bedrock call —
+    // already in the same per-evaluate latency budget as drift.
+    let softContext: JudgePriorApproval[] = [];
+    if (priorApprovals && priorApprovals.length > 0) {
+      const withEmbedding = priorApprovals.filter((a) => a.inputEmbedding && a.inputEmbedding.length > 0);
+      if (withEmbedding.length > 0) {
+        try {
+          const callText = JSON.stringify({ tool, input });
+          const callVecs = await embedAny(callText, this.config.embeddingModel);
+          const callVec = callVecs?.[0] ?? [];
+          if (callVec.length > 0) {
+            const sims = withEmbedding
+              .map((a) => ({ rec: a, sim: cosineSimilarity(callVec, a.inputEmbedding) }))
+              .filter((m) => m.sim >= SOFT_THRESHOLD)
+              .sort((x, y) => y.sim - x.sim);
+
+            if (sims.length > 0) {
+              softContext = sims.slice(0, JUDGE_CONTEXT_LIMIT).map((m) => ({
+                summary: m.rec.summary,
+                similarity: m.sim,
+                grantedAt: m.rec.grantedAt,
+                intentAtConsent: m.rec.intentSnapshot,
+              }));
+
+              const strongCount = sims.filter((m) => m.sim >= HARD_THRESHOLD).length;
+              if (patternTrustHard && strongCount >= HARD_MIN_COUNT) {
+                const top = sims[0];
+                const result: InterceptionResult = {
+                  allowed: true,
+                  tool,
+                  input,
+                  stage: "pattern-trust-allow",
+                  policyResult: {
+                    decision: "allow",
+                    tool,
+                    reason: `pattern-trust: ${strongCount} matches ≥ ${HARD_THRESHOLD}`,
+                    matchedRule: "pattern-trust",
+                  },
+                  similarity: top.sim,
+                  judgeVerdict: null,
+                  evaluationMs: Date.now() - start,
+                  reason:
+                    `pattern-trust: ${strongCount} prior approvals of similar calls ` +
+                    `(top: "${top.rec.summary}", sim=${top.sim.toFixed(3)})`,
+                  patternTrust: {
+                    hard: true,
+                    matched: sims.length,
+                    topSim: top.sim,
+                    topSummary: top.rec.summary,
+                  },
+                };
+                this.log(s, result, sessionId, userAllowMatch);
+                return result;
+              }
+            }
+          }
+        } catch (err) {
+          // Embed call failure — log once and fall through. Pipeline
+          // continues as if pattern-trust were disabled for this call.
+          console.warn(
+            `  [${sessionId.substring(0, 8)}] [PATTERN-TRUST] embed failed; skipping: ${(err as Error)?.message ?? err}`,
+          );
+        }
       }
     }
 
@@ -562,7 +694,8 @@ export class PreToolInterceptor {
       judgeIntent,
       recentTools,
       currentAction,
-      s.intentImages
+      s.intentImages,
+      softContext.length > 0 ? softContext : undefined,
     );
 
     // Only "hijacked" is denied. "consistent" and "drifting" are allowed.
@@ -579,6 +712,14 @@ export class PreToolInterceptor {
       judgeVerdict,
       evaluationMs: Date.now() - start,
       reason: `Judge: ${judgeVerdict.verdict} (${judgeVerdict.reasoning})`,
+      ...(softContext.length > 0 ? {
+        patternTrust: {
+          hard: false,
+          matched: softContext.length,
+          topSim: softContext[0].similarity,
+          topSummary: softContext[0].summary,
+        },
+      } : {}),
     };
     this.log(s, result, sessionId, userAllowMatch);
     return result;

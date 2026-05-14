@@ -27,6 +27,8 @@ import {
   backfillFromSummary,
   CONFIG,
   USER_PERMISSIONS_ENFORCED,
+  PATTERN_LEARNING_ENABLED,
+  PATTERN_LEARNING_HARD,
   type TrustMode,
 } from "../server-core.js";
 import {
@@ -353,6 +355,28 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     ? await tracker.getUserPermissions(session_id)
     : null;
 
+  // Phase 8b — fetch prior approvals for the (ownerSub, projectRoot)
+  // scope so the interceptor can run pattern-trust. Skipped entirely
+  // when the umbrella is off or the call has no owner+projectRoot
+  // (anonymous or rootless session).
+  let priorApprovalsForEval: import("../approval-store.js").ApprovalRecord[] = [];
+  if (
+    PATTERN_LEARNING_ENABLED &&
+    ownerForApproval.ownerSub &&
+    projectRootForApproval
+  ) {
+    try {
+      priorApprovalsForEval = await approvals.listForScope(
+        { ownerSub: ownerForApproval.ownerSub, projectRoot: projectRootForApproval },
+        200,
+      );
+    } catch (err) {
+      console.warn(
+        `  [${session_id.substring(0, 8)}] [PATTRN] listForScope failed; skipping: ${(err as Error)?.message ?? err}`,
+      );
+    }
+  }
+
   const result = await interceptor.evaluate(
     session_id,
     tool_name,
@@ -364,6 +388,8 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     effectiveIntentHistoryMode(session_id),
     approvalCheck,
     userPermissionsForEval,
+    priorApprovalsForEval,
+    PATTERN_LEARNING_HARD,
   );
 
   await tracker.recordToolCall(
@@ -406,6 +432,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     ownerSub: identity.ownerSub,
     authStage: authStageForFeed(identity),
     userPermission: result.userPermissionMatch,
+    patternTrust: result.patternTrust,
   });
 
   if (isLearn && !result.allowed) {
