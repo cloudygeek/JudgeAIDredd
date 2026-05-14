@@ -173,7 +173,11 @@ run_cell() {
   local cell_log="$LOGDIR/${RUN_ID}-${safe_id}.log"
   local start_ts; start_ts=$(date +%s)
   set -o pipefail
-  if ( cd /app/test-framework && npx tsx "${args[@]}" ) 2>&1 | tee "$cell_log"; then
+  # Invoke tsx's cli.mjs directly. We can't rely on `npx tsx` or
+  # `node_modules/.bin/tsx` because the build script strips the
+  # symlink-laden .bin directory (zip+unzip don't preserve symlinks
+  # reliably enough through the AI Sandbox CodeBuild pipeline).
+  if ( cd /app/test-framework && node node_modules/tsx/dist/cli.mjs "${args[@]}" ) 2>&1 | tee "$cell_log"; then
     set +o pipefail
     local elapsed=$(( $(date +%s) - start_ts ))
     log "  ✓ $label (${elapsed}s) → $cell_log"

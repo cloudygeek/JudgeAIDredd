@@ -93,6 +93,17 @@ rm -rf "$TF_VENDOR_TMP"
 VENDOR_BYTES=$(du -sh "$STAGING/vendor" | awk '{print $1}')
 echo "[build] vendor/ size: $VENDOR_BYTES"
 
+# Drop node_modules/.bin/ from the staged vendor tree — its entries
+# are symlinks to the real cli files, and zip+CodeBuild's unzip both
+# tend to dereference symlinks. Once dereferenced, the .bin/tsx file
+# becomes a copy of tsx/dist/cli.mjs that fails on its own relative
+# `import './package-*.mjs'` lines (the sibling files live in
+# tsx/dist/, not .bin/).
+#
+# The entrypoint invokes the real cli files directly
+# (`node test-framework/node_modules/tsx/dist/cli.mjs ...`) so
+# nothing on PATH actually needs the shims.
+rm -rf "$STAGING/vendor/test-framework-node_modules/.bin"
 ( cd "$STAGING" && zip -qr "$ZIP_PATH" . )
 rm -rf "$STAGING"
 
