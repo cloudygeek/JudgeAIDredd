@@ -922,6 +922,7 @@ export async function buildSessionLogShape(sessionId: string): Promise<Record<st
       reason: r.reason,
       evaluationMs: r.evaluationMs,
       userPermissionMatch: r.userPermissionMatch,
+      patternTrust: r.patternTrust,
     })),
   };
 }
