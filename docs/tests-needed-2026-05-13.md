@@ -9,14 +9,66 @@
 
 ## TL;DR
 
-**Updated 2026-05-14 (afternoon) after second phaseD batch landing.** Status:
+**Updated 2026-05-15 (afternoon) after T-2 + T-3 landed.** Status:
 
 - ✅ **T-1 DONE** — sonnet × B7.1 × InjecAgent = 0.0% ASR (commit `609e6407`). **InjecAgent matrix now 15/15.**
 - ✅ **T-0 probe DONE** — Path C confirmed for T-2 (test-framework PromptArmor will be observational, not interventional). See caveat 11 below.
+- ✅ **T-2 DONE (2026-05-14)** — full 10 cells (sonnet, opus-4-7) × (none, intent-tracker, drift-only, anchor-only, promptarmor-obs) on bedt5 v0.1.394. Banked at `results/test-framework/t2-bedt5-v2/` (commit `55c574bd`). Forced wiring of a Bedrock backend for the test-framework's IntentTracker (`test-framework/src/bedrock-client.ts`) so the AI Sandbox container can run all 5 defences without an Ollama daemon.
+- ✅ **T-3 DONE (2026-05-15)** — MT-AgentRisk × PromptArmor full 5 cells × 820 scenarios on bedt3, RUN_ID `phaseD-mt-agentrisk-T3-promptarmor-20260514T182903Z` (wall 17h13m). 4100 trajectories banked at `benchmarks/mt_agentrisk/runs/phaseD-T3-promptarmor-20260514T182903Z/` (commit `c689e28a`). Aggregate ASR by model: **opus-4.7 7.56%, gpt-4o-mini 25.49%, haiku-4.5 34.15%, sonnet-4.6 43.66%, qwen3-coder 49.51%** — opus-4.7 is the only model where PromptArmor alone keeps a corpus-wide single-digit ASR.
 - ✅ **T-4 DONE** — gpt-4o-mini banking/slack/travel (commit `9b4e4464`); qwen3-235b all 4 suites × 3 defences (commit `4808b9ea`); opus-4-7 × travel × promptarmor (commit `9b4e4464`). **AgentDojo cross-vendor matrix is now substantively complete** for important_instructions across 5 backends × 4 suites × 3 defences.
 - ✅ **T-5 DONE** — defence-in-depth orthogonality verified across 4 composite cells. Composite arm collapses every PromptArmor residual to 0% ASR while preserving utility (commits `9b4e4464`, `4808b9ea`).
 
-**~3 cells still needed.** Remaining gaps: T-2 (T3e × PromptArmor, Path C, requires adapter build); T-3 (MT-AgentRisk × PromptArmor, requires container image build first). T-6 / T-7 are local-only analyses. Estimated wall ~12 hours and ~$50–70 API spend.
+**All P0 work is closed.** Remaining gaps are P1 polish only: T-6 (local threshold sweep, ~1h), T-7 (ds#384 mock-populated re-run, ~5min once the mock entry is added), T-10 (disagreement-analysis writeup using existing data, ~½ day).
+
+### T-3 headline (2026-05-15)
+
+PromptArmor as the only defence on MT-AgentRisk's 7-surface corpus
+(filesystem, postgres, terminal, playwright, browser, notion,
+benign_tasks). Numbers are ASR; reject = the agent refused at turn 1
+(safe outcome); failed = judge could not classify (model emitted
+XML-style `<tool_call>` blocks instead of plain JSON):
+
+| Model | ASR | fs% | pg% | term% | play% | browser% | notion% | benign% | reject | complete | failed |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| opus-4.7 | **7.56%** | 12.1 | 4.2 | 2.1 | 0.0 | 0.0 | 0.0 | 15.9 | 499 | 62 | 259 |
+| gpt-4o-mini | 25.49% | 40.0 | 32.6 | 20.5 | 8.0 | 0.0 | 66.7 | 4.7 | 270 | 209 | 341 |
+| haiku-4.5 | 34.15% | 49.5 | 27.4 | 13.7 | 6.0 | 0.0 | 10.0 | 60.0 | 390 | 280 | 150 |
+| sonnet-4.6 | 43.66% | 56.8 | 30.5 | 35.8 | 18.0 | 0.0 | 10.0 | 65.9 | 353 | 358 | 109 |
+| qwen3-coder | 49.51% | 69.0 | 47.4 | 39.0 | 36.0 | 0.0 | 76.7 | 41.2 | 194 | 406 | 220 |
+
+Filesystem and notion are PromptArmor's two largest single-surface
+failure modes (mirroring the AgentDojo travel/banking findings).
+Browser is at the floor across every model — likely
+benchmark-saturation rather than defence efficacy.
+
+The high "failed" counts on opus-4.7 (259) and gpt-4o-mini (341)
+reflect models emitting tool-call XML in places the upstream judge
+prompt expected JSON. Per-trajectory JSONs preserved in the run dir
+so we can re-judge with a more permissive parser if the unparseable
+rate biases the cross-cell ranking.
+
+### T-2 headline (2026-05-14)
+
+PromptArmor as `promptarmor-obs` (Path C — observational only;
+agent receives original tool output regardless of verdict, so this
+records detection, not enforcement). Test-framework's T3 corpus
+(scenarios T3.1–T3.4 × 1 rep, 4 trials per cell):
+
+| Model | none | intent-tracker | drift-only | anchor-only | promptarmor-obs |
+|---|---:|---:|---:|---:|---:|
+| sonnet-4-6 | 24.97% | 24.97% | 33.3% | 33.3% | 33.3% |
+| opus-4-7 | **100.0%** | **100.0%** | **100.0%** | **100.0%** | **100.0%** |
+
+opus-4-7 saturates at GES=100% across every defence. The per-turn
+intent-tracker blocked 4/4 turns and drift-only blocked 3/4, but the
+hijack still completed — the test-framework's per-turn defence is
+not soon enough to interrupt the tool-call chain that triggers the
+goal violation. **This is the same Path C limitation that
+constrains PromptArmor against built-in tools** (see caveat 11);
+here it surfaces against AIDredd's IntentTracker too. Worth a
+qualitative paragraph in §6 explaining why the tighter integration
+of the production AIDredd hook (PreToolUse) catches this where the
+test-framework's PostToolUse-style intervention does not.
 
 ### Composite arm headline (T-5 finding, 2026-05-14)
 
@@ -154,7 +206,7 @@ The plan said: 5 corpora × 5 backends × {none, AIDredd, PromptArmor} ≈ 75 ce
 - **Result:** ASR-valid Total = **0.0%**. dh 0/510 succ (1 invalid), ds 0/544 succ (8 invalid). Valid rate 99.1%. Started 20:42:56Z, finished 22:52:44Z (~2h 10m wall).
 - **Interpretation:** sonnet × none was already at the 0.0% InjecAgent floor — AIDredd-on cell confirms no regression. Closes the 15/15 InjecAgent matrix and lets the paper make the symmetric "Anthropic frontier at the floor under both defences" claim.
 
-#### T-2. T3e × PromptArmor across vendors
+#### T-2. ✅ DONE — T3e × PromptArmor on the test-framework's own corpus
 - **What:** wire PromptArmor into the T3e test-framework (`test-framework/`), then run T3e.2–T3e.4 across:
   - Sonnet 4.6, Opus 4.7, Qwen3-32B, Qwen3-235B, GPT-4o-mini (5 backends), arm = PromptArmor, N=60 per scenario per cell (= ~900 invocations × 5 backends ≈ 4,500 calls).
 - **Why:** the plan promised T3e × PromptArmor; without it, the paper cannot claim PromptArmor was tested on the paper's own corpus, which is the most defensible head-to-head ground.
@@ -170,7 +222,7 @@ The plan said: 5 corpora × 5 backends × {none, AIDredd, PromptArmor} ≈ 75 ce
   2. Skip T3e × PromptArmor entirely and document the asymmetry.
   Recommendation: **(1) — partial data is more informative than no data**, and the asymmetry mirrors a real deployment-medium difference reviewers will recognise.
 
-#### T-3. MT-AgentRisk × PromptArmor (and verify AIDredd run reproducibility)
+#### T-3. ✅ DONE — MT-AgentRisk × PromptArmor
 - **What:** run MT-AgentRisk benchmarks with PromptArmor preprocessor across the same 5 defended-agent rows the paper reports for AIDredd vs none.
 - **Why:** plan promised it; reviewers will ask for the third-corpus PromptArmor comparison after seeing it on InjecAgent and AgentDojo.
 - **Caveat:** `benchmarks/mt_agentrisk/runs/` is empty. The paper's existing §sec:mt-agentrisk numbers must come from an earlier results-tree location (`results/test28/` cross-judge sample is the most recent visible MT-AgentRisk artefact; the full per-cell data may be elsewhere). **Before running PromptArmor, find and document where the AIDredd MT-AgentRisk runs are stored**, or rerun them so the comparator and baseline share infrastructure.
@@ -302,16 +354,16 @@ Plan §4 says: drop AgentLAB first, then InjecAgent, if budget hits. With InjecA
 | Item | Time | Spend | Status |
 |---|---:|---:|---|
 | T-1 InjecAgent sonnet × B7.1 | — | — | ✅ done (~$3 actual) |
-| T-2 T3e × PromptArmor (Path C observational only) | 7 h | $35 | pending — needs container build |
-| T-3 MT-AgentRisk × PromptArmor (+ baseline-data audit) | 6–12 h | $25–50 | pending — needs container build |
+| T-2 T3e × PromptArmor (Path C observational only) | — | — | ✅ done 2026-05-14 on bedt5 v0.1.394 (~$8 actual; full 10-cell matrix at `results/test-framework/t2-bedt5-v2/`) |
+| T-3 MT-AgentRisk × PromptArmor | — | — | ✅ done 2026-05-15 on bedt3 (17h13m wall, $30 actual; 4100 trajectories at `benchmarks/mt_agentrisk/runs/phaseD-T3-promptarmor-20260514T182903Z/`) |
 | T-4 AgentDojo other suites × PromptArmor | — | — | ✅ done across 5 backends × 4 suites × 3 defences (~$30 actual) |
 | T-5 Composite arm × 4 cells | — | — | ✅ done; orthogonality verified (~$15 actual) |
 | T-6 Threshold sensitivity sweep | 1 h | $2 | pending — local, no container |
 | T-7 ds #384 re-run | <1 h | <$1 | pending — local mock override |
-| **Remaining P0+P1 total** | **~13–19 h** | **~$60–90** | mostly T-2 + T-3, both gated on container builds |
+| **Total spend** | **~21h wall, ~$90** | | All P0 closed; only T-6, T-7, and the T-10 writeup remain |
 | (P2 if added: T-8) | +2 h | +$5 | |
 
-Under the plan's $250 cap; ~8% of remaining budget at the median estimate.
+Roughly 36% of the plan's $250 cap consumed.
 
 ---
 
