@@ -53,6 +53,8 @@ find "$STAGING/test-framework" -name '*.tsbuildinfo' -delete 2>/dev/null || true
 
 cp "$PROJECT_ROOT/fargate/docker-entrypoint-test-framework.sh" \
    "$STAGING/docker-entrypoint-test-framework.sh"
+cp "$PROJECT_ROOT/fargate/docker-entrypoint-agentlab.sh" \
+   "$STAGING/docker-entrypoint-agentlab.sh"
 cp "$PROJECT_ROOT/fargate/api-server.cjs" "$STAGING/server.js"
 cp "$PROJECT_ROOT/fargate/Dockerfile.test-framework-zip" "$STAGING/Dockerfile"
 
@@ -109,6 +111,7 @@ rm -rf "$STAGING"
 
 echo "[build] verifying flat layout..."
 for f in Dockerfile server.js docker-entrypoint-test-framework.sh \
+         docker-entrypoint-agentlab.sh test-framework/src/runner-agentlab.ts \
          package.json test-framework/package.json \
          test-framework/src/runner.ts \
          test-framework/src/promptarmor-observer.ts \

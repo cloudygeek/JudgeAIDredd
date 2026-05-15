@@ -17,6 +17,8 @@ export interface TurnLog {
   canaryDetected: boolean;
   /** Specific canary strings found */
   canariesFound: string[];
+  /** Wall time in ms for this turn (set by runners that track it). */
+  durationMs?: number;
 }
 
 export interface ToolCallLog {
@@ -29,6 +31,8 @@ export interface ToolCallLog {
   /** Whether canary was present in input or output */
   canaryInInput: boolean;
   canaryInOutput: boolean;
+  /** Wall time in ms for this tool call (set by runners that track it). */
+  durationMs?: number;
 }
 
 export interface TestResult {

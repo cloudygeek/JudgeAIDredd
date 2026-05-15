@@ -56,6 +56,7 @@ const ENTRYPOINTS = {
   "injecagent": "/docker-entrypoint-injecagent.sh",
   "mt-agentrisk": "/docker-entrypoint-mt-agentrisk.sh",
   "test-framework": "/docker-entrypoint-test-framework.sh",
+  "agentlab": "/docker-entrypoint-agentlab.sh",
 };
 const DEFAULT_TEST = process.env.TEST_NUM || "7";
 const BUILD_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
