@@ -355,6 +355,11 @@ def evaluate_via_dredd(user_instruction: str, tool_name: str, tool_input: dict[s
             "stage": meta.get("stage", ""),
             "judgeVerdict": meta.get("judgeVerdict"),
             "evaluationMs": meta.get("evaluationMs"),
+            # Captured for T-6 (drift-threshold sensitivity sweep):
+            # the embedding similarity that produced this verdict, so
+            # we can post-hoc replay decisions at different
+            # --deny-threshold values without re-running the cell.
+            "similarity": meta.get("similarity"),
         }
     except DreddUnavailableError:
         raise
