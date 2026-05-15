@@ -17,7 +17,8 @@
 
 import http from "http";
 import { spawn } from "child_process";
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync, statSync } from "fs";
+import path from "path";
 
 const PORT = 3000;
 const MAX_LOG_LINES = 20000;
@@ -391,6 +392,53 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ── GET /files — list files under /app/runs/ ─────────────────────────────
+  // ── GET /files/<name> — fetch a single file under /app/runs/ ──────────────
+  // Used to retrieve per-cell results-*.json files when an image lacks the
+  // aws CLI / S3 push didn't run. Read-only, scoped to /app/runs/, no
+  // traversal — anything containing ".." or a leading "/" is rejected.
+  if (req.method === "GET" && url.pathname.startsWith("/files")) {
+    const RUNS_DIR = "/app/runs";
+    const tail = url.pathname.replace(/^\/files\/?/, "");
+    if (tail === "") {
+      try {
+        const entries = readdirSync(RUNS_DIR)
+          .filter((f) => !f.startsWith("."))
+          .map((f) => {
+            try {
+              const st = statSync(path.join(RUNS_DIR, f));
+              return { name: f, size: st.size, mtime: st.mtime.toISOString() };
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify({ dir: RUNS_DIR, files: entries }));
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "list_failed", message: e.message }));
+      }
+      return;
+    }
+    if (tail.includes("..") || tail.includes("/") || tail.includes("\\")) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid filename" }));
+      return;
+    }
+    const target = path.join(RUNS_DIR, tail);
+    try {
+      const buf = readFileSync(target);
+      const ct = tail.endsWith(".json") ? "application/json" : "text/plain; charset=utf-8";
+      res.writeHead(200, { "Content-Type": ct, "Cache-Control": "no-store" });
+      res.end(buf);
+    } catch (e) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Not found", file: tail, message: e.message }));
+    }
+    return;
+  }
+
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "Not found", path: url.pathname }));
 });
@@ -400,6 +448,8 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("  GET  /        health check + status page");
   console.log("  GET  /status  JSON run state");
   console.log("  GET  /logs    plain-text log tail (?n=N)");
+  console.log("  GET  /files   list files under /app/runs/");
+  console.log("  GET  /files/<name>  fetch a file under /app/runs/");
   console.log("  POST /run     start a run (JSON body with optional overrides)");
   console.log("  POST /stop    kill the running process");
 });
