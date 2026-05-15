@@ -88,6 +88,45 @@ export async function bedrockChat(
 }
 
 /**
+ * Low-level Bedrock Converse passthrough — used by the AgentLAB
+ * runner where the previous shape was `execSync("aws bedrock-runtime
+ * converse ...")`. Returning the raw SDK response lets callers do
+ * tool-use parsing themselves.
+ *
+ * Why this exists in addition to bedrockChat: the AgentLAB runner
+ * sends a tool-config block and parses tool_use blocks from the
+ * response; bedrockChat only flattens text. The two helpers share
+ * the same client + region resolution.
+ */
+export async function bedrockConverse(args: {
+  modelId: string;
+  region?: string;
+  messages: any[];
+  system?: any[];
+  inferenceConfig?: any;
+  toolConfig?: any;
+}): Promise<any> {
+  const targetRegion = args.region ?? REGION;
+  const c =
+    targetRegion === REGION
+      ? getClient()
+      : new BedrockRuntimeClient({ region: targetRegion });
+  const input: any = {
+    modelId: args.modelId,
+    messages: args.messages,
+    inferenceConfig: args.inferenceConfig ?? { maxTokens: 1024 },
+  };
+  if (args.system) input.system = args.system;
+  if (args.toolConfig) input.toolConfig = args.toolConfig;
+  const resp = await c.send(new ConverseCommand(input));
+  // The aws-cli version returns a JSON-wire shape; the SDK returns
+  // similar but uses Buffer for image bytes etc. Strip Buffers to
+  // strings so consumers that do `JSON.parse(execSync(...))` style
+  // walks of the response keep working.
+  return JSON.parse(JSON.stringify(resp));
+}
+
+/**
  * Lightweight reachability probe — the constructor-time replacement
  * for checkOllama(). One short embed call confirms the SDK is wired
  * up and the IAM role can call Bedrock.
