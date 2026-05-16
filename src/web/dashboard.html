@@ -1726,9 +1726,14 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     // user is actually looking at.
     let detailToolsRendered = [];
 
+    // Current index in detailToolsRendered. Tracked so keyboard
+    // arrows can step through the open slice without re-clicking.
+    let currentToolDetailIdx = -1;
+
     function openToolDetail(idx) {
       const t = detailToolsRendered[idx];
       if (!t) return;
+      currentToolDetailIdx = idx;
       const decision = t.decision ?? (t.allowed ? 'allow' : 'deny');
       const badgeCls = decision === 'deny' ? 'deny' : 'allow';
       const ts = detailToolsTurnTime(t);
@@ -1748,6 +1753,11 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       } catch {
         inputBlock = String(t.input ?? '');
       }
+      // Pull out structured fields when the tool has well-known shapes,
+      // so the operator sees a readable description + command instead
+      // of one long JSON blob. Falls back to the raw view (kept behind
+      // a <details> toggle) when no extractable shape is recognised.
+      const structuredInput = renderStructuredInput(t);
       // Output / result if present (PostToolUse-side records).
       const out = t.tool_output ?? t.output ?? null;
       let outputBlock = null;
@@ -1769,28 +1779,117 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         similarity ? `<div><span class="muted">Similarity:</span> <span class="mono">${esc(similarity)}</span></div>` : '',
       ].filter(Boolean).join('');
 
+      // Footer with prev/next hint + position in the open slice.
+      const total = detailToolsRendered.length;
+      const navHint = total > 1
+        ? `<div class="muted" style="font-size:0.8em;margin-top:12px;text-align:center">← prev · → next · ${idx + 1} of ${total}</div>`
+        : '';
+
       document.getElementById('tool-detail-body').innerHTML = `
         <div style="display:flex;flex-direction:column;gap:6px;font-size:14px;margin-bottom:16px">${rows}</div>
         ${reason ? `
           <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:12px 0 6px">Reason</h3>
           <div style="font-size:13px;line-height:1.5">${esc(reason)}</div>
         ` : ''}
-        <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 6px">Input</h3>
-        <pre style="max-height:280px">${esc(inputBlock)}</pre>
+        ${structuredInput ? `
+          <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 6px">Input</h3>
+          ${structuredInput}
+          <details style="margin-top:8px">
+            <summary class="muted" style="cursor:pointer;font-size:0.85em">show raw JSON</summary>
+            <pre style="max-height:280px;margin-top:6px">${esc(inputBlock)}</pre>
+          </details>
+        ` : `
+          <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 6px">Input</h3>
+          <pre style="max-height:280px">${esc(inputBlock)}</pre>
+        `}
         ${outputBlock ? `
           <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 6px">Output</h3>
           <pre style="max-height:280px">${esc(outputBlock)}</pre>
         ` : ''}
+        ${navHint}
       `;
       document.getElementById('tool-detail-overlay').style.display = 'flex';
     }
 
+    // Renders an "Input" block tailored to the tool shape. Returns
+    // an HTML string when a known shape is recognised, or null to fall
+    // back to the raw JSON-pretty path. All user-controlled values
+    // are HTML-escaped before reaching the DOM.
+    function renderStructuredInput(t) {
+      const input = t?.input;
+      if (!input || typeof input !== 'object') return null;
+      // Bash: { description, command } — render description above a
+      // command block where each line is its own row. Long Bash
+      // commands often arrive as one chained `&&` line; we don't
+      // re-split on operators (would mis-parse quoted strings), but
+      // we DO split on `\n` so multi-line heredocs and explicit
+      // newlines display readably.
+      if (t.tool === 'Bash' && (typeof input.command === 'string' || typeof input.description === 'string')) {
+        const desc = typeof input.description === 'string' ? input.description : '';
+        const cmd = typeof input.command === 'string' ? input.command : '';
+        const cmdLines = cmd.split('\n').map((l, i) =>
+          `<div class="mono" style="white-space:pre-wrap;word-break:break-all">${esc(l)}</div>`
+        ).join('');
+        return `
+          ${desc ? `<div style="font-size:13px;margin-bottom:8px"><span class="muted">Description:</span> ${esc(desc)}</div>` : ''}
+          ${cmd ? `
+            <div class="muted" style="font-size:0.85em;margin-bottom:4px">Command</div>
+            <pre style="max-height:280px;padding:8px">${cmdLines}</pre>
+          ` : ''}
+        `;
+      }
+      // Read / Write / Edit: file_path (+ content/new_string for the
+      // others). Show the path prominently so it doesn't drown in JSON.
+      if ((t.tool === 'Read' || t.tool === 'Write' || t.tool === 'Edit' || t.tool === 'NotebookEdit')
+          && typeof input.file_path === 'string') {
+        const path = input.file_path;
+        const extra = [];
+        if (typeof input.offset === 'number') extra.push(`offset=${esc(input.offset)}`);
+        if (typeof input.limit === 'number') extra.push(`limit=${esc(input.limit)}`);
+        const meta = extra.length ? `<div class="muted" style="font-size:0.85em;margin-top:4px">${extra.join(', ')}</div>` : '';
+        return `
+          <div style="font-size:13px"><span class="muted">file_path:</span> <span class="mono">${esc(path)}</span></div>
+          ${meta}
+        `;
+      }
+      // WebFetch: { url, prompt }
+      if (t.tool === 'WebFetch' && typeof input.url === 'string') {
+        return `
+          <div style="font-size:13px"><span class="muted">url:</span> <span class="mono">${esc(input.url)}</span></div>
+          ${typeof input.prompt === 'string'
+            ? `<div style="font-size:13px;margin-top:4px"><span class="muted">prompt:</span> ${esc(input.prompt)}</div>`
+            : ''}
+        `;
+      }
+      return null;
+    }
+
     function closeToolDetail() {
       document.getElementById('tool-detail-overlay').style.display = 'none';
+      currentToolDetailIdx = -1;
     }
     function closeToolDetailIfOverlay(event) {
       if (event.target.id === 'tool-detail-overlay') closeToolDetail();
     }
+
+    // Global keydown — only acts while the tool-detail overlay is open.
+    // ← / → step through the currently-rendered Tool Calls slice
+    // without crossing page boundaries (clamps at ends).
+    document.addEventListener('keydown', (e) => {
+      const overlay = document.getElementById('tool-detail-overlay');
+      if (!overlay || overlay.style.display !== 'flex') return;
+      if (currentToolDetailIdx < 0) return;
+      if (e.key === 'ArrowLeft' && currentToolDetailIdx > 0) {
+        e.preventDefault();
+        openToolDetail(currentToolDetailIdx - 1);
+      } else if (e.key === 'ArrowRight' && currentToolDetailIdx < detailToolsRendered.length - 1) {
+        e.preventDefault();
+        openToolDetail(currentToolDetailIdx + 1);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeToolDetail();
+      }
+    });
 
     // ---- Feed-entry detail modal -----------------------------------
     // Called from the inline onclick on every .feed-entry div. The full
@@ -2064,6 +2163,12 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         // full path in the title for hover.
         const root = a.projectRoot ?? '';
         const rootDisplay = root.length > 32 ? '…' + root.slice(-30) : root;
+        // Revoke button: stash all three values on data-* attributes
+        // (each ${esc(...)} both HTML-encodes AND keeps the JS-string
+        // safe via the attribute's quoting). Avoids the old
+        // `onclick="revokeApproval('${...}', ${JSON.stringify(root)}, ...)`
+        // pattern which broke out of the attribute when projectRoot
+        // contained a double-quote.
         return `<tr>
           <td class="mono">${esc(a.tool ?? '-')}</td>
           <td>${esc(a.summary ?? '')}</td>
@@ -2072,10 +2177,19 @@ mv .claude/settings.json .claude/settings.json.dredd-off
           <td class="mono muted">${a.useCount ?? 0}</td>
           <td class="mono muted">${esc(lastUsed)}</td>
           <td class="mono muted">${esc(expires)}</td>
-          <td><button class="refresh-btn"
-                onclick="revokeApproval('${esc(a.fingerprintHash)}', ${JSON.stringify(root)}, ${JSON.stringify(a.ownerSub ?? '')})">Revoke</button></td>
+          <td><button class="refresh-btn revoke-approval-btn"
+                data-fp="${esc(a.fingerprintHash ?? '')}"
+                data-root="${esc(root)}"
+                data-owner="${esc(a.ownerSub ?? '')}">Revoke</button></td>
         </tr>`;
       }).join('');
+      // Wire the click handlers AFTER innerHTML is committed so we read
+      // the values via dataset instead of HTML-interpolating them.
+      tbody.querySelectorAll('button.revoke-approval-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          revokeApproval(btn.dataset.fp, btn.dataset.root, btn.dataset.owner);
+        });
+      });
     }
 
     async function revokeApproval(fingerprintHash, projectRoot, ownerSub) {
