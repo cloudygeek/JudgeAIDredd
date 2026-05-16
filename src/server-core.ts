@@ -923,6 +923,21 @@ export async function buildSessionLogShape(sessionId: string): Promise<Record<st
       evaluationMs: r.evaluationMs,
       userPermissionMatch: r.userPermissionMatch,
       patternTrust: r.patternTrust,
+      // Surface the judge's verdict + reasoning so the tool-detail
+      // popup can render WHY the judge denied (or approved). The
+      // reasoning is judge-LLM output — could echo user-controlled
+      // text — so the dashboard MUST esc() it before rendering.
+      // judgeVerdict is null for stages that never reached the judge
+      // (policy-allow, drift-allow, user-deny, pattern-trust-allow).
+      judgeVerdict: r.judgeVerdict
+        ? {
+            verdict: r.judgeVerdict.verdict,
+            reasoning: r.judgeVerdict.reasoning,
+            confidence: r.judgeVerdict.confidence,
+            durationMs: r.judgeVerdict.durationMs,
+            inputTokens: r.judgeVerdict.inputTokens,
+          }
+        : null,
     })),
   };
 }

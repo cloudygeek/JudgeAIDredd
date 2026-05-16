@@ -1417,7 +1417,18 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       // Tool calls table — paginated. Cache the full list so filter /
       // page changes don't re-fetch. On auto-refresh, keep the user's
       // current filter + page; on first open, reset them.
-      detailToolsCache = data.toolHistory ?? data.interceptorLog ?? [];
+      // Merge data sources for the Tool Calls table + popup:
+      //  - toolHistory  — authoritative chronological list, persisted to
+      //                   Dynamo (survives container restart). Has the
+      //                   basics: tool/input/decision/similarity/timestamp.
+      //  - interceptorLog — same tool calls, in-memory only, with the
+      //                   *rich* fields: stage, reason, judgeVerdict,
+      //                   userPermissionMatch, patternTrust. Lost on
+      //                   container restart.
+      // Zip them tail-aligned: when interceptorLog is shorter (post-
+      // restart), only the most recent N toolHistory entries get
+      // enriched. Older entries keep their basic fields.
+      detailToolsCache = mergeToolSources(data.toolHistory, data.interceptorLog);
       if (!preserveTableState) {
         detailToolFilter = null;
         detailToolPage = 0;
@@ -1630,6 +1641,42 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
+    // Zip toolHistory + interceptorLog tail-aligned. Each output row is
+    // the toolHistory entry merged with the matching interceptorLog
+    // entry (when one exists). interceptorLog enriches with stage,
+    // reason, judgeVerdict, etc. Fields from toolHistory always win on
+    // conflict — it's the persisted source of truth.
+    function mergeToolSources(toolHistory, interceptorLog) {
+      const base = Array.isArray(toolHistory) ? toolHistory : null;
+      const enrich = Array.isArray(interceptorLog) ? interceptorLog : null;
+      if (!base) return enrich ?? [];
+      if (!enrich || enrich.length === 0) return base;
+      const baseLen = base.length;
+      const enrichLen = enrich.length;
+      const startOffset = baseLen - enrichLen; // negative if enrich is longer
+      return base.map((row, i) => {
+        const enrichIdx = i - startOffset;
+        const extra = (enrichIdx >= 0 && enrichIdx < enrichLen) ? enrich[enrichIdx] : null;
+        if (!extra) return row;
+        // Sanity: same tool name? If not, the lists drifted (turn
+        // ordering broke) — don't blindly merge fields. Skip enrichment.
+        if (extra.tool && row.tool && extra.tool !== row.tool) return row;
+        return {
+          ...extra,
+          ...row,
+          // Pull these from the enrich side specifically — toolHistory
+          // doesn't carry them, but if a future schema change adds them
+          // we still want the row's value to win, so we re-overlay any
+          // that toolHistory might have undefined-removed.
+          stage: row.stage ?? extra.stage,
+          reason: row.reason ?? extra.reason,
+          judgeVerdict: row.judgeVerdict ?? extra.judgeVerdict,
+          userPermissionMatch: row.userPermissionMatch ?? extra.userPermissionMatch,
+          patternTrust: row.patternTrust ?? extra.patternTrust,
+        };
+      });
+    }
+
     function detailToolsTurnTime(t) {
       // Tool entries don't always carry a timestamp directly; fall back
       // to the matching turn's metric timestamp when possible.
@@ -1785,12 +1832,37 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         ? `<div class="muted" style="font-size:0.8em;margin-top:12px;text-align:center">← prev · → next · ${idx + 1} of ${total}</div>`
         : '';
 
+      // Judge verdict block, when present. Verdict + reasoning come
+      // from the LLM judge in clean context — but the reasoning may
+      // quote user-controlled snippets (the actual rejected command,
+      // file paths, etc.) so EVERY string here goes through esc().
+      const jv = t.judgeVerdict ?? null;
+      let judgeBlock = '';
+      if (jv && typeof jv === 'object') {
+        const vcls = jv.verdict === 'hijacked' ? 'badge-deny'
+          : jv.verdict === 'drifting' ? 'badge'
+          : 'badge-allow';
+        const meta = [];
+        if (jv.confidence) meta.push(`conf: <span class="mono">${esc(jv.confidence)}</span>`);
+        if (typeof jv.durationMs === 'number') meta.push(`${esc(jv.durationMs)}ms`);
+        if (typeof jv.inputTokens === 'number' && jv.inputTokens > 0) meta.push(`${esc(jv.inputTokens)} tok in`);
+        judgeBlock = `
+          <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 6px">Judge verdict</h3>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+            <span class="badge ${vcls}">${esc(jv.verdict ?? 'unknown')}</span>
+            ${meta.length ? `<span class="muted" style="font-size:0.85em">${meta.join(' · ')}</span>` : ''}
+          </div>
+          ${jv.reasoning ? `<div style="font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(jv.reasoning)}</div>` : ''}
+        `;
+      }
+
       document.getElementById('tool-detail-body').innerHTML = `
         <div style="display:flex;flex-direction:column;gap:6px;font-size:14px;margin-bottom:16px">${rows}</div>
         ${reason ? `
           <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:12px 0 6px">Reason</h3>
           <div style="font-size:13px;line-height:1.5">${esc(reason)}</div>
         ` : ''}
+        ${judgeBlock}
         ${structuredInput ? `
           <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 6px">Input</h3>
           ${structuredInput}
