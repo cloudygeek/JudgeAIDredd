@@ -136,6 +136,28 @@ export interface ToolCallRecord {
    *  pair a Pre-decision with its Post-execution outcome.
    *  Optional: benchmark harnesses don't emit one. */
   toolUseId?: string | null;
+  /** Pipeline stage that made the decision. Persisted from
+   *  InterceptionResult.stage. Optional for backwards compat — pre-
+   *  2026-05-16 records will see undefined. */
+  stage?: string;
+  /** Human-readable reason from InterceptionResult. Drives the
+   *  "Reason" line on the dashboard's tool-detail popup. */
+  reason?: string;
+  /** Judge verdict + reasoning when the call went through the LLM
+   *  judge. Null/undefined for stages that short-circuited earlier
+   *  (policy-allow, drift-allow, user-deny, pattern-trust-allow). */
+  judgeVerdict?: {
+    verdict: "consistent" | "drifting" | "hijacked";
+    reasoning: string;
+    /** Numeric 0..1 — matches JudgeVerdict.confidence shape. */
+    confidence: number;
+    durationMs: number;
+    inputTokens?: number;
+  } | null;
+  /** Phase 4 — which of the user's permission rules matched. */
+  userPermissionMatch?: { kind: "allow" | "deny"; rule: string };
+  /** Phase 8 — pattern-trust signal. */
+  patternTrust?: { hard: boolean; matched: number; topSim: number; topSummary: string };
 }
 
 export interface FileRecord {

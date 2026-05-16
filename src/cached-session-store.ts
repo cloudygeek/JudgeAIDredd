@@ -478,8 +478,15 @@ export class CachedSessionStore implements SessionStore {
     decision: "allow" | "deny" | "review",
     similarity: number | null,
     toolUseId?: string | null,
+    extras?: {
+      stage?: string;
+      reason?: string;
+      judgeVerdict?: ToolCallRecord["judgeVerdict"];
+      userPermissionMatch?: { kind: "allow" | "deny"; rule: string };
+      patternTrust?: { hard: boolean; matched: number; topSim: number; topSummary: string };
+    },
   ): Promise<void> {
-    await this.backend.recordToolCall(sessionId, tool, input, decision, similarity, toolUseId);
+    await this.backend.recordToolCall(sessionId, tool, input, decision, similarity, toolUseId, extras);
     const s = await this.getOrLoad(sessionId);
     s.toolHistory.push({
       turnNumber: s.currentTurn,
@@ -489,6 +496,11 @@ export class CachedSessionStore implements SessionStore {
       similarity,
       toolUseId: toolUseId ?? null,
       timestamp: new Date().toISOString(),
+      stage: extras?.stage,
+      reason: extras?.reason,
+      judgeVerdict: extras?.judgeVerdict ?? null,
+      userPermissionMatch: extras?.userPermissionMatch,
+      patternTrust: extras?.patternTrust,
     });
   }
 

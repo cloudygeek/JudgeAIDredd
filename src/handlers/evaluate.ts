@@ -399,6 +399,13 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     result.allowed ? "allow" : "deny",
     result.similarity,
     tool_use_id,
+    {
+      stage: result.stage,
+      reason: result.reason,
+      judgeVerdict: result.judgeVerdict,
+      userPermissionMatch: result.userPermissionMatch,
+      patternTrust: result.patternTrust,
+    },
   );
 
   let lockState: { strikes: number; locked: boolean; justLocked: boolean } | null = null;

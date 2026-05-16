@@ -444,6 +444,11 @@ export class DynamoSessionStore implements SessionStore {
       similarity: t.similarity ?? null,
       timestamp: t.timestamp,
       toolUseId: t.toolUseId ?? null,
+      stage: t.stage,
+      reason: t.reason,
+      judgeVerdict: t.judgeVerdict ?? null,
+      userPermissionMatch: t.userPermissionMatch,
+      patternTrust: t.patternTrust,
     }));
 
     const turnIntents: TurnIntent[] = turns.map((t) => ({
@@ -1502,11 +1507,32 @@ export class DynamoSessionStore implements SessionStore {
     decision: "allow" | "deny" | "review",
     similarity: number | null,
     toolUseId?: string | null,
+    extras?: {
+      stage?: string;
+      reason?: string;
+      judgeVerdict?: ToolCallRecord["judgeVerdict"];
+      userPermissionMatch?: { kind: "allow" | "deny"; rule: string };
+      patternTrust?: { hard: boolean; matched: number; topSim: number; topSummary: string };
+    },
   ): Promise<void> {
     const meta = await this.getMeta(sessionId);
     const turnNumber = meta?.currentTurn ?? 0;
     const truncated = truncToolInput(input);
     const timestamp = new Date().toISOString();
+
+    // Cap the reason text so a verbose judge reasoning doesn't blow up
+    // the row size. 2KB is plenty for the dashboard's tool-detail view;
+    // longer reasoning is best inspected via container logs.
+    const cappedReason = typeof extras?.reason === "string"
+      ? extras.reason.slice(0, 2000)
+      : undefined;
+    // Same cap on judge reasoning, with the same logic.
+    const cappedJudge = extras?.judgeVerdict
+      ? {
+          ...extras.judgeVerdict,
+          reasoning: extras.judgeVerdict.reasoning?.slice(0, 2000) ?? "",
+        }
+      : null;
 
     // Conditional put with retry on collision. The toolSeq counter is
     // per-container; during ALB sticky failover two containers can both
@@ -1534,6 +1560,15 @@ export class DynamoSessionStore implements SessionStore {
               similarity,
               timestamp,
               toolUseId: toolUseId ?? null,
+              // Persist enrichment so the dashboard can show the reason
+              // / judge verdict even after container restart. Each
+              // field is optional — older rows without them just don't
+              // populate the corresponding UI section.
+              stage: extras?.stage,
+              reason: cappedReason,
+              judgeVerdict: cappedJudge,
+              userPermissionMatch: extras?.userPermissionMatch,
+              patternTrust: extras?.patternTrust,
               ttl: ttl(),
             },
             ConditionExpression: "attribute_not_exists(sk)",

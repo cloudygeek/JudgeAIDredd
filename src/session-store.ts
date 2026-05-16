@@ -278,6 +278,19 @@ export interface SessionStore {
     /** Claude Code's per-call identifier (toolu_*) — optional for
      *  back-compat with benchmark harnesses that don't emit one. */
     toolUseId?: string | null,
+    /** Optional enrichment fields persisted alongside the tool call so
+     *  the dashboard's tool-detail popup can show the reason / stage /
+     *  judge verdict / user-perm match / pattern-trust signal even
+     *  AFTER the container that produced them has been replaced.
+     *  Without this, those fields only live in the volatile
+     *  PreToolInterceptor.toolLog and disappear on container restart. */
+    extras?: {
+      stage?: string;
+      reason?: string;
+      judgeVerdict?: ToolCallRecord["judgeVerdict"];
+      userPermissionMatch?: { kind: "allow" | "deny"; rule: string };
+      patternTrust?: { hard: boolean; matched: number; topSim: number; topSummary: string };
+    },
   ): Promise<void>;
 
   recordHijackStrike(

@@ -402,6 +402,13 @@ export class InMemorySessionStore implements SessionStore {
     decision: "allow" | "deny" | "review",
     similarity: number | null,
     toolUseId?: string | null,
+    extras?: {
+      stage?: string;
+      reason?: string;
+      judgeVerdict?: ToolCallRecord["judgeVerdict"];
+      userPermissionMatch?: { kind: "allow" | "deny"; rule: string };
+      patternTrust?: { hard: boolean; matched: number; topSim: number; topSummary: string };
+    },
   ): Promise<void> {
     const session = this.getSession(sessionId);
     session.toolHistory.push({
@@ -412,6 +419,11 @@ export class InMemorySessionStore implements SessionStore {
       similarity,
       timestamp: new Date().toISOString(),
       toolUseId: toolUseId ?? null,
+      stage: extras?.stage,
+      reason: extras?.reason,
+      judgeVerdict: extras?.judgeVerdict ?? null,
+      userPermissionMatch: extras?.userPermissionMatch,
+      patternTrust: extras?.patternTrust,
     });
   }
 
