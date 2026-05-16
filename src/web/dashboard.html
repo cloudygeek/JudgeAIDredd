@@ -119,6 +119,10 @@
     }
     .badge-allow { background: rgba(63,185,80,0.15); color: var(--green); }
     .badge-deny { background: rgba(248,81,73,0.15); color: var(--red); }
+    /* Goals section — hover and active states for the clickable rows
+       that filter Tool Calls to one turn. */
+    .goal-row:hover { background: rgba(255,255,255,0.04); }
+    .goal-row-active { background: rgba(63,185,80,0.08); border-left: 3px solid var(--green); padding-left: 8px; }
     .badge-on-task { background: rgba(63,185,80,0.15); color: var(--green); }
     .badge-scope-creep { background: rgba(210,153,34,0.15); color: var(--amber); }
     .badge-drifting { background: rgba(248,81,73,0.15); color: var(--red); }
@@ -690,8 +694,8 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       <div id="detail-active-intents"></div>
     </div>
 
-    <div class="detail-section">
-      <h3>Goals <span class="muted" style="font-size:0.7em;font-weight:normal">— full prompt history; current goal highlighted, confirmations muted</span></h3>
+    <div class="detail-section" id="detail-section-intents">
+      <h3>Goals <span class="muted" style="font-size:0.7em;font-weight:normal">— full prompt history; current goal highlighted, confirmations muted. Click a goal to filter Tool Calls to that turn.</span></h3>
       <div id="detail-intents"></div>
     </div>
 
@@ -770,6 +774,10 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     // the detail header sets this. The filter chip above the table
     // shows current state and offers a Clear button.
     let detailToolFilter = null;
+    // Per-turn filter (orthogonal to detailToolFilter). When set,
+    // Tool Calls is narrowed to calls whose turnNumber matches. Set
+    // by clicking a Goals row. null = no turn filter.
+    let detailTurnFilter = null;
     // Cached per-detail-page data so filter changes don't re-fetch.
     let detailToolsCache = [];
     // Page-state for the Tool Calls table. Newest-first; page 0 is
@@ -1385,17 +1393,36 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     function renderSessionDetailData(data, opts) {
       const preserveTableState = !!(opts && opts.preserveTableState);
 
-      document.getElementById('detail-task').textContent = data.currentTask ?? data.originalTask ?? '';
+      // Header line below the title shows the CURRENT intent — the
+      // most recent non-confirmation prompt (computed server-side as
+      // data.currentTask). Falls back to the original prompt when no
+      // later prompt exists yet. Built as separate label + value
+      // spans so the "Current intent:" prefix is visually distinct
+      // from the prompt text.
+      const taskEl = document.getElementById('detail-task');
+      const currentTaskText = data.currentTask ?? data.originalTask ?? '';
+      taskEl.innerHTML = currentTaskText
+        ? `<span class="muted">Current intent:</span> <span>${esc(currentTaskText)}</span>`
+        : '<span class="muted">No intent registered yet</span>';
 
       // Stats — clickable. Each card maps to the action labelled on
       // its hover tooltip. Allowed/Denied filter the Tool Calls
       // table; Tool Calls clears the filter and scrolls to the
-      // table; Files / Turns scroll to their sections.
+      // table; Files / Turns / Intents scroll to their sections.
       const s = data.summary ?? {};
       const allowed = (s.toolCalls ?? 0) - (s.denied ?? 0);
+      // Count non-confirmation intents — the dashboard's idea of
+      // "user goals" excludes "yes" / "ok" style acks (which the
+      // server marked isConfirmation=true on the TurnIntent). Falls
+      // back to total turn count when intents aren't in the payload.
+      const allIntents = data.turnIntents ?? [];
+      const intentCount = allIntents.filter(i => !i?.isConfirmation).length;
       document.getElementById('detail-stats').innerHTML = `
         <div class="stat clickable" onclick="scrollToSection('detail-section-turns')" title="Jump to Turn Metrics">
           <div class="stat-value">${s.turns ?? 0}</div><div class="stat-label">Turns</div>
+        </div>
+        <div class="stat clickable" onclick="scrollToSection('detail-section-intents')" title="Jump to Goals — click a goal to filter Tool Calls to that turn">
+          <div class="stat-value">${intentCount}</div><div class="stat-label">Intents</div>
         </div>
         <div class="stat clickable" onclick="setToolFilter(null)" title="Show all tool calls">
           <div class="stat-value">${s.toolCalls ?? 0}</div><div class="stat-label">Tool Calls</div>
@@ -1431,6 +1458,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       detailToolsCache = mergeToolSources(data.toolHistory, data.interceptorLog);
       if (!preserveTableState) {
         detailToolFilter = null;
+        detailTurnFilter = null;
         detailToolPage = 0;
       }
       renderDetailTools();
@@ -1494,7 +1522,7 @@ mv .claude/settings.json .claude/settings.json.dredd-off
         ? '<div class="empty">No goals recorded</div>'
         : intents.map((intent, i) => {
             if (typeof intent === 'string') {
-              return `<div style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge badge-allow">Turn ${esc(i)}</span> ${esc(intent)}</div>`;
+              return `<div class="goal-row" data-turn="${esc(i)}" style="padding:6px 0;border-bottom:1px solid var(--border);cursor:pointer"><span class="badge badge-allow">Turn ${esc(i)}</span> ${esc(intent)}</div>`;
             }
             const turnNum = intent.turnNumber ?? intent.turn ?? i;
             const text = intent.prompt ?? intent.intent ?? '';
@@ -1507,7 +1535,8 @@ mv .claude/settings.json .claude/settings.json.dredd-off
             if (isLive) tagBits.push('<span class="badge badge-allow">current</span>');
             if (isConfirmation) tagBits.push('<span class="badge muted">confirmation</span>');
             const opacity = isConfirmation ? '0.55' : '1';
-            return `<div style="padding:8px 0;border-bottom:1px solid var(--border);opacity:${opacity}">
+            const activeCls = detailTurnFilter === turnNum ? ' goal-row-active' : '';
+            return `<div class="goal-row${activeCls}" data-turn="${esc(turnNum)}" style="padding:8px 0;border-bottom:1px solid var(--border);opacity:${opacity};cursor:pointer" title="Filter Tool Calls to this turn">
               <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">
                 <span class="mono muted" style="min-width:60px">Turn ${esc(turnNum)}</span>
                 ${tagBits.join(' ')}
@@ -1516,6 +1545,14 @@ mv .claude/settings.json .claude/settings.json.dredd-off
               <div style="white-space:pre-wrap;word-break:break-word">${esc(text)}</div>
             </div>`;
           }).join('');
+      // Wire each goal row to toggle a turn-filter on the Tool Calls
+      // table. Clicking the currently-filtered turn clears it.
+      document.querySelectorAll('#detail-intents .goal-row').forEach(row => {
+        row.addEventListener('click', () => {
+          const t = parseInt(row.dataset.turn ?? '', 10);
+          if (Number.isFinite(t)) setTurnFilter(t);
+        });
+      });
 
       // User Permissions — the snapshot copied from jaid-user-permissions
       // at /intent time. Three lists (allow / deny / ask) plus the upload
@@ -1636,6 +1673,22 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       scrollToSection('detail-section-tools');
     }
 
+    // Filter Tool Calls to one specific turn (clicked from the Goals
+    // section). Clicking the currently-filtered turn clears the
+    // filter. Cooperates with detailToolFilter — both apply.
+    function setTurnFilter(turn) {
+      detailTurnFilter = (detailTurnFilter === turn) ? null : turn;
+      detailToolPage = 0;
+      renderDetailTools();
+      // Re-render Goals so the active-row highlight follows the new
+      // filter. We don't re-fetch — just re-style the existing rows.
+      document.querySelectorAll('#detail-intents .goal-row').forEach(row => {
+        const t = parseInt(row.dataset.turn ?? '', 10);
+        row.classList.toggle('goal-row-active', t === detailTurnFilter);
+      });
+      scrollToSection('detail-section-tools');
+    }
+
     function scrollToSection(id) {
       const el = document.getElementById(id);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1684,13 +1737,20 @@ mv .claude/settings.json .claude/settings.json.dredd-off
     }
 
     function renderDetailTools() {
-      // Filter by decision (null = no filter), then sort newest-first
-      // (toolHistory is registration-order) and paginate.
+      // Filter by decision AND by turn (both null = show all). Both
+      // filters compose — decision narrows by allow/deny, turn
+      // narrows to a single goal's tool calls.
       const all = detailToolsCache;
-      const filtered = !detailToolFilter ? all : all.filter(t => {
-        const decision = t.decision ?? (t.allowed ? 'allow' : 'deny');
-        return decision === detailToolFilter;
-      });
+      let filtered = all;
+      if (detailToolFilter) {
+        filtered = filtered.filter(t => {
+          const decision = t.decision ?? (t.allowed ? 'allow' : 'deny');
+          return decision === detailToolFilter;
+        });
+      }
+      if (detailTurnFilter !== null) {
+        filtered = filtered.filter(t => (t.turn ?? t.turnNumber) === detailTurnFilter);
+      }
       // newest first — last in array is most recent
       const ordered = [...filtered].reverse();
       const totalPages = Math.max(1, Math.ceil(ordered.length / TOOL_PAGE_SIZE));
@@ -1698,15 +1758,20 @@ mv .claude/settings.json .claude/settings.json.dredd-off
       const start = detailToolPage * TOOL_PAGE_SIZE;
       const slice = ordered.slice(start, start + TOOL_PAGE_SIZE);
 
-      // Filter chip
+      // Filter chip — shows both filters if either is active. Each has
+      // its own "clear" link.
       const chip = document.getElementById('detail-tools-filter-chip');
-      if (!detailToolFilter) {
-        chip.innerHTML = '';
-      } else {
+      const parts = [];
+      if (detailToolFilter) {
         const cls = detailToolFilter === 'deny' ? 'badge-deny' : 'badge-allow';
-        chip.innerHTML = ` <span class="badge ${cls}">${esc(detailToolFilter)}</span>` +
-          ` <a href="#" onclick="event.preventDefault();setToolFilter(null)" style="font-size:0.85em;margin-left:6px">clear</a>`;
+        parts.push(`<span class="badge ${cls}">${esc(detailToolFilter)}</span>` +
+          ` <a href="#" onclick="event.preventDefault();setToolFilter(null)" style="font-size:0.85em;margin-left:6px">clear</a>`);
       }
+      if (detailTurnFilter !== null) {
+        parts.push(`<span class="badge">turn ${esc(detailTurnFilter)}</span>` +
+          ` <a href="#" onclick="event.preventDefault();setTurnFilter(${esc(detailTurnFilter)})" style="font-size:0.85em;margin-left:6px">clear</a>`);
+      }
+      chip.innerHTML = parts.length ? ' ' + parts.join(' · ') : '';
 
       // Pager. Hidden when ≤1 page.
       const pager = document.getElementById('detail-tools-pager');
