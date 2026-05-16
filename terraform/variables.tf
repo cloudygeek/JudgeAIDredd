@@ -136,9 +136,9 @@ variable "user_permissions_enforced" {
 }
 
 variable "pattern_learning_enabled" {
-  description = "Phase 8b umbrella flag. When true, /evaluate queries jaid-approvals for prior approvals in scope on every call, embeds the incoming tool call, and folds matches >= SOFT_THRESHOLD (0.6) into the judge prompt as evidence of legitimate intent. Costs one Dynamo Query + one Bedrock embed per /evaluate when enabled. When false, the umbrella is off and Phase 8 is a no-op. Default false — flip after soak."
+  description = "Phase 8b umbrella flag. When true, /evaluate queries jaid-approvals for prior approvals in scope on every call, embeds the incoming tool call, and folds matches >= SOFT_THRESHOLD (0.6) into the judge prompt as evidence of legitimate intent. Costs one Dynamo Query + one Bedrock embed per /evaluate when enabled. When false, the umbrella is off and Phase 8 is a no-op. Default true — prod was bake-tested in soft mode and the default reflects current posture."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "pattern_learning_hard_enabled" {

@@ -464,15 +464,38 @@ export const STORE_BACKEND = (process.env.STORE_BACKEND ?? "memory") as "memory"
 export const DYNAMO_TABLE_NAME = process.env.DYNAMO_TABLE_NAME ?? "jaid-sessions";
 export const DYNAMO_REGION = process.env.DYNAMO_REGION ?? process.env.AWS_REGION ?? "eu-west-1";
 
+// SessionStore wiring.
+//
+// hook role: CachedSessionStore wrapping Dynamo. The hook is the
+//   writer + reader on the hot path (/evaluate). Sticky-session
+//   cookies pin a session to one container so the cache stays
+//   consistent. Each write-through updates the cached snapshot in
+//   place — reads after a write see the new state.
+//
+// dashboard role: bypass the cache and read straight from Dynamo.
+//   The dashboard never writes session state, so it can't keep its
+//   cache in sync. Without bypass, an early loadSession populates
+//   the cache; later hook writes go to Dynamo but the dashboard
+//   keeps serving the stale snapshot until the LRU evicts it
+//   (hours/days on a low-traffic dashboard). Symptom was the
+//   "Current intent" line freezing on an old prompt while the
+//   live feed showed newer ones. Cost: one extra Dynamo Query
+//   per /api/session-log poll — dashboard read volume is tiny.
 export const tracker: SessionStore = STORE_BACKEND === "dynamo"
-  ? new CachedSessionStore({
-      backend: new DynamoSessionStore({
-        tableName: DYNAMO_TABLE_NAME,
-        region: DYNAMO_REGION,
-        embeddingModel: CONFIG.embeddingModel,
-      }),
-      embeddingModel: CONFIG.embeddingModel,
-    })
+  ? (process.env.DREDD_ROLE === "dashboard"
+      ? new DynamoSessionStore({
+          tableName: DYNAMO_TABLE_NAME,
+          region: DYNAMO_REGION,
+          embeddingModel: CONFIG.embeddingModel,
+        })
+      : new CachedSessionStore({
+          backend: new DynamoSessionStore({
+            tableName: DYNAMO_TABLE_NAME,
+            region: DYNAMO_REGION,
+            embeddingModel: CONFIG.embeddingModel,
+          }),
+          embeddingModel: CONFIG.embeddingModel,
+        }))
   : new InMemorySessionStore(CONFIG.embeddingModel);
 
 console.log(
