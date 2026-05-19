@@ -6,6 +6,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Judge AI Dredd is a PreToolUse defence system that intercepts tool calls from Claude Code (or any Claude Agent SDK app) and blocks goal-hijacking / prompt-injection attacks. It runs as an HTTP server (`src/server.ts`) that the CLI talks to via a single bash hook script (`hooks/dredd-hook.sh`), so it can be dropped into any project by editing `.claude/settings.json`.
 
+## Production endpoints
+
+The deployed prod stack lives in AWS account `110745800154` (eu-west-1) and the `acta.io` Route53 zone (`Z3ASY8UIU7J3MV`):
+
+| Role | URL | Purpose |
+|---|---|---|
+| Hook | `https://dredd-hook.acta.io` | Hot path the CLI hook script POSTs to (`/intent`, `/evaluate`, `/track`, `/end`, `/pivot`, `/compact`, `/notification`). Bearer-API-key auth. |
+| Dashboard | `https://dredd.acta.io` | Operator UI (sessions, live feed, approvals, API keys, logs, integration bundle). Clerk-gated. |
+
+These hostnames are baked into `terraform/variables.tf` as the defaults for `hook_host` / `dashboard_host` (with `route53_zone_id` defaulting to the acta.io zone) — a fresh `tofu apply` in this repo targets prod with no extra flags. To deploy elsewhere, override those three vars in a `.tfvars`.
+
+## Integrating another machine with this prod stack
+
+For an additional developer or machine to start having their Claude Code sessions judged by the prod Dredd:
+
+1. **Sign in to `https://dredd.acta.io`** with Clerk (Google SSO). On first sign-in the user gets a `user`-role identity scoped to their own sessions/keys; admins are hard-coded in `src/clerk-auth.ts` (see "Dashboard auth").
+2. **API Keys tab → Generate key.** The plaintext key is shown ONCE — copy it into `~/.claude/dredd/api-key` (chmod 600). The key is hashed before storage; revoke from the same UI any time.
+3. **Integration tab → Download bundle.** The dashboard ships a zip containing:
+    - `dredd-hook.sh` — the hook script with `DREDD_URL=https://dredd-hook.acta.io` baked in (so no env-var setup is needed)
+    - `settings.json.example` — drop-in for `~/.claude/settings.json` wiring the hook into UserPromptSubmit / PreToolUse / PostToolUse / Stop / SessionEnd / Notification
+    - `README.txt` — install steps
+4. **Drop the hook + settings into place**, restart Claude Code. Verify with `curl -H "Authorization: Bearer $(cat ~/.claude/dredd/api-key)" https://dredd-hook.acta.io/api/health`.
+
+Bypassing the bundle is fine too — point your local hook at `DREDD_URL=https://dredd-hook.acta.io` via env var or by editing the first line of the shipped `hooks/dredd-hook.sh`. The hook is self-contained bash + jq + curl, no Node runtime needed on the client.
+
 ## Common commands
 
 ```bash
