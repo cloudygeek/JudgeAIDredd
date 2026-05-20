@@ -249,7 +249,15 @@ function isQwenModel(model: string): boolean {
 
 function selectBackend(model: string): "sdk" | "converse" {
   if (BACKEND !== "auto") return BACKEND;
-  return isQwenModel(model) ? "converse" : "sdk";
+  if (isQwenModel(model)) return "converse";
+  // Workaround (2026-05-20): claude-code 2.1.145 + agent-sdk 0.2.92 emit
+  // thinking.type=enabled to Bedrock for opus-4-7 even when the runner
+  // passes thinking={type:"adaptive"} (verified via diagnostic stderr).
+  // Bedrock rejects enabled on opus-4-7, so every SDK turn 400s before a
+  // tool fires. Route opus-4-7 through Converse — the qwen path already
+  // proves that backend supports the agent loop + interceptor.
+  if (resolveModel(model).includes("opus-4-7")) return "converse";
+  return "sdk";
 }
 
 // ---------------------------------------------------------------------------
@@ -851,14 +859,6 @@ async function executeWithSdk(
 
   if (hooks) queryOptions.hooks = hooks;
   if (sessionId) queryOptions.resumeSessionId = sessionId;
-
-  // One-shot diagnostic: prove which bedrockModel + thinking config went to the
-  // SDK. Cheap, fires once per turn — leave in until the opus-4-7 thinking
-  // contract is verified working in prod, then strip.
-  process.stderr.write(
-    `[runner-agentlab] executeWithSdk model=${model} bedrockModel=${bedrockModel} ` +
-    `thinking=${JSON.stringify(queryOptions.thinking ?? "(unset)")}\n`,
-  );
 
   for await (const message of query({
     prompt: userMessage,
