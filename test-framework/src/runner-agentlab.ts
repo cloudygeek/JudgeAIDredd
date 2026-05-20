@@ -176,7 +176,7 @@ if (SMOKE && !DEFENCES_EXPLICIT && !values["dredd-on"] && !values["dredd-off"]) 
 const MODELS = values.smoke
   ? values.models!.split(",").map((s) => s.trim()).slice(0, 1)
   : values.models!.split(",").map((s) => s.trim());
-const BACKEND = values.backend! as "auto" | "sdk" | "converse";
+const BACKEND = values.backend! as "auto" | "sdk" | "converse" | "openai";
 const SCENARIO_MODE = values.scenarios!;
 const ATTACK_TYPES = values["attack-types"]!.split(",").map((s) => s.trim());
 const RANDOM_SEED = parseInt(values["random-seed"]!, 10);
@@ -237,9 +237,20 @@ const QWEN_MODEL_MAP: Record<string, string> = {
   "qwen3-coder-30b": "qwen.qwen3-coder-30b-a3b-v1:0",
 };
 
+const OPENAI_MODEL_MAP: Record<string, string> = {
+  "gpt-4o-mini": "gpt-4o-mini",
+  "gpt-4o": "gpt-4o",
+  "gpt-4.1-mini": "gpt-4.1-mini",
+};
+
 function resolveModel(model: string): string {
   if (model.includes(".") || model.includes(":")) return model;
-  return ANTHROPIC_MODEL_MAP[model] ?? QWEN_MODEL_MAP[model] ?? model;
+  return (
+    ANTHROPIC_MODEL_MAP[model] ??
+    QWEN_MODEL_MAP[model] ??
+    OPENAI_MODEL_MAP[model] ??
+    model
+  );
 }
 
 function isQwenModel(model: string): boolean {
@@ -247,8 +258,13 @@ function isQwenModel(model: string): boolean {
   return resolved.startsWith("qwen.") || model.startsWith("qwen");
 }
 
-function selectBackend(model: string): "sdk" | "converse" {
+function isOpenAiModel(model: string): boolean {
+  return model.startsWith("gpt-") || model in OPENAI_MODEL_MAP;
+}
+
+function selectBackend(model: string): "sdk" | "converse" | "openai" {
   if (BACKEND !== "auto") return BACKEND;
+  if (isOpenAiModel(model)) return "openai";
   if (isQwenModel(model)) return "converse";
   // Workaround (2026-05-20): claude-code 2.1.145 + agent-sdk 0.2.92 emit
   // thinking.type=enabled to Bedrock for opus-4-7 even when the runner
@@ -357,7 +373,10 @@ async function screenViaPromptArmor(
   }
 }
 
-function modelProvider(model: string): "anthropic" | "bedrock-qwen" {
+function modelProvider(
+  model: string,
+): "anthropic" | "bedrock-qwen" | "openai" {
+  if (isOpenAiModel(model)) return "openai";
   return isQwenModel(model) ? "bedrock-qwen" : "anthropic";
 }
 
@@ -1049,6 +1068,166 @@ async function executeWithConverse(
 }
 
 // ---------------------------------------------------------------------------
+// OpenAI executor (Chat Completions tool-use loop)
+// ---------------------------------------------------------------------------
+
+interface OpenAiToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+interface OpenAiMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content?: string | null;
+  tool_calls?: OpenAiToolCall[];
+  tool_call_id?: string;
+}
+
+const OPENAI_TOOL_SPECS = TOOL_SPECS.map((t) => ({
+  type: "function" as const,
+  function: {
+    name: t.toolSpec.name,
+    description: t.toolSpec.description,
+    parameters: t.toolSpec.inputSchema.json,
+  },
+}));
+
+async function callOpenAi(
+  messages: OpenAiMessage[],
+  modelId: string,
+  apiKey: string,
+): Promise<OpenAiMessage> {
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: modelId,
+      messages,
+      tools: OPENAI_TOOL_SPECS,
+      tool_choice: "auto",
+      max_tokens: 4096,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`OpenAI ${res.status}: ${body.slice(0, 500)}`);
+  }
+  const json: any = await res.json();
+  const choice = json.choices?.[0]?.message;
+  if (!choice) throw new Error(`OpenAI: empty choices`);
+  return choice as OpenAiMessage;
+}
+
+async function executeWithOpenAi(
+  userMessage: string,
+  workDir: string,
+  model: string,
+  conversationHistory: OpenAiMessage[],
+  systemPrompt: string,
+  turnNum: number,
+  interceptor?: PreToolInterceptor,
+  interceptionLog?: InterceptionLog[],
+  promptarmorEnabled: boolean = false,
+  taskContext: string = "",
+  promptarmorScreens?: ScreenResult[],
+): Promise<{ toolCalls: ToolCallLog[]; assistantText: string }> {
+  const apiKey = process.env.OPENAI_API_KEY ?? "";
+  if (!apiKey) {
+    throw new Error(
+      "OPENAI_API_KEY not set — required for gpt-* models on AgentLAB",
+    );
+  }
+  const modelId = resolveModel(model);
+  const turnToolCalls: ToolCallLog[] = [];
+  let assistantText = "";
+
+  if (conversationHistory.length === 0) {
+    conversationHistory.push({ role: "system", content: systemPrompt });
+  }
+  conversationHistory.push({ role: "user", content: userMessage });
+
+  let toolLoopCount = 0;
+  const MAX_TOOL_LOOPS = 20;
+
+  while (toolLoopCount < MAX_TOOL_LOOPS) {
+    toolLoopCount++;
+
+    const choice = await callOpenAi(conversationHistory, modelId, apiKey);
+    conversationHistory.push(choice);
+
+    if (choice.content) assistantText += choice.content;
+
+    const toolCalls = choice.tool_calls ?? [];
+    if (toolCalls.length === 0) break;
+
+    for (const tc of toolCalls) {
+      const tcStart = Date.now();
+      const name = tc.function.name;
+      let input: Record<string, unknown> = {};
+      try {
+        input = JSON.parse(tc.function.arguments || "{}");
+      } catch {
+        input = { _raw: tc.function.arguments };
+      }
+
+      let denialReason: string | null = null;
+      if (interceptor) {
+        const intercept = await interceptor.evaluate(name, input);
+        interceptionLog?.push({
+          turn: turnNum,
+          tool: name,
+          input,
+          allowed: intercept.allowed,
+          stage: intercept.stage,
+          similarity: intercept.similarity,
+          reason: intercept.reason,
+          evaluationMs: intercept.evaluationMs,
+        });
+        if (!intercept.allowed) {
+          denialReason = intercept.reason;
+          console.log(
+            `    [PRE-TOOL DENY] turn ${turnNum} ${name}: ${intercept.reason}`,
+          );
+        }
+      }
+
+      let truncOutput =
+        denialReason !== null
+          ? `[denied by dredd PreToolUse gate: ${denialReason}. ` +
+            `Stay focused on the original task.]`
+          : executeTool(name, input, workDir).substring(0, 10000);
+
+      if (promptarmorEnabled) {
+        const scr = await screenViaPromptArmor(name, truncOutput, taskContext);
+        promptarmorScreens?.push(scr);
+        if (scr.applied) truncOutput = scr.output;
+      }
+
+      turnToolCalls.push({
+        tool: name,
+        input,
+        output: truncOutput,
+        canaryInInput: detectCanaries(JSON.stringify(input)).length > 0,
+        canaryInOutput: detectCanaries(truncOutput).length > 0,
+        durationMs: Date.now() - tcStart,
+      });
+
+      conversationHistory.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: truncOutput,
+      });
+    }
+  }
+
+  return { toolCalls: turnToolCalls, assistantText };
+}
+
+// ---------------------------------------------------------------------------
 // AgentLAB judge
 // ---------------------------------------------------------------------------
 
@@ -1178,7 +1357,7 @@ interface TrajectoryResult {
   attackType: string;
   environment: string;
   model: string;
-  provider: "anthropic" | "bedrock-qwen";
+  provider: "anthropic" | "bedrock-qwen" | "openai";
   region: string;
   defence: string;
   turns: TurnLog[];
@@ -1318,6 +1497,7 @@ async function runTrajectory(
   const allMessages = [scenario.initialTask, ...scenario.attackPayloads];
   let sdkSessionId: string | undefined;
   const converseHistory: ConverseMessage[] = [];
+  const openaiHistory: OpenAiMessage[] = [];
 
   for (
     let turnNum = 0;
@@ -1355,6 +1535,22 @@ async function runTrajectory(
         toolCalls = result.toolCalls;
         assistantText = result.assistantText;
         sdkSessionId = result.sessionId;
+      } else if (backend === "openai") {
+        const result = await executeWithOpenAi(
+          userMessage,
+          workDir,
+          model,
+          openaiHistory,
+          SYSTEM_PROMPT,
+          turnNum,
+          preToolInterceptor,
+          interceptionLog,
+          promptarmorEnabled,
+          scenario.initialTask,
+          promptarmorScreens,
+        );
+        toolCalls = result.toolCalls;
+        assistantText = result.assistantText;
       } else {
         const result = await executeWithConverse(
           userMessage,
