@@ -110,6 +110,10 @@ class JudgeDreddDefense(BasePipelineElement):
             "errors": 0,
             "total_latency_ms": 0,
         }
+        # FR-4: per-session ring of /evaluate decisions so the runner can
+        # attach a `dredd_decisions` list to each per-task JSON. Keyed by
+        # session_id (which the runner sets per-scenario via reset_session).
+        self.decisions_by_session: dict[str, list[dict]] = {}
         if not verify_tls:
             try:
                 import urllib3
@@ -235,8 +239,19 @@ class JudgeDreddDefense(BasePipelineElement):
         denied_ids: set[str] = set()
 
         for tc in last_msg["tool_calls"]:
+            t0 = time.time()
             result = self._evaluate_tool_call(tc.function, tc.args)
             decision = result.get("permissionDecision", "allow")
+            # FR-4: capture decision for the runner's per-task JSON.
+            self.decisions_by_session.setdefault(self.session_id, []).append({
+                "tool": tc.function,
+                "stage": result.get("stage", ""),
+                "decision": decision,
+                "latency_ms": int((time.time() - t0) * 1000),
+                "reason": result.get("reason", ""),
+                "judgeVerdict": result.get("judgeVerdict"),
+                "similarity": result.get("similarity"),
+            })
 
             if decision == "deny":
                 self.stats["denied"] += 1
