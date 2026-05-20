@@ -18,9 +18,36 @@
  * AgentLAB-style judge (succeeded / refused / failed).
  *
  * Companion: docs/test-plan-agentlab-2026-04-27.md
+ *
+ * ---------------------------------------------------------------------------
+ * FR-4 (TEST_REQUIREMENTS.md) compliance
+ * ---------------------------------------------------------------------------
+ *
+ *   node node_modules/tsx/dist/cli.mjs src/runner-agentlab.ts --smoke --dredd-on
+ *   node node_modules/tsx/dist/cli.mjs src/runner-agentlab.ts --smoke --dredd-off
+ *
+ *   --dredd-on / --dredd-off   Boolean toggle. Equivalent to
+ *                              --defences intent-tracker / --defences none.
+ *                              Mutually exclusive with explicit --defences.
+ *   --smoke                    Single trajectory (one scenario, first model,
+ *                              MAX_TURNS clamped to 4) for fast acceptance.
+ *
+ * Per-trajectory JSON is augmented with task_id, outcome, tool_calls,
+ * dredd_decisions, walltime_ms in addition to the existing shape. Default
+ * --output-dir for fresh runs is benchmarks/agentlab/runs/<run-id>/.
  */
 
 import { parseArgs } from "node:util";
+
+// AWS_BEARER_TOKEN_BEDROCK trap: when set (e.g. from a previous Bedrock
+// playground session) it takes precedence over IAM creds and produces opaque
+// AccessDeniedException downstream. Strip it on entry.
+if (process.env.AWS_BEARER_TOKEN_BEDROCK) {
+  delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+  console.error(
+    "note: stripped AWS_BEARER_TOKEN_BEDROCK from env — using resolved IAM creds",
+  );
+}
 import {
   writeFileSync,
   mkdirSync,
@@ -86,7 +113,12 @@ const { values } = parseArgs({
     "agent-region": { type: "string" },
     "agentlab-commit": { type: "string", default: "unknown" },
     "agentlab-path": { type: "string", default: "/opt/agentlab" },
-    "output-dir": { type: "string", default: "./results/test25/" },
+    "output-dir": { type: "string" },
+    // FR-4 boolean Dredd toggle (mutually exclusive with --defences).
+    "dredd-on": { type: "boolean", default: false },
+    "dredd-off": { type: "boolean", default: false },
+    // FR-4 smoke flag — single trajectory, clamped MAX_TURNS=4.
+    smoke: { type: "boolean", default: false },
     // T-8 PromptArmor pre-screen wiring (2026-05-15). When --defences
     // includes "promptarmor", every tool output is routed through
     // /screen on the Dredd hook before the agent receives it. If the
@@ -103,13 +135,57 @@ const { values } = parseArgs({
   },
 });
 
-const MODELS = values.models!.split(",").map((s) => s.trim());
+// ---------------------------------------------------------------------------
+// FR-4: resolve --dredd-on / --dredd-off / --defences interplay
+// ---------------------------------------------------------------------------
+
+// parseArgs doesn't tell us whether a default-bearing string flag was set
+// explicitly. Inspect raw argv to detect that.
+const RAW_ARGV = process.argv.slice(2);
+const DEFENCES_EXPLICIT = RAW_ARGV.some(
+  (a) => a === "--defences" || a.startsWith("--defences="),
+);
+
+if (values["dredd-on"] && values["dredd-off"]) {
+  console.error("error: --dredd-on and --dredd-off are mutually exclusive");
+  process.exit(2);
+}
+if ((values["dredd-on"] || values["dredd-off"]) && DEFENCES_EXPLICIT) {
+  console.error(
+    "error: --dredd-on / --dredd-off cannot be combined with an explicit --defences value. " +
+      "Use --dredd-on (== --defences intent-tracker) or --dredd-off (== --defences none) — not both.",
+  );
+  process.exit(2);
+}
+
+if (values["dredd-on"]) {
+  values.defences = "intent-tracker";
+} else if (values["dredd-off"]) {
+  values.defences = "none";
+}
+
+const SMOKE = !!values.smoke;
+
+// Smoke without an explicit Dredd toggle and no explicit --defences would
+// otherwise expand to "none,intent-tracker" (two trajectories). FR-4 says
+// "single short trajectory", so clamp the defaults to one arm.
+if (SMOKE && !DEFENCES_EXPLICIT && !values["dredd-on"] && !values["dredd-off"]) {
+  values.defences = "none";
+}
+
+const MODELS = values.smoke
+  ? values.models!.split(",").map((s) => s.trim()).slice(0, 1)
+  : values.models!.split(",").map((s) => s.trim());
 const BACKEND = values.backend! as "auto" | "sdk" | "converse";
 const SCENARIO_MODE = values.scenarios!;
 const ATTACK_TYPES = values["attack-types"]!.split(",").map((s) => s.trim());
 const RANDOM_SEED = parseInt(values["random-seed"]!, 10);
 const DEFENCES = values.defences!.split(",").map((s) => s.trim());
-const MAX_TURNS = parseInt(values["max-turns"]!, 10);
+// Smoke clamps MAX_TURNS to 4 so a single trajectory exits in well under
+// a minute even on the slowest backend.
+const MAX_TURNS = SMOKE
+  ? Math.min(4, parseInt(values["max-turns"]!, 10))
+  : parseInt(values["max-turns"]!, 10);
 const BENCHMARK_JUDGE_MODEL = values["benchmark-judge-model"]!;
 const BENCHMARK_JUDGE_TEMP = parseFloat(
   values["benchmark-judge-temperature"]!,
@@ -124,7 +200,11 @@ const DELTA_WARN = parseFloat(values["delta-warn"]!);
 const AGENT_REGION = values["agent-region"];
 const AGENTLAB_COMMIT = values["agentlab-commit"]!;
 const AGENTLAB_PATH = values["agentlab-path"]!;
-const OUTPUT_DIR = values["output-dir"]!;
+// FR-4 (ii): default output for fresh runs is benchmarks/agentlab/runs/<run-id>/.
+// Caller can still override with --output-dir.
+const RUN_ID_DEFAULT = new Date().toISOString().replace(/[:.]/g, "-");
+const OUTPUT_DIR =
+  values["output-dir"] ?? join("benchmarks", "agentlab", "runs", RUN_ID_DEFAULT);
 const PROMPTARMOR_URL = values["promptarmor-url"]!;
 const PROMPTARMOR_BACKEND = values["promptarmor-backend"]!;
 const PROMPTARMOR_MODEL = values["promptarmor-model"]!;
@@ -1049,6 +1129,31 @@ Respond with ONLY a JSON object:
 // Per-trajectory executor
 // ---------------------------------------------------------------------------
 
+// FR-4 canonical per-task outcome label.
+type Fr4Outcome =
+  | "attack_succeeded"
+  | "attack_blocked"
+  | "attack_refused"
+  | "benign_completed"
+  | "benign_failed"
+  | "error";
+
+// FR-4 canonical tool-call shape (additive to the existing toolCalls in
+// TurnLog). One entry per tool call, including blocked ones.
+interface Fr4ToolCall {
+  tool: string;
+  input: Record<string, unknown>;
+  executed: boolean;
+  turn: number;
+}
+
+// FR-4 canonical Dredd decision shape.
+interface Fr4DreddDecision {
+  stage: string;
+  decision: "allow" | "deny" | "ask";
+  latency_ms: number;
+}
+
 interface TrajectoryResult {
   scenarioId: string;
   attackType: string;
@@ -1081,6 +1186,12 @@ interface TrajectoryResult {
     embedModel: string;
     thresholds: { deny: number; review: number };
   };
+  // FR-4 canonical fields (additive — original shape above is preserved).
+  task_id: string;
+  outcome: Fr4Outcome;
+  tool_calls: Fr4ToolCall[];
+  dredd_decisions: Fr4DreddDecision[];
+  walltime_ms: number;
 }
 
 const SYSTEM_PROMPT =
@@ -1288,6 +1399,59 @@ async function runTrajectory(
   // Call AgentLAB judge
   const judgeResult = await callAgentLabJudge(scenario, turns);
 
+  // -------------------------------------------------------------------------
+  // FR-4 canonical fields
+  // -------------------------------------------------------------------------
+
+  const task_id = `agentlab/${scenario.id}/${defence}/${model}`;
+
+  const tool_calls: Fr4ToolCall[] = [];
+  for (const t of turns) {
+    for (const tc of t.toolCalls) {
+      const blocked =
+        typeof tc.output === "string" &&
+        tc.output.startsWith("[denied by dredd PreToolUse gate");
+      tool_calls.push({
+        tool: tc.tool,
+        input: (tc.input ?? {}) as Record<string, unknown>,
+        executed: !blocked,
+        turn: t.turnNumber,
+      });
+    }
+  }
+  for (const il of interceptionLog) {
+    if (il.allowed) continue;
+    const already = tool_calls.some(
+      (tc) =>
+        tc.tool === il.tool &&
+        tc.turn === il.turn &&
+        JSON.stringify(tc.input) === JSON.stringify(il.input ?? {}),
+    );
+    if (!already) {
+      tool_calls.push({
+        tool: il.tool,
+        input: (il.input ?? {}) as Record<string, unknown>,
+        executed: false,
+        turn: il.turn,
+      });
+    }
+  }
+
+  const dredd_decisions: Fr4DreddDecision[] =
+    defence === "intent-tracker"
+      ? interceptionLog.map((il) => ({
+          stage: il.stage,
+          decision: il.allowed ? "allow" : "deny",
+          latency_ms: il.evaluationMs,
+        }))
+      : [];
+
+  const walltime_ms = Date.now() - startTime;
+  let outcome: Fr4Outcome;
+  if (judgeResult.label === "succeeded") outcome = "attack_succeeded";
+  else if (judgeResult.label === "refused") outcome = "attack_refused";
+  else outcome = "attack_blocked";
+
   return {
     scenarioId: scenario.id,
     attackType: scenario.attackType,
@@ -1309,7 +1473,7 @@ async function runTrajectory(
     promptarmorScreens: promptarmorEnabled ? promptarmorScreens : undefined,
     attackSucceeded: judgeResult.label === "succeeded",
     agentRefused: judgeResult.label === "refused",
-    durationMs: Date.now() - startTime,
+    durationMs: walltime_ms,
     timestamp: new Date().toISOString(),
     agentlabCommit: AGENTLAB_COMMIT,
     dreddConfig: {
@@ -1318,6 +1482,12 @@ async function runTrajectory(
       embedModel: EMBED_MODEL,
       thresholds: { deny: THETA_WARN, review: THETA_BLOCK },
     },
+    // FR-4 canonical fields.
+    task_id,
+    outcome,
+    tool_calls,
+    dredd_decisions,
+    walltime_ms,
   };
 }
 
@@ -1413,7 +1583,21 @@ async function main() {
       ? 2
       : parseInt(SCENARIO_MODE.replace("stratified-", ""), 10) /
           ATTACK_TYPES.length || 2;
-  const scenarios = sampleStratified(catalogue, perType, RANDOM_SEED);
+  let scenarios = sampleStratified(catalogue, perType, RANDOM_SEED);
+
+  // FR-4 smoke: pick exactly one scenario.
+  if (SMOKE) {
+    const SMOKE_SCENARIO_ID = "intent_hijacking-filesystem-0";
+    const preferred = catalogue.find((s) => s.id === SMOKE_SCENARIO_ID);
+    const chosen = preferred ?? catalogue[0];
+    if (!chosen) {
+      console.error("error: --smoke selected but scenario catalogue is empty");
+      process.exit(2);
+    }
+    scenarios = [chosen];
+    console.log(`  [SMOKE] using scenario "${chosen.id}" only`);
+  }
+
   console.log(
     `  Sampled ${scenarios.length} scenarios (${perType} per attack type)`,
   );
@@ -1452,6 +1636,22 @@ async function main() {
           const trajectory = await runTrajectory(scenario, model, defence);
           cellTrajectories.push(trajectory);
           allTrajectories.push(trajectory);
+
+          // FR-4 (ii): per-task JSON file under
+          // benchmarks/agentlab/runs/<run-id>/. The full trajectory blob
+          // (which already contains the FR-4 canonical fields) is written
+          // so the schema requirement (task_id, outcome, tool_calls,
+          // dredd_decisions, walltime_ms) is satisfied without losing
+          // any existing detail.
+          try {
+            const safeTaskId = trajectory.task_id.replace(/[\/]/g, "__");
+            const taskPath = join(OUTPUT_DIR, `${safeTaskId}.json`);
+            writeFileSync(taskPath, JSON.stringify(trajectory, null, 2));
+          } catch (writeErr) {
+            console.error(
+              `    [FR-4 per-task write failed] ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,
+            );
+          }
 
           console.log(
             `    RESULT: ${trajectory.judge.agentlab.label} (${trajectory.durationMs}ms) — ${trajectory.judge.agentlab.reason.substring(0, 100)}`,
