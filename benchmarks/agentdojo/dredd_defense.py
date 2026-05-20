@@ -8,6 +8,7 @@ messages so the agent can continue.
 
 import json
 import logging
+import os
 import time
 from collections.abc import Sequence
 from urllib.parse import urljoin
@@ -98,6 +99,15 @@ class JudgeDreddDefense(BasePipelineElement):
         self._session_id_base = session_id
         self.session_id = session_id
         self.prompt_variant = prompt_variant
+        # Env-var fallbacks defend against entrypoints that don't thread
+        # --promptarmor-api-key / --promptarmor-no-verify-tls all the
+        # way through. Without this, an unset CLI flag silently 401s
+        # every /evaluate call (bedt3 phaseB-bedrock 2026-05-20 hit
+        # 5 consecutive 401s and aborted the cell).
+        if api_key is None:
+            api_key = os.environ.get("DREDD_API_KEY")
+        if verify_tls and os.environ.get("DREDD_VERIFY_TLS", "true").lower() == "false":
+            verify_tls = False
         self.api_key = api_key
         self.verify_tls = verify_tls
         self._intent_registered = False

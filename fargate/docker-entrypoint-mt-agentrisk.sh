@@ -131,6 +131,16 @@ run_cell() {
     args+=(--promptarmor-backend "$PROMPTARMOR_BACKEND")
     args+=(--promptarmor-model "$PROMPTARMOR_MODEL")
     args+=(--promptarmor-run-id "$RUN_ID")
+  fi
+  # Dredd-using cells (intent-tracker, intent-tracker+promptarmor) AND
+  # PromptArmor cells share the --promptarmor-{api-key,no-verify-tls}
+  # flags — they control auth + TLS for the same hook ALB regardless
+  # of which defence is in play. Without these, intent-tracker cells
+  # SSL-fail (self-signed CA) or 401-fail every /intent + /evaluate
+  # call, fail-open silently, and report bare-agent ASR with a
+  # defence label. (bedt5 mt-agentrisk 2026-05-20: 7h of broken
+  # telemetry from this exact bug.)
+  if [[ "$defence" != "none" ]]; then
     args+=(--promptarmor-no-verify-tls)
     if [[ -n "${DREDD_API_KEY:-}" ]]; then
       args+=(--promptarmor-api-key "$DREDD_API_KEY")

@@ -2,11 +2,22 @@
 
 Talks to Judge Dredd's /intent, /evaluate, /end endpoints.
 Fail-open on errors (returns "allow" if Dredd is unreachable).
+
+Auth + TLS:
+  - api_key defaults to env DREDD_API_KEY when constructor arg is None.
+    The hook ALB requires Bearer auth when DREDD_AUTH_MODE=required
+    (the prod default). Without a key /intent and /evaluate return 401
+    and every call is fail-open — defeating the benchmark.
+  - verify_tls defaults to env DREDD_VERIFY_TLS != "false". The
+    AI-Sandbox internal ALBs sign with CKO's self-signed CA chain
+    which isn't in the container trust store, so set the env var to
+    "false" when hitting *.aisandbox.dev.ckotech.internal.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 import requests
@@ -16,8 +27,17 @@ logger = logging.getLogger(__name__)
 
 class DreddBridge:
 
-    def __init__(self, dredd_url: str = "http://localhost:3001"):
+    def __init__(
+        self,
+        dredd_url: str = "http://localhost:3001",
+        api_key: str | None = None,
+        verify_tls: bool | None = None,
+    ):
         self.dredd_url = dredd_url.rstrip("/")
+        self.api_key = api_key if api_key is not None else os.environ.get("DREDD_API_KEY")
+        if verify_tls is None:
+            verify_tls = os.environ.get("DREDD_VERIFY_TLS", "true").lower() != "false"
+        self.verify_tls = verify_tls
         self.stats = {
             "evaluated": 0,
             "allowed": 0,
@@ -25,13 +45,27 @@ class DreddBridge:
             "errors": 0,
             "total_latency_ms": 0.0,
         }
+        if not self.verify_tls:
+            try:
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            except Exception:
+                pass
+
+    def _headers(self) -> dict:
+        h = {"Content-Type": "application/json"}
+        if self.api_key:
+            h["Authorization"] = f"Bearer {self.api_key}"
+        return h
 
     def register_intent(self, session_id: str, prompt: str) -> dict:
         try:
             resp = requests.post(
                 f"{self.dredd_url}/intent",
                 json={"session_id": session_id, "prompt": prompt},
+                headers=self._headers(),
                 timeout=10,
+                verify=self.verify_tls,
             )
             resp.raise_for_status()
             logger.info("Dredd intent registered: %s", prompt[:80])
@@ -50,7 +84,9 @@ class DreddBridge:
                     "tool_name": tool_name,
                     "tool_input": tool_input,
                 },
+                headers=self._headers(),
                 timeout=30,
+                verify=self.verify_tls,
             )
             resp.raise_for_status()
             result = resp.json()
@@ -85,7 +121,9 @@ class DreddBridge:
             resp = requests.post(
                 f"{self.dredd_url}/end",
                 json={"session_id": session_id},
+                headers=self._headers(),
                 timeout=5,
+                verify=self.verify_tls,
             )
             resp.raise_for_status()
             return resp.json()

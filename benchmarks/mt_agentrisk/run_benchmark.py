@@ -699,7 +699,11 @@ def main():
             uses_dredd = "intent-tracker" in defence
             uses_pa = "promptarmor" in defence
 
-            dredd = DreddBridge(args.dredd_url) if uses_dredd else None
+            dredd = DreddBridge(
+                args.dredd_url,
+                api_key=args.promptarmor_api_key,
+                verify_tls=not args.promptarmor_no_verify_tls,
+            ) if uses_dredd else None
             promptarmor = None
             if uses_pa:
                 from .promptarmor_bridge import PromptArmorBridge
