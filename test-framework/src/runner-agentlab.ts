@@ -838,6 +838,17 @@ async function executeWithSdk(
     },
   };
 
+  // Opus 4.7 rejects thinking.type=enabled — the API contract is now
+  // adaptive + output_config.effort. Without this override, every
+  // turn returns "API Error: 400 thinking.type.enabled is not
+  // supported for this model." (bedt4 phaseE-opus47-smoke 2026-05-20:
+  // 3 cells × all turns errored before any tool fired). Other Claude
+  // models still accept "enabled", but adaptive works for all of
+  // them too — safe blanket setting.
+  if (bedrockModel.includes("opus-4-7") || bedrockModel.includes("opus-4.7")) {
+    queryOptions.thinking = { type: "adaptive" };
+  }
+
   if (hooks) queryOptions.hooks = hooks;
   if (sessionId) queryOptions.resumeSessionId = sessionId;
 
