@@ -27,6 +27,16 @@ export interface ChatResponse {
 }
 
 /**
+ * Backend detection by model-ID prefix. Bedrock model IDs always carry
+ * a region qualifier like eu./us./global.; Ollama model names never do.
+ */
+const BEDROCK_PREFIXES = /^(?:eu\.|us\.|global\.|amazon\.|cohere\.|twelvelabs\.|anthropic\.|meta\.|mistral\.|nvidia\.)/;
+
+export function isBedrockModel(model: string): boolean {
+  return BEDROCK_PREFIXES.test(model);
+}
+
+/**
  * Generate embeddings for one or more texts.
  */
 export async function embed(
@@ -48,6 +58,24 @@ export async function embed(
 
   const data = (await res.json()) as EmbeddingResponse;
   return data.embeddings;
+}
+
+/**
+ * Backend-aware embed: routes Bedrock model IDs (eu./us./cohere./amazon./...)
+ * to bedrockEmbed, everything else to local Ollama. Always returns
+ * number[][] (one row per input text) regardless of backend.
+ */
+export async function embedAny(
+  texts: string | string[],
+  model: string,
+): Promise<number[][]> {
+  if (isBedrockModel(model)) {
+    const { bedrockEmbed } = await import("./bedrock-client.js");
+    const arr = Array.isArray(texts) ? texts : [texts];
+    const rows = await Promise.all(arr.map((t) => bedrockEmbed(t, model)));
+    return rows;
+  }
+  return embed(texts, model);
 }
 
 /**

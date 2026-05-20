@@ -15,7 +15,7 @@
  */
 
 import { DriftDetector } from "./drift-detector.js";
-import { embed, cosineSimilarity } from "./ollama-client.js";
+import { embedAny, cosineSimilarity } from "./ollama-client.js";
 
 export interface TurnIntent {
   turnNumber: number;
@@ -85,7 +85,7 @@ export class SessionTracker {
     driftFromPrevious: number | null;
   }> {
     const session = this.getSession(sessionId);
-    const [promptEmbedding] = await embed(prompt, this.embeddingModel);
+    const [promptEmbedding] = await embedAny(prompt, this.embeddingModel);
 
     const intent: TurnIntent = {
       turnNumber: session.currentTurn,

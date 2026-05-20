@@ -26,9 +26,10 @@ import {
   formatPolicyResult,
   type PolicyResult,
 } from "./tool-policy.js";
-import { DriftDetector } from "./drift-detector.js";
-import { IntentJudge, type JudgeVerdict } from "./intent-judge.js";
+import { DriftDetector, type DriftBackend } from "./drift-detector.js";
+import { IntentJudge, type JudgeVerdict, type JudgeBackend } from "./intent-judge.js";
 import { checkOllama } from "./ollama-client.js";
+import { checkBedrock } from "./bedrock-client.js";
 
 export interface InterceptorConfig {
   embeddingModel?: string;
@@ -39,6 +40,10 @@ export interface InterceptorConfig {
   denyThreshold?: number;
   /** Enable LLM judge for REVIEW decisions (default: true) */
   enableJudge?: boolean;
+  /** Backend for the embedding drift detector (default: "ollama") */
+  embedBackend?: DriftBackend;
+  /** Backend for the LLM judge (default: "ollama") */
+  judgeBackend?: JudgeBackend;
 }
 
 const DEFAULTS: Required<InterceptorConfig> = {
@@ -47,6 +52,8 @@ const DEFAULTS: Required<InterceptorConfig> = {
   reviewThreshold: 0.5,
   denyThreshold: 0.3,
   enableJudge: true,
+  embedBackend: "ollama",
+  judgeBackend: "ollama",
 };
 
 export interface InterceptionResult {
@@ -75,21 +82,43 @@ export class PreToolInterceptor {
 
   constructor(config?: InterceptorConfig) {
     this.config = { ...DEFAULTS, ...config };
-    this.driftDetector = new DriftDetector(this.config.embeddingModel);
-    this.judge = new IntentJudge(this.config.judgeModel);
+    this.driftDetector = new DriftDetector(
+      this.config.embeddingModel,
+      this.config.embedBackend,
+    );
+    this.judge = new IntentJudge(this.config.judgeModel, this.config.judgeBackend);
   }
 
   async preflight(): Promise<void> {
-    const { ok, missing } = await checkOllama(
-      this.config.embeddingModel,
-      this.config.judgeModel
-    );
-    if (!ok) {
-      console.error(`Missing Ollama models: ${missing.join(", ")}`);
-      for (const m of missing) {
-        console.error(`  ollama pull ${m}`);
+    const embedOnBedrock = this.config.embedBackend === "bedrock";
+    const judgeOnBedrock = this.config.judgeBackend === "bedrock";
+
+    if (embedOnBedrock || judgeOnBedrock) {
+      const { ok, error } = await checkBedrock(
+        this.config.embeddingModel,
+        this.config.judgeModel,
+      );
+      if (!ok) {
+        throw new Error(`Bedrock preflight failed: ${error}`);
       }
-      throw new Error(`Missing Ollama models: ${missing.join(", ")}`);
+      console.log(
+        `  Bedrock OK: embedding=${this.config.embeddingModel}, judge=${this.config.judgeModel}`,
+      );
+    }
+
+    if (!embedOnBedrock || !judgeOnBedrock) {
+      const ollamaModels = [
+        ...(!embedOnBedrock ? [this.config.embeddingModel] : []),
+        ...(!judgeOnBedrock ? [this.config.judgeModel] : []),
+      ];
+      const { ok, missing } = await checkOllama(ollamaModels[0], ollamaModels[1]);
+      if (!ok) {
+        console.error(`Missing Ollama models: ${missing.join(", ")}`);
+        for (const m of missing) {
+          console.error(`  ollama pull ${m}`);
+        }
+        throw new Error(`Missing Ollama models: ${missing.join(", ")}`);
+      }
     }
   }
 

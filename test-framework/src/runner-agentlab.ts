@@ -1268,10 +1268,19 @@ async function runTrajectory(
   }
 
   if (defence === "intent-tracker") {
+    // Mirror the IntentTracker construction above: in the AI Sandbox
+    // image there is no Ollama daemon, so default to bedrock for both
+    // embed + judge unless EMBED_BACKEND was explicitly set to ollama.
+    const embedBackend = (EMBED_BACKEND === "ollama" ? "ollama" : "bedrock") as
+      | "ollama"
+      | "bedrock";
+    const judgeBackend = embedBackend;
     if (backend === "sdk") {
       const built = await createDefenceHooks({
         embeddingModel: EMBED_MODEL,
         judgeModel: DREDD_JUDGE_MODEL,
+        embedBackend,
+        judgeBackend,
       });
       sdkHooks = built.hooks as unknown as Record<string, unknown>;
       preToolInterceptor = built.interceptor;
@@ -1279,6 +1288,8 @@ async function runTrajectory(
       preToolInterceptor = new PreToolInterceptor({
         embeddingModel: EMBED_MODEL,
         judgeModel: DREDD_JUDGE_MODEL,
+        embedBackend,
+        judgeBackend,
       });
       await (preToolInterceptor as any).preflight?.();
       await (preToolInterceptor as any).registerGoal?.(scenario.initialTask);
