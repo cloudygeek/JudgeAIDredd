@@ -20,7 +20,13 @@ import type { IntentEntry } from "./session-types.js";
 
 // ---- constants --------------------------------------------------------------
 
-export const TTL_DAYS = 30;
+// Per-row TTL on jaid-sessions items. Refreshed on every write, so
+// an actively-used session never expires; only abandoned sessions
+// (no writes for TTL_DAYS in a row) age out. Bumped 30 → 90 on
+// 2026-05-20 to match CloudWatch log retention — a Dredd verdict
+// surfaced in a CloudWatch log line should still have the session
+// state behind it available for forensic drill-down.
+export const TTL_DAYS = 90;
 export const TTL_SECONDS = TTL_DAYS * 24 * 60 * 60;
 export const GSI_NAME = "gsi1";
 export const GSI_PK = "SESSION";

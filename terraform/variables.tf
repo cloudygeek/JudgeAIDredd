@@ -252,9 +252,9 @@ variable "hardened" {
 // CloudWatch
 // ===========================================================================
 variable "log_retention_days" {
-  description = "CloudWatch Logs retention."
+  description = "CloudWatch Logs retention for the hook and dashboard log groups. Bumped from 30 → 90 on 2026-05-20 to match the jaid-sessions TTL — a Dredd verdict surfaced in a log line should still have the session state behind it available for forensic drill-down."
   type        = number
-  default     = 30
+  default     = 90
 }
 
 variable "enable_container_insights" {
