@@ -357,6 +357,24 @@ export function classifyIntentByEmbedding(
     return { kind: "continuation", reason: "no drift signal — default continuation" };
   }
 
+  // Short-prompt guard. Single-word / very short replies that fell
+  // through the confirmation regex still have unreliable embeddings —
+  // "done", "next", "okay then", etc. have near-zero semantic content
+  // and cluster meaninglessly in embedding space, so the drift signal
+  // is noise. If such a prompt looks like a new-task by drift alone,
+  // demote it to continuation. The judge's goal anchor stays correct,
+  // and the user only loses a topic-switch they almost certainly
+  // didn't mean. Threshold picked at 12 chars trimmed — covers "done",
+  // "finished", "looks good", "next step" while still letting
+  // genuinely terse new tasks through ("write tests", "deploy now").
+  const trimmed = prompt.trim();
+  if (trimmed.length < 12 && driftToStackTop > NEW_TASK_DRIFT_MIN) {
+    return {
+      kind: "continuation",
+      reason: `short-prompt guard (len=${trimmed.length}); embedding new-task signal unreliable`,
+    };
+  }
+
   // Topic switch: high drift, no replacement-phrasing override below.
   // The replacement check fires before this so "actually do Y instead"
   // (mid-to-high drift, replaces the active goal) doesn't mis-fire as

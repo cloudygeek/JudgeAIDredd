@@ -34,6 +34,7 @@ import {
   applyClassifierOverride,
   describePhrasingMatches,
   userPermissions as userPermissionsStore,
+  isConfirmationPrompt,
   NEW_TASK_DRIFT_MIN,
   CONFIG,
   type TrustMode,
@@ -211,20 +212,18 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
         ? extractLastUserAndPriorAssistant(transcript_path)
         : { priorAssistant: null, images: [] as ImageBlock[] };
 
-  // Treat short replies as confirmations of the previous turn rather than
-  // standalone goals. Includes "option N" / "option foo" so users picking
-  // from a clarifying question don't reset the goal to a meaningless
-  // 2-word string. Stays in sync with isConfirmationPrompt() in
-  // server-core.ts (used by transcript backfill) — divergence here was
-  // the cause of "option 2" being treated as a new goal and tripping
-  // drift-deny on the next tool call.
+  // Treat short replies as confirmations of the previous turn rather
+  // than standalone goals. Single source of truth lives in
+  // src/transcript-backfill.ts (CONFIRMATION_REGEX) and is re-exported
+  // through server-core as isConfirmationPrompt — both /intent live
+  // path and transcript backfill use the same predicate, so we never
+  // mis-classify "option 2" as a new goal in one path and a
+  // confirmation in the other.
   //
   // Computed up-front so we can persist the classification on the
   // TurnIntent (the dashboard renders confirmation entries differently
   // from real goal pivots).
-  const confirmationOnly =
-    /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|option\s+\w+|👍)\s*[.!?👍]*\s*$/i;
-  const isConfirmation = confirmationOnly.test(prompt) && prompt.trim().length < 80;
+  const isConfirmation = isConfirmationPrompt(prompt);
 
   // Read the prior turn-state markers BEFORE we register this prompt;
   // the stack classifier needs to see "what was the state when the user

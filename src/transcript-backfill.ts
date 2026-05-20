@@ -19,11 +19,33 @@ import { readFileSync } from "node:fs";
 import type { ImageBlock } from "./session-types.js";
 import { safeServerReadablePath } from "./server-core.js";
 
+/**
+ * Single source of truth for "is this short user reply a confirmation
+ * of the previous turn, not a new goal?". Used by both transcript
+ * backfill and the live /intent classifier (re-exported through
+ * server-core to handlers/intent.ts) so they stay in sync — divergence
+ * here was the original cause of "option 2" being treated as a new
+ * goal and tripping drift-deny on the next tool call.
+ *
+ * Added in 2026-05-20: "done", "finished", "great", "perfect", "nice",
+ * "good". A user typing one of these after a tool call is acknowledging
+ * the previous turn, not stating a new task. Embedding-only
+ * classification of single-word affirmations is unreliable (vectors
+ * cluster meaninglessly), which led to mis-classification as new-task
+ * and a stale goal anchor on the next /evaluate.
+ */
+// Anchored end-of-string (after optional punctuation/emoji/whitespace)
+// so "done with the spec, now build the api" does NOT match as a
+// confirmation — only standalone affirmations do. Earlier shape used
+// `\b` which had the same bug: matched any prompt that BEGAN with one
+// of these words. The strict-anchor form is the one the live /intent
+// classifier was using; transcript-backfill is now also strict, and
+// both share this single source.
+export const CONFIRMATION_REGEX =
+  /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|option\s+\w+|done|finished|great|perfect|nice|good|👍)\s*[.!?👍]*\s*$/i;
+
 export function isConfirmationPrompt(text: string): boolean {
-  return (
-    /^\s*(yes|yeah|yep|ok|okay|sure|do it|go ahead|go|proceed|continue|y|k|confirm|approved?|lgtm|ship it|sounds good|that's right|correct|exactly|please|thanks|thank you|option\s+\w+|👍)\b/i.test(text)
-    && text.trim().length < 80
-  );
+  return CONFIRMATION_REGEX.test(text) && text.trim().length < 80;
 }
 
 export function extractImagesFromContentBlocks(blocks: any[]): ImageBlock[] {
