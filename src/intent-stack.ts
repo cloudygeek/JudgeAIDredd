@@ -198,6 +198,129 @@ export function describePhrasingMatches(prompt: string): {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Assistant-option-pick detector.
+//
+// Catches the case where the assistant offered a structured menu and
+// the user replies with the pick — "1", "the second one", "option B
+// please", "let's do tests". The confirmation regex misses these
+// because the user typed an arbitrary token; the embedding classifier
+// either misfires as new-task (short prompt, noisy embedding) or
+// reaches the short-prompt guard and demotes to continuation, which
+// doesn't actually carry the user's intent forward.
+//
+// When this returns true the caller treats the prompt as a
+// confirmation of the prior assistant turn — exactly the existing
+// confirmation path that adopts the assistant proposal as the new
+// stack top. Feed logs the trigger reason "assistant-option-pick"
+// so we can measure how often it fires.
+
+const ORDINAL_WORDS = new Set([
+  "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
+  "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th", "10th",
+]);
+
+// Question/imperative starts that disqualify the prompt as a pick —
+// these are new requests, not selections.
+const NON_PICK_LEAD = /^\s*(what|how|why|when|where|who|which|can|could|should|do|does|is|are|will|would|please)\b/i;
+
+interface MenuOption {
+  /** 1-based index as it appeared in the menu. */
+  index: number;
+  /** Trimmed text of the option line. */
+  text: string;
+}
+
+/** Light tokenisation for overlap matching. Lowercase, alpha-num
+ *  words, dropped if shorter than 3 chars (drops "the", "to", etc). */
+function pickTokens(text: string): Set<string> {
+  return new Set(
+    text.toLowerCase()
+      .replace(/[^\w\s]/g, " ")
+      .split(/\s+/)
+      .filter((t) => t.length >= 3),
+  );
+}
+
+/** Parse numbered / bulleted options from prior assistant text. Looks
+ *  for line-starts like "1.", "1)", "(1)", "- ", "* ". Returns up to
+ *  10 options — beyond that we're probably not looking at a menu. */
+function parseMenu(priorAssistant: string): MenuOption[] {
+  const lines = priorAssistant.split("\n");
+  const out: MenuOption[] = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    // Numbered: "1.", "2)", "(3)", "[4]" optionally followed by a space.
+    let m = line.match(/^[\[(]?\s*(\d{1,2})\s*[\])\.\):]\s*(.+)$/);
+    if (m) {
+      const idx = parseInt(m[1], 10);
+      if (idx >= 1 && idx <= 20) {
+        out.push({ index: idx, text: m[2].trim() });
+        continue;
+      }
+    }
+    // Bulleted: "- foo", "* foo", "• foo" — assign a sequential index.
+    m = line.match(/^[-*•]\s+(.+)$/);
+    if (m) {
+      out.push({ index: out.length + 1, text: m[1].trim() });
+      continue;
+    }
+  }
+  return out.slice(0, 10);
+}
+
+/**
+ * Returns true when `userPrompt` looks like the user picking from a
+ * menu in `priorAssistant`. Conservative — only fires when:
+ *   - prompt is ≤ 40 chars (short reply)
+ *   - prompt doesn't start with a question / imperative word
+ *   - assistant text contains a parseable numbered or bulleted list
+ *   - AND at least one of: numeric pick within list size, ordinal
+ *     word, or ≥2 content-word overlap with one of the options
+ */
+export function detectAssistantOptionPick(
+  userPrompt: string,
+  priorAssistant: string | null,
+): boolean {
+  if (!priorAssistant) return false;
+  const trimmed = userPrompt.trim();
+  if (!trimmed || trimmed.length > 40) return false;
+  if (NON_PICK_LEAD.test(trimmed)) return false;
+
+  const options = parseMenu(priorAssistant);
+  if (options.length === 0) return false;
+
+  // Numeric pick — "1", "yes 2", "let's do 3". Cap at 9 so a year or
+  // long number doesn't mis-fire.
+  const numMatch = trimmed.match(/(?<![\d.])\b([1-9])\b(?![\d.])/);
+  if (numMatch) {
+    const n = parseInt(numMatch[1], 10);
+    if (options.some((o) => o.index === n)) return true;
+  }
+
+  // Ordinal pick — "the first", "second one", "third option".
+  const ordTokens = trimmed.toLowerCase().split(/\s+/);
+  for (const tok of ordTokens) {
+    const clean = tok.replace(/[^\w]/g, "");
+    if (ORDINAL_WORDS.has(clean)) return true;
+  }
+
+  // Token-overlap with any option line. Two or more content words in
+  // common signals "let's do <option phrasing>" type picks.
+  const userTokens = pickTokens(trimmed);
+  if (userTokens.size === 0) return false;
+  for (const opt of options) {
+    const optTokens = pickTokens(opt.text);
+    let overlap = 0;
+    for (const t of userTokens) {
+      if (optTokens.has(t)) overlap++;
+      if (overlap >= 2) return true;
+    }
+  }
+  return false;
+}
+
 export type TurnState = "open" | "draining" | "closed";
 
 export function deriveTurnState(prev: {
@@ -594,11 +717,23 @@ export async function applyIntentStackUpdate(
     return { kind: "original", turnState, stack, driftToStackTop: null, newEntryId: entry.id };
   }
 
+  // Promote assistant-option-picks to confirmation. The regex above
+  // (isConfirmation from handlers/intent.ts) catches "yes" / "ok" /
+  // "done" style replies; this catches "2", "the second one",
+  // "option B please", "let's do tests" when the assistant just
+  // offered a numbered or bulleted menu. Lets short menu-picks land
+  // on the confirmation path (adopt assistant proposal as the new
+  // top) instead of trying to embed-classify a meaningless single
+  // token. The flag flows through to the same makeIntentEntry call
+  // below so feed / dashboard see kind="confirmation".
+  const isOptionPick = !isConfirmation && detectAssistantOptionPick(prompt, priorAssistant);
+  const effectiveConfirmation = isConfirmation || isOptionPick;
+
   // Confirmation: adopt the prior assistant proposal as the new top.
   // Falls through to "queued" if there is no prior assistant context —
   // a bare "yes" with no proposal can't carry a meaningful goal so we
   // treat it as a queued/open follow-up against the existing stack.
-  if (isConfirmation && priorAssistant) {
+  if (effectiveConfirmation && priorAssistant) {
     const entry = await makeIntentEntry(
       prompt,
       priorAssistant,
