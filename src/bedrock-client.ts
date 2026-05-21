@@ -110,20 +110,21 @@ export async function bedrockChat(
     : undefined;
 
   // Prompt caching: mark the system prompt as a cache point so the
-  // 6500-token B7.1 hardened prompt is billed at 10% of the input rate
-  // for the next 5 minutes (cache TTL). The cache key is "everything
-  // before this marker"; the per-call user message after it is billed
-  // normally.
-  //
-  // Only effective when the cached portion is >= ~1024 tokens (Bedrock
-  // minimum). The standard SYSTEM_PROMPT may fall under that threshold
-  // and Bedrock will silently skip caching — that's fine, the marker
-  // costs nothing on a no-op.
+  // hardened system prompt is billed at 10% of the input rate for the
+  // next 5 minutes (cache TTL). The cache key is "everything before
+  // this marker"; the per-call user message after it is billed normally.
   //
   // We do NOT mark a cache point inside the user content because that
-  // changes per call (tool input, file context, agent reasoning) — caching
-  // it would invalidate every time. The system prompt is the static
-  // 90%+ of every judge request.
+  // changes per call (tool input, file context, agent reasoning) —
+  // caching it would invalidate every time. The system prompt is the
+  // static 90%+ of every judge request.
+  //
+  // KNOWN ISSUE (deferred — see CLAUDE.md "Cost & cache-engagement notes"):
+  // On `eu.anthropic.claude-sonnet-4-6` the empirical cache-engagement
+  // threshold is ~2048 tokens, not the documented 1024. Our B7.1 system
+  // prompt is ~1766 tokens — under the real threshold — so this marker
+  // is silently a no-op in prod today. Fix when we scale: pad the
+  // system prompt to >2048 tokens with static content.
   const systemBlocks: any[] = [
     { text: systemPrompt },
     { cachePoint: { type: "default" } },
