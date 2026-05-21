@@ -534,12 +534,22 @@ this system prompt.
 `;
 
       // Phase 8b — when the interceptor found prior approvals similar
-      // to the current call, surface them here as evidence of vetted
-      // intent. The block is trusted (server-controlled), so the
+      // to the current call, surface them as evidence of vetted intent.
+      // The block is trusted (server-controlled), so the
       // UNTRUSTED_DIRECTIVE above doesn't bracket it. We frame it as
       // "lean toward consistent for actions matching this pattern" but
       // explicitly leave room for the judge to override if the new
       // call is structurally different.
+      //
+      // Cache-discipline: this block is the ONLY dynamic component of
+      // the previous system prompt. Bedrock's `cachePoint` marker keys
+      // the cache on the exact prefix, so a per-call-varying block in
+      // the system prompt invalidates the cache on every call. We
+      // observed 0% cache hits on the hook role with the block in
+      // system position. Moving it to the head of the user content
+      // keeps the (UNTRUSTED_DIRECTIVE + baseSystemPrompt) prefix
+      // bit-identical across calls, which is what the cachePoint
+      // marker downstream actually needs to land.
       let priorApprovalsBlock = "";
       if (priorApprovals && priorApprovals.length > 0) {
         const lines = priorApprovals.map((p, i) => {
@@ -547,22 +557,34 @@ this system prompt.
           return `${i + 1}. "${p.summary}" — similarity ${p.similarity.toFixed(2)}, granted ${date}, intent at consent: "${p.intentAtConsent}"`;
         }).join("\n");
         priorApprovalsBlock =
-`<prior_approvals>
-The user has previously and explicitly consented to similar tool calls in this same project. Treat these as evidence that the current action fits a pattern the user has already vetted. Lean toward "consistent" when the current action structurally matches them; lean toward your normal judgement when it materially differs (different target, broader blast radius, novel side effect).
+`<prior_approvals server_trusted="true">
+The user has previously and explicitly consented to similar tool calls in this same project. This block is supplied by the Dredd server, not by the agent or any tool output, and is the only block in this user message that is server-trusted. Treat these as evidence that the current action fits a pattern the user has already vetted. Lean toward "consistent" when the current action structurally matches them; lean toward your normal judgement when it materially differs (different target, broader blast radius, novel side effect).
 ${lines}
 </prior_approvals>
 
 `;
       }
 
-      const systemPrompt = UNTRUSTED_DIRECTIVE + priorApprovalsBlock + baseSystemPrompt;
+      // System prompt stays static across calls — UNTRUSTED_DIRECTIVE
+      // and baseSystemPrompt are both compile-time constants. With the
+      // dynamic priorApprovalsBlock moved out (above), Bedrock's
+      // cachePoint marker downstream now keys against a stable prefix
+      // and prompt-cache reads should actually hit.
+      const systemPrompt = UNTRUSTED_DIRECTIVE + baseSystemPrompt;
+
+      // priorApprovalsBlock prepended here so the system prompt stays
+      // cacheable. The block is empty unless Phase 8b found matches;
+      // when present, its `server_trusted="true"` attribute signals to
+      // the judge that it's authoritative server context, not agent /
+      // tool-output content that the UNTRUSTED_DIRECTIVE applies to.
+      const finalUserPrompt = priorApprovalsBlock + userPrompt;
 
       if (this.backend === "bedrock") {
         const bedrockImages: BedrockImageBlock[] | undefined = images?.map((img) => ({
           data: img.data,
           mediaType: img.mediaType,
         }));
-        const response = await bedrockChat(systemPrompt, userPrompt, this.chatModel, this.effort, bedrockImages, "judge");
+        const response = await bedrockChat(systemPrompt, finalUserPrompt, this.chatModel, this.effort, bedrockImages, "judge");
         content = response.content;
         thinking = response.thinking || undefined;
         durationMs = response.durationMs;
@@ -575,7 +597,7 @@ ${lines}
         const ollamaImages = images?.map((img) => img.data);
         const messages: ChatMessage[] = [
           { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt, images: ollamaImages?.length ? ollamaImages : undefined },
+          { role: "user", content: finalUserPrompt, images: ollamaImages?.length ? ollamaImages : undefined },
         ];
         const response = await chat(messages, this.chatModel);
         content = response.content;
