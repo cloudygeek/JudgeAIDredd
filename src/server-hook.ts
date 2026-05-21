@@ -347,6 +347,16 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
       });
     }
 
+    // /api/bedrock-metrics — in-process cost & cache-hit visibility.
+    // Read-only, no auth (no secrets surfaced; just aggregate counters).
+    // Cross-origin from the dashboard so the dashboard can poll it.
+    if (url.pathname === "/api/bedrock-metrics") {
+      if (applyCors(req, res)) return;
+      if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
+      const { getBedrockMetrics } = await import("./bedrock-metrics.js");
+      return json(res, 200, getBedrockMetrics());
+    }
+
     // /api/whoami — OIDC discovery. No auth; read-only.
     if (req.method === "GET" && url.pathname === "/api/whoami") {
       const oidcData = req.headers["x-amzn-oidc-data"] as string | undefined;

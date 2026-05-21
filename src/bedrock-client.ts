@@ -18,6 +18,7 @@ import {
   ConverseCommand,
   InvokeModelCommand,
 } from "@aws-sdk/client-bedrock-runtime";
+import { recordBedrockCall } from "./bedrock-metrics.js";
 
 const REGION = process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "eu-central-1";
 const MODEL_ID = process.env.BEDROCK_JUDGE_MODEL ?? "nvidia.nemotron-super-3-120b";
@@ -44,12 +45,19 @@ function clientFor(region: string): BedrockRuntimeClient {
   return c;
 }
 
+/** Optional tag identifying which call site is invoking Bedrock. Used
+ *  by `bedrock-metrics.ts` to attribute per-caller cost and cache
+ *  performance. Unknown values fall through to "unknown" so a forgotten
+ *  call site still shows up in the snapshot. */
+export type BedrockCaller = "judge" | "classifier" | "promptarmor" | "preflight" | "unknown";
+
 export async function bedrockChat(
   systemPrompt: string,
   userMessage: string,
   modelId = MODEL_ID,
   effort?: EffortLevel,
-  images?: BedrockImageBlock[]
+  images?: BedrockImageBlock[],
+  caller: BedrockCaller = "unknown",
 ): Promise<{
   content: string;
   thinking: string;
@@ -152,15 +160,31 @@ export async function bedrockChat(
   const inputTokens = usage.inputTokens ?? 0;
   const outputTokens = usage.outputTokens ?? 0;
   const hasThinkingBlock = blocks.some((c) => c.reasoningContent !== undefined);
+  const durationMs = Date.now() - start;
+  const cacheReadInputTokens = usage.cacheReadInputTokens ?? undefined;
+  const cacheWriteInputTokens = usage.cacheWriteInputTokens ?? undefined;
+
+  // Cost accounting. Fire-and-forget — accumulator is in-process and
+  // never throws. Failure here must not break the judge / classifier.
+  try {
+    recordBedrockCall(caller, {
+      inputTokens,
+      outputTokens,
+      cacheReadInputTokens,
+      cacheWriteInputTokens,
+      durationMs,
+    });
+  } catch { /* metrics never fail the request */ }
+
   return {
     content,
     thinking,
-    durationMs: Date.now() - start,
+    durationMs,
     inputTokens,
     outputTokens,
     totalTokens: usage.totalTokens ?? (inputTokens + outputTokens),
-    cacheReadInputTokens: usage.cacheReadInputTokens ?? undefined,
-    cacheWriteInputTokens: usage.cacheWriteInputTokens ?? undefined,
+    cacheReadInputTokens,
+    cacheWriteInputTokens,
     hasThinkingBlock,
     estimatedThinkingTokens: thinking ? Math.ceil(thinking.length / 4) : 0,
   };

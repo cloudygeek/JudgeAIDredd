@@ -235,7 +235,7 @@ export class PreToolInterceptor {
     const judgeStart = Date.now();
     try {
       if (this.config.judgeBackend === "bedrock") {
-        const r = await bedrockChat("You are a test.", "Reply with the single word: ok", this.config.judgeModel);
+        const r = await bedrockChat("You are a test.", "Reply with the single word: ok", this.config.judgeModel, undefined, undefined, "preflight");
         if (!r.content) throw new Error("empty response");
       } else {
         const r = await chat(
@@ -791,9 +791,26 @@ export class PreToolInterceptor {
     const simStr = result.similarity !== null
       ? ` sim=${result.similarity.toFixed(3)}`
       : "";
-    const judgeStr = result.judgeVerdict
-      ? ` judge=${result.judgeVerdict.verdict}(${result.judgeVerdict.durationMs}ms)`
-      : "";
+    // Judge log includes token + cache info so we can grep CloudWatch
+    // for cost outliers without dumping the full metrics snapshot.
+    // Format: `judge=consistent(1886ms in=3500/cr=1700/cw=0 out=45)`
+    //   cr = cacheReadInputTokens (billed at 10% of input)
+    //   cw = cacheWriteInputTokens (billed at 125%; happens on first
+    //        call of a 5-min cache window)
+    // A missing cr field means cache miss; a missing cw means we did
+    // not write either (cache disabled or below the 1024-token minimum).
+    let judgeStr = "";
+    if (result.judgeVerdict) {
+      const j = result.judgeVerdict;
+      const tokens =
+        j.inputTokens !== undefined
+          ? ` in=${j.inputTokens}` +
+            `/cr=${j.cacheReadInputTokens ?? 0}` +
+            `/cw=${j.cacheWriteInputTokens ?? 0}` +
+            ` out=${j.outputTokens ?? 0}`
+          : "";
+      judgeStr = ` judge=${j.verdict}(${j.durationMs}ms${tokens})`;
+    }
     const sessionStr = ` [${sessionId.substring(0, 8)}]`;
     const userPermStr = result.userPermissionMatch
       ? ` userPerm=${result.userPermissionMatch.kind}(${result.userPermissionMatch.rule})`

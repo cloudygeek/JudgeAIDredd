@@ -562,7 +562,7 @@ ${lines}
           data: img.data,
           mediaType: img.mediaType,
         }));
-        const response = await bedrockChat(systemPrompt, userPrompt, this.chatModel, this.effort, bedrockImages);
+        const response = await bedrockChat(systemPrompt, userPrompt, this.chatModel, this.effort, bedrockImages, "judge");
         content = response.content;
         thinking = response.thinking || undefined;
         durationMs = response.durationMs;
