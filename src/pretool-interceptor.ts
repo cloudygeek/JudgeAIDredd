@@ -411,8 +411,19 @@ export class PreToolInterceptor {
                 intentAtConsent: m.rec.intentSnapshot,
               }));
 
-              const strongCount = sims.filter((m) => m.sim >= HARD_THRESHOLD).length;
-              if (patternTrustHard && strongCount >= HARD_MIN_COUNT) {
+              // Phase 9 — the hard short-circuit counts only EXPLICIT
+              // prior approvals (user clicked Allow on a Dredd-surfaced
+              // ask). Tacit approvals (inferred from a Claude Code
+              // native prompt + matching /notification) feed the soft
+              // signal above but never override Dredd policy denies.
+              // Anything missing the source field is legacy data, all
+              // of which came from the explicit path.
+              const strongMatches = sims.filter((m) => m.sim >= HARD_THRESHOLD);
+              const strongCount = strongMatches.length;
+              const strongExplicitCount = strongMatches.filter(
+                (m) => (m.rec.source ?? "explicit") === "explicit",
+              ).length;
+              if (patternTrustHard && strongExplicitCount >= HARD_MIN_COUNT) {
                 const top = sims[0];
                 const result: InterceptionResult = {
                   allowed: true,
@@ -422,14 +433,14 @@ export class PreToolInterceptor {
                   policyResult: {
                     decision: "allow",
                     tool,
-                    reason: `pattern-trust: ${strongCount} matches ≥ ${HARD_THRESHOLD}`,
+                    reason: `pattern-trust: ${strongExplicitCount} explicit matches ≥ ${HARD_THRESHOLD}`,
                     matchedRule: "pattern-trust",
                   },
                   similarity: top.sim,
                   judgeVerdict: null,
                   evaluationMs: Date.now() - start,
                   reason:
-                    `pattern-trust: ${strongCount} prior approvals of similar calls ` +
+                    `pattern-trust: ${strongExplicitCount} explicit prior approvals of similar calls ` +
                     `(top: "${top.rec.summary}", sim=${top.sim.toFixed(3)})`,
                   patternTrust: {
                     hard: true,

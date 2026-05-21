@@ -262,6 +262,118 @@ async function main() {
       result.patternTrust === undefined ? pass("[]-vector approvals ignored") : fail("[]-vector counted somehow");
     }
 
+    // -------------------------------------------------------------------
+    // Phase 9 — only explicit approvals count for the hard short-circuit.
+    section("Phase 9: tacit approvals don't drive HARD short-circuit");
+
+    {
+      const approvals = [
+        makeApproval({ summary: "tacit 1", inputEmbedding: ALIGNED, source: "tacit" }),
+        makeApproval({ summary: "tacit 2", inputEmbedding: ALMOST, source: "tacit" }),
+      ];
+      const result = await interceptor.evaluate(
+        "s-test",
+        "Bash",
+        { command: "ALIGNED something" },
+        undefined,
+        "/proj/foo",
+        "interactive",
+        undefined,
+        false,
+        undefined,
+        null,
+        approvals,
+        true,
+      );
+      result.stage !== "pattern-trust-allow"
+        ? pass(`2 tacit matches: no hard short-circuit (stage=${result.stage})`)
+        : fail("tacit-only matches incorrectly short-circuited");
+      // Soft signal still feeds the judge prompt (softContext); the
+      // result.patternTrust annotation is only set on the hard path
+      // (see InterceptionResult.patternTrust JSDoc), so we don't assert
+      // on it here.
+    }
+
+    section("Phase 9: 1 explicit + 1 tacit: still no HARD short-circuit");
+
+    {
+      const approvals = [
+        makeApproval({ summary: "explicit", inputEmbedding: ALIGNED, source: "explicit" }),
+        makeApproval({ summary: "tacit", inputEmbedding: ALMOST, source: "tacit" }),
+      ];
+      const result = await interceptor.evaluate(
+        "s-test",
+        "Bash",
+        { command: "ALIGNED rm" },
+        undefined,
+        "/proj/foo",
+        "interactive",
+        undefined,
+        false,
+        undefined,
+        null,
+        approvals,
+        true,
+      );
+      result.stage !== "pattern-trust-allow"
+        ? pass(`mixed 1-explicit-1-tacit: no hard short-circuit (stage=${result.stage})`)
+        : fail("mixed counted as 2 explicit");
+    }
+
+    section("Phase 9: 2 explicit (mixed with tacit) short-circuits");
+
+    {
+      const approvals = [
+        makeApproval({ summary: "explicit 1", inputEmbedding: ALIGNED, source: "explicit" }),
+        makeApproval({ summary: "explicit 2", inputEmbedding: ALMOST, source: "explicit" }),
+        makeApproval({ summary: "tacit noise", inputEmbedding: ALIGNED, source: "tacit" }),
+      ];
+      const result = await interceptor.evaluate(
+        "s-test",
+        "Bash",
+        { command: "ALIGNED rm -rf" },
+        undefined,
+        "/proj/foo",
+        "interactive",
+        undefined,
+        false,
+        undefined,
+        null,
+        approvals,
+        true,
+      );
+      result.stage === "pattern-trust-allow"
+        ? pass(`2 explicit + 1 tacit short-circuited (stage=${result.stage})`)
+        : fail(`expected pattern-trust-allow, got ${result.stage}`);
+    }
+
+    section("Phase 9: legacy approvals (missing source) treated as explicit");
+
+    {
+      // Simulate legacy rows that pre-date the source field by deleting it.
+      const a1 = makeApproval({ summary: "legacy 1", inputEmbedding: ALIGNED }) as any;
+      const a2 = makeApproval({ summary: "legacy 2", inputEmbedding: ALMOST }) as any;
+      delete a1.source;
+      delete a2.source;
+      const result = await interceptor.evaluate(
+        "s-test",
+        "Bash",
+        { command: "ALIGNED rm -rf" },
+        undefined,
+        "/proj/foo",
+        "interactive",
+        undefined,
+        false,
+        undefined,
+        null,
+        [a1, a2],
+        true,
+      );
+      result.stage === "pattern-trust-allow"
+        ? pass(`legacy rows count as explicit (stage=${result.stage})`)
+        : fail(`expected pattern-trust-allow, got ${result.stage}`);
+    }
+
   } finally {
     stub.close();
   }

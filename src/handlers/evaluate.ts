@@ -565,6 +565,44 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       permissionDecision: "allow",
       permissionDecisionReason: `${DREDD_TAG}: ${result.reason}`,
     };
+
+    // Phase 9 — tacit-pending stash. Dredd is fine with this call, but
+    // Claude Code may still surface a native permission prompt because
+    // it's not in the user's local allowlist. If that prompt fires and
+    // the user clicks Yes, we want to learn the consent for next time.
+    //
+    // Stashing here is cheap: we just hold the fingerprint in memory
+    // until /track arrives. The actual promotion in /track gates on a
+    // matching /notification arriving in the window — if no prompt
+    // fires (Claude Code auto-allowed), the candidate is silently
+    // dropped without producing an approval record.
+    //
+    // Gated to interactive mode + non-pattern-trust stages: in
+    // autonomous mode Claude Code's native prompt path is rarely the
+    // friction we're trying to capture, and a pattern-trust-allow has
+    // already inherited consent from a prior explicit approval.
+    if (
+      mode === "interactive" &&
+      tool_use_id &&
+      result.stage !== "pattern-trust-allow" &&
+      result.stage !== "approval-allow"
+    ) {
+      const fp = computeFingerprint(tool_name, tool_input ?? {});
+      if (fp) {
+        const freshest = activeIntents && activeIntents.length > 0
+          ? activeIntents[activeIntents.length - 1]
+          : null;
+        recordPendingApproval(session_id, tool_use_id, {
+          tool: tool_name,
+          fingerprintHash: hashFingerprint(fp),
+          fingerprintJson: fingerprintJson(fp),
+          summary: fp.summary,
+          intentSnapshot: freshest?.prompt ?? "",
+          goalEmbedding: freshest?.embedding ?? [],
+          source: "tacit",
+        });
+      }
+    }
   }
 
   if (isBenchmarkFormat) {
