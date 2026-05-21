@@ -31,9 +31,10 @@ import {
   rejectInvalidSessionId,
   flushLogs,
   AUTH_MODE,
+  authenticateHookRequest,
   type TrustMode,
 } from "./server-core.js";
-import { CLERK_PUBLISHABLE_KEY } from "./clerk-auth.js";
+import { CLERK_PUBLISHABLE_KEY, isAdminEmail } from "./clerk-auth.js";
 import {
   INTENT_HISTORY_MODE,
   INTENT_CLASSIFIER_LLM_ENABLED,
@@ -348,11 +349,24 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
     }
 
     // /api/bedrock-metrics — in-process cost & cache-hit visibility.
-    // Read-only, no auth (no secrets surfaced; just aggregate counters).
-    // Cross-origin from the dashboard so the dashboard can poll it.
+    // Read-only, admin-only. The data is non-sensitive in isolation
+    // (aggregate counters, no secrets, no per-session info) but it
+    // does reveal call rates, token volumes, and cost — operational
+    // observability that belongs behind the same admin gate as logs.
+    //
+    // Auth: Bearer API key, then admin-email check via Clerk-config
+    // ADMIN_EMAILS. Cross-origin from the dashboard browser still
+    // works because applyCors echoes Authorization. Non-admin keys
+    // get a 403; missing/invalid keys land on 401 from
+    // authenticateHookRequest.
     if (url.pathname === "/api/bedrock-metrics") {
       if (applyCors(req, res)) return;
       if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
+      const identity = await authenticateHookRequest(req, res);
+      if (!identity) return; // 401 already sent
+      if (!isAdminEmail(identity.ownerEmail)) {
+        return json(res, 403, { error: "Admin only" });
+      }
       const { getBedrockMetrics } = await import("./bedrock-metrics.js");
       return json(res, 200, getBedrockMetrics());
     }
