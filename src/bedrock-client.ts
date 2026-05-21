@@ -23,6 +23,14 @@ import { recordBedrockCall } from "./bedrock-metrics.js";
 const REGION = process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "eu-central-1";
 const MODEL_ID = process.env.BEDROCK_JUDGE_MODEL ?? "nvidia.nemotron-super-3-120b";
 
+// One-shot cache diagnostic counter. Logs the cache-engagement state
+// for the first N bedrockChat calls of a process so we can diagnose
+// whether prompt caching is actually firing without redeploying. Kept
+// small to avoid spamming CloudWatch — after the threshold normal log
+// lines (via pretool-interceptor judge line) carry the same info.
+const CACHE_DIAGNOSTIC_LIMIT = 10;
+let firstCacheCallsLogged = 0;
+
 type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "none";
 
 export interface BedrockImageBlock {
@@ -163,6 +171,28 @@ export async function bedrockChat(
   const durationMs = Date.now() - start;
   const cacheReadInputTokens = usage.cacheReadInputTokens ?? undefined;
   const cacheWriteInputTokens = usage.cacheWriteInputTokens ?? undefined;
+
+  // Cache-engagement diagnostic. The cachePoint marker above SHOULD
+  // cause Bedrock to return non-zero cacheRead or cacheWrite once the
+  // 1024-token minimum is met. If we see neither after several judge
+  // calls, that's a signal the cache isn't engaging — either the
+  // system prompt is below the per-model minimum, the cross-region
+  // inference profile doesn't honor the marker, or the model ID we
+  // passed isn't in the cache-supported list. Log the first few calls
+  // per process so we can diagnose without redeploying.
+  try {
+    if (firstCacheCallsLogged < CACHE_DIAGNOSTIC_LIMIT) {
+      firstCacheCallsLogged++;
+      console.log(
+        `[bedrock-cache] caller=${caller} model=${modelId} ` +
+        `systemChars=${systemPrompt.length} ` +
+        `inputTokens=${inputTokens} outputTokens=${outputTokens} ` +
+        `cacheRead=${cacheReadInputTokens ?? "n/a"} ` +
+        `cacheWrite=${cacheWriteInputTokens ?? "n/a"} ` +
+        `usageKeys=[${Object.keys(usage).join(",")}]`,
+      );
+    }
+  } catch { /* diagnostic must not fail the request */ }
 
   // Cost accounting. Fire-and-forget — accumulator is in-process and
   // never throws. Failure here must not break the judge / classifier.
