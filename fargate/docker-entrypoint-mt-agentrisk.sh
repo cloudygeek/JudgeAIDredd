@@ -36,6 +36,53 @@ fail() { log "FATAL: $*" >&2; exit 1; }
 : "${DREDD_URL:?DREDD_URL must be set}"
 : "${AWS_REGION:?AWS_REGION must be set}"
 
+# ── PostgreSQL bootstrap ────────────────────────────────────────────
+# MT-AgentRisk's tool_sandbox.reset_for_scenario() shells out to psql
+# per scenario to seed the DB, and the postgres MCP server connects
+# to localhost:5432. Boot a user-mode postgres against /tmp/pgdata so
+# the non-root container user can own the cluster.
+PGBIN="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | head -1 || true)"
+PGDATA_DIR="${PGDATA_DIR:-/tmp/pgdata}"
+PGRUN_DIR="${PGRUN_DIR:-/tmp/pgrun}"
+if [[ -n "$PGBIN" ]] && [[ "${SKIP_POSTGRES:-0}" != "1" ]]; then
+  export PATH="$PGBIN:$PATH"
+  if [[ ! -s "$PGDATA_DIR/PG_VERSION" ]]; then
+    log "postgres: initdb -> $PGDATA_DIR (one-time)"
+    "$PGBIN/initdb" -D "$PGDATA_DIR" -U postgres --auth=trust >/tmp/initdb.log 2>&1 || {
+      log "postgres: initdb failed — see /tmp/initdb.log"
+      log "postgres: continuing without DB; postgres scenarios will fail"
+    }
+  fi
+  if [[ -s "$PGDATA_DIR/PG_VERSION" ]]; then
+    log "postgres: starting on 127.0.0.1:5432 (data=$PGDATA_DIR socket=$PGRUN_DIR)"
+    "$PGBIN/pg_ctl" -D "$PGDATA_DIR" \
+        -l /tmp/postgres.log \
+        -o "-h 127.0.0.1 -p 5432 -k $PGRUN_DIR" \
+        start >/tmp/pgctl.log 2>&1 || {
+      log "postgres: pg_ctl start failed — see /tmp/pgctl.log /tmp/postgres.log"
+    }
+    # Wait up to 15s for the server to accept connections.
+    for i in $(seq 1 30); do
+      if "$PGBIN/pg_isready" -h 127.0.0.1 -p 5432 -U postgres -q; then
+        log "postgres: ready ($i/30)"
+        # Set the password the runner uses (PGPASSWORD=password from
+        # tool_sandbox.py:75). With auth=trust the password is ignored
+        # for local connections, but set it anyway for parity with the
+        # MCP server's connection string.
+        "$PGBIN/psql" -h 127.0.0.1 -U postgres -d postgres \
+            -c "ALTER USER postgres WITH PASSWORD 'password';" >/dev/null 2>&1 || true
+        break
+      fi
+      sleep 0.5
+    done
+    if ! "$PGBIN/pg_isready" -h 127.0.0.1 -p 5432 -U postgres -q; then
+      log "postgres: NOT ready after 15s — postgres scenarios will fail"
+    fi
+  fi
+else
+  log "postgres: skipped (SKIP_POSTGRES=$SKIP_POSTGRES, PGBIN='$PGBIN')"
+fi
+
 # Sanity probe — same shape as the bedt3/4/5 entrypoints.
 if [[ "${SKIP_HEALTH:-0}" != "1" ]]; then
   log "Hook health probe: ${DREDD_URL%/}/health"

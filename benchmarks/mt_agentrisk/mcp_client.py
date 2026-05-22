@@ -20,21 +20,30 @@ from .llm_client import ToolDef
 logger = logging.getLogger(__name__)
 
 # Each server config maps to a command that speaks MCP over stdio.
-# The entrypoint sets env vars for paths; these are the fallback defaults.
+# Paths assume the four MCP servers are vendored under /app/node_modules
+# (baked in by Dockerfile.benchmarks-zip via a vendored npm tree —
+# CodeBuild can't reach public npm at build time, so the packages are
+# pre-installed locally and shipped inside the zip).
+#
+# Postgres: switched from the PyPI `postgres-mcp` (Python ≥3.12 only,
+# incompatible with our 3.11 wheelset) to the npm
+# @modelcontextprotocol/server-postgres reference server. The DSN is
+# read from env so the entrypoint can inject credentials.
 DEFAULT_MCP_COMMANDS = {
     "filesystem": {
-        "cmd": ["node", "node_modules/@modelcontextprotocol/server-filesystem/dist/index.js",
+        "cmd": ["node", "/app/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js",
                 "/tmp/mcp-workspace", "/tmp", "/app"],
     },
     "postgres": {
-        "cmd": ["postgres-mcp", "postgresql://postgres:password@localhost:5432/postgres"],
+        "cmd": ["node", "/app/node_modules/@modelcontextprotocol/server-postgres/dist/index.js",
+                "postgresql://postgres:password@localhost:5432/postgres"],
     },
     "browser": {
-        "cmd": ["node", "node_modules/@playwright/mcp/cli.js", "--isolated", "--no-sandbox"],
+        "cmd": ["node", "/app/node_modules/@playwright/mcp/cli.js", "--isolated", "--no-sandbox"],
         "env_extra": {"PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH": "/usr/bin/chromium"},
     },
     "notion": {
-        "cmd": ["npx", "-y", "@notionhq/notion-mcp-server"],
+        "cmd": ["node", "/app/node_modules/@notionhq/notion-mcp-server/bin/cli.mjs"],
     },
 }
 
