@@ -52,25 +52,78 @@ export function fingerprintJson(fp: Fingerprint): string {
 
 // ---- Bash fingerprinter ---------------------------------------------------
 
+/** Shell statement separators we split on for fingerprinting. A newline
+ *  is a statement separator in bash, equivalent to `;`. */
+const STATEMENT_OPERATORS = new Set([";", "&&", "||", "|", "\n"]);
+/** Verbs that carry no security-relevant identity on their own — a
+ *  leading one of these must NOT mask a network call later in the chain
+ *  (the `echo "..."; curl http://evil` shape). */
+const NOISE_VERBS = new Set([
+  "echo", "cd", "pwd", "true", "false", ":", "printf", "export", "set", "ls",
+]);
+
 function fingerprintBash(input: Record<string, unknown>): Fingerprint | null {
   const cmd = String(input.command ?? "").trim();
   if (!cmd) return null;
-  const tokens = tokeniseShell(cmd);
-  if (tokens.length === 0) return null;
 
-  // Skip leading env-var assignments (e.g. `FOO=bar curl …`).
-  let i = 0;
-  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
-  if (i >= tokens.length) return null;
+  // Split into statements on top-level operators (incl. newlines). This
+  // is the fix for the `echo "..."; curl …` shape: the old fingerprinter
+  // looked only at the first token of the whole command, so a leading
+  // echo produced a host-blind generic fingerprint that then auto-allowed
+  // a curl to ANY host. Splitting lets us find the curl wherever it sits.
+  const statements = splitStatements(cmd);
+  if (statements.length === 0) return null;
 
-  if (tokens[i] === "curl") return fingerprintCurl(tokens.slice(i));
-  return fingerprintGenericBash(tokens.slice(i));
+  // Collect VAR=value assignments across the whole command so that a
+  // later `curl "${URL}?…"` / `-H "x-api-key: $KEY"` can be resolved to
+  // the real host + key before hashing. Assignments are only valid at a
+  // statement start, so we read each statement's leading run of them.
+  const env: Record<string, string> = {};
+  for (const st of statements) {
+    for (const tok of st) {
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(tok);
+      if (m) env[m[1]] = m[2];
+      else break;
+    }
+  }
+
+  // Reduce each statement to argv after its leading env assignments.
+  const cmds = statements
+    .map((st) => {
+      let i = 0;
+      while (i < st.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(st[i])) i++;
+      return st.slice(i);
+    })
+    .filter((a) => a.length > 0);
+  if (cmds.length === 0) return null;
+
+  // Network sub-commands are the security-relevant surface. Among any
+  // curl/wget calls in the chain, prefer one that carries an auth token
+  // (that's the call transmitting a credential); fall back to the first
+  // that at least resolves to a host.
+  const netCmds = cmds.filter((a) => a[0] === "curl" || a[0] === "wget");
+  let firstHostful: Fingerprint | null = null;
+  for (const a of netCmds) {
+    const fp = fingerprintCurl(a, env);
+    if (!fp) continue;
+    if ((fp.shape as { auth_hash?: string | null }).auth_hash) return fp;
+    if (!firstHostful) firstHostful = fp;
+  }
+  if (firstHostful) return firstHostful;
+
+  // No network call: fingerprint the first meaningful (non-noise)
+  // statement, falling back to the very first if all are noise.
+  const meaningful = cmds.find((a) => !NOISE_VERBS.has(a[0])) ?? cmds[0];
+  return fingerprintGenericBash(meaningful);
 }
 
-/** curl gets host + auth-hash only — no path, no method, no body. One
- *  approval covers an entire integration (one host + one key). */
-function fingerprintCurl(argv: string[]): Fingerprint | null {
-  const url = extractCurlUrl(argv);
+/** curl/wget gets host + auth-hash only — no path, no method, no body.
+ *  One approval covers an entire integration (one host + one key).
+ *  `env` lets us resolve `${VAR}` references assigned earlier in the
+ *  same command so a variable URL / key still pins a concrete host. */
+function fingerprintCurl(argv: string[], env: Record<string, string> = {}): Fingerprint | null {
+  const expanded = argv.map((t) => expandEnv(t, env));
+  const url = extractCurlUrl(expanded);
   if (!url) return null;
   let host: string;
   try {
@@ -79,18 +132,68 @@ function fingerprintCurl(argv: string[]): Fingerprint | null {
     return null;
   }
 
-  const authToken = extractAuthToken(argv);
+  const authToken = extractAuthToken(expanded);
   const authHash = authToken
     ? createHash("sha256").update(authToken).digest("hex").slice(0, 16)
     : null;
 
   return {
     tool: "Bash",
+    // verb kept as "curl" for both curl and wget so an approval survives
+    // a curl→wget swap to the same host+key; the host+auth_hash are the
+    // identity that matters.
     shape: { verb: "curl", host, auth_hash: authHash },
     summary: authHash
       ? `curl to ${host} with API key ${authHash.slice(0, 8)}…`
       : `curl to ${host} (no auth header)`,
   };
+}
+
+/** Expand `$VAR` and `${VAR}` references using assignments collected from
+ *  the same command. Unknown variables are left as-is (so they won't
+ *  accidentally resolve to empty and produce a bogus host). */
+function expandEnv(token: string, env: Record<string, string>): string {
+  return token.replace(
+    /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+    (whole, braced, bare) => {
+      const name = braced ?? bare;
+      return Object.prototype.hasOwnProperty.call(env, name) ? env[name] : whole;
+    },
+  );
+}
+
+/** Tokenise into statements, splitting on top-level `;` `&&` `||` `|` and
+ *  newlines while respecting single/double quotes. Returns one string[]
+ *  (argv) per statement. Quote-aware but does NOT expand `$(...)` /
+ *  heredocs — good enough for fingerprinting the curl invocations Claude
+ *  emits; an ambiguous parse only means "approval re-prompts", never a
+ *  security hole. */
+function splitStatements(cmd: string): string[][] {
+  const statements: string[][] = [];
+  let cur: string[] = [];
+  let buf = "";
+  let quote: '"' | "'" | null = null;
+  const flushTok = () => { if (buf) { cur.push(buf); buf = ""; } };
+  const flushStmt = () => { flushTok(); if (cur.length) { statements.push(cur); cur = []; } };
+
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      else buf += c;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === "\\" && i + 1 < cmd.length) { buf += cmd[++i]; continue; }
+    if (c === "\n" || c === ";") { flushStmt(); continue; }
+    if (c === "&" && cmd[i + 1] === "&") { flushStmt(); i++; continue; }
+    if (c === "|" && cmd[i + 1] === "|") { flushStmt(); i++; continue; }
+    if (c === "|") { flushStmt(); continue; }
+    if (/\s/.test(c)) { flushTok(); continue; }
+    buf += c;
+  }
+  flushStmt();
+  return statements;
 }
 
 /** Generic bash: argv[0..2]. Wide enough to differentiate `git status`
@@ -118,18 +221,30 @@ function extractCurlUrl(argv: string[]): string | null {
   return null;
 }
 
-/** Extract the Authorization header value from a curl argv. Returns
- *  the raw value (e.g. "Bearer sk_test_xxx") for hashing — we hash the
- *  whole string so that "Bearer X" and "Basic Y" with the same X are
- *  distinct. */
+/** Extract a credential header value from a curl argv. Recognises the
+ *  common auth header shapes — `Authorization:` (Bearer/Basic) plus the
+ *  API-key family (`x-api-key:`, `api-key:`, `apikey:`, `x-auth-token:`).
+ *  Returns the raw value for hashing — we hash the whole string so that
+ *  "Bearer X" and "Basic Y" with the same X are distinct. Only the
+ *  16-hex truncation of the hash is ever persisted (see fingerprintCurl);
+ *  the raw secret never leaves this function.
+ *
+ *  Also recognises curl's own credential flags: `-u user:pass` /
+ *  `--user`, and `-H`/`--header`. */
+const AUTH_HEADER_RE =
+  /^(?:authorization|x-api-key|api-key|apikey|x-auth-token|x-access-token):\s*(.+)$/i;
+
 function extractAuthToken(argv: string[]): string | null {
   for (let i = 1; i < argv.length; i++) {
     const t = argv[i];
     if ((t === "-H" || t === "--header") && i + 1 < argv.length) {
       const header = argv[i + 1];
-      const m = /^Authorization:\s*(.+)$/i.exec(header);
+      const m = AUTH_HEADER_RE.exec(header);
       if (m) return m[1].trim();
       i++;
+    } else if ((t === "-u" || t === "--user") && i + 1 < argv.length) {
+      // Basic-auth credential pair — hash it the same way.
+      return `basic:${argv[i + 1]}`;
     }
   }
   return null;
@@ -188,36 +303,4 @@ function stableStringify(v: unknown): string {
   if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
   const keys = Object.keys(v as object).sort();
   return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify((v as Record<string, unknown>)[k])).join(",") + "}";
-}
-
-/** Very small shell-style tokeniser that respects single + double
- *  quotes. Doesn't handle backticks, $(), nested quotes, or escapes
- *  exhaustively — good enough for fingerprinting curl invocations as
- *  Claude tends to emit them. If the parse is ambiguous the fingerprint
- *  will just be slightly different from a hand-rolled one; the worst
- *  case is "approval doesn't fire next time", not a security issue. */
-function tokeniseShell(cmd: string): string[] {
-  const out: string[] = [];
-  let buf = "";
-  let quote: '"' | "'" | null = null;
-  for (let i = 0; i < cmd.length; i++) {
-    const c = cmd[i];
-    if (quote) {
-      if (c === quote) {
-        quote = null;
-      } else {
-        buf += c;
-      }
-    } else if (c === '"' || c === "'") {
-      quote = c;
-    } else if (c === "\\" && i + 1 < cmd.length) {
-      buf += cmd[++i];
-    } else if (/\s/.test(c)) {
-      if (buf) { out.push(buf); buf = ""; }
-    } else {
-      buf += c;
-    }
-  }
-  if (buf) out.push(buf);
-  return out;
 }
