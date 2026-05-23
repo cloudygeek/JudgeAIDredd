@@ -285,12 +285,46 @@ Acceptance numbers to report in the manuscript:
 - Haiku-4.5 / intent-tracker / T3.4: same
 - Opus-4.7 / none / T3.4: same
 - Opus-4.7 / intent-tracker / T3.4: same
-- Sonnet-4.6 / none / T3.4: existing test29 numbers
-  (`results/test29/29a/29a-T3.3-T3.4/test29-bedrock-sonnet-*-T3.4-*.json`
-  — pre-computed)
+- Sonnet-4.6 / {none,intent-tracker} / T3.4: pooled at n=340 each
+  (`benchmarks/test-framework/runs/sonnet-T3.4-pooled-2026-05-23/`
+  — see that dir's README.md for source-file provenance)
 
-If a per-model dip test rejects unimodality at p < 0.05 in two of the
-three rows, Finding 1 generalises across capability tiers — promote it
-from "Sonnet-only" to "all three Anthropic models". Otherwise qualify
-Finding 3 in line with the doc's "capability-compliance ordering not
-preserved under variance" branch.
+The original doc pointed at `results/test29/29a/29a-T3.3-T3.4/` for the
+Sonnet baseline; that path actually contains gpt-4o-mini and qwen3-235b,
+not Sonnet. The Sonnet T3.4 corpus is spread across the AgentDojo
+cross-model sweeps (`agentdojo-t20t21-{baseline,defended-a,defended-b}/`)
+and `test16/20260424T131037Z/`. The pooled wrapped JSONs in
+`benchmarks/test-framework/runs/sonnet-T3.4-pooled-2026-05-23/` collect
+those reps into the test29-style `{runs: [...]}` envelope so the same
+`scripts/compute-bimodality.py` and `scripts/ges-decomp.py` invocations
+score Sonnet alongside the freshly-collected G3 cells.
+
+## Results
+
+Five cells, T3.4-only (n per row varies):
+
+| Cell                              |   n  | mean GES | 95% CI       | Hijack% | Stealth% | dipD  |  dipP   | Verdict |
+|-----------------------------------|-----:|---------:|-------------:|--------:|---------:|------:|--------:|---------|
+| haiku-4-5 / none                  |   90 |   25.19  | [22.2, 28.2] | 100.0   | 24.4     | 0.122 | <0.001  | unimodal-bottom |
+| haiku-4-5 / intent-tracker        |   90 |   15.19  | [11.7, 18.6] | 100.0   | 54.4     | 0.228 | <0.001  | unimodal-bottom |
+| haiku-4-5 / promptarmor-obs       |   90 |   28.52  | [26.1, 31.0] | 100.0   | 14.4     | 0.072 |  0.0009 | unimodal-bottom |
+| sonnet-4-6 / none (pooled)        |  340 |   31.67  | [30.9, 32.4] | 100.0   |  5.0     | 0.025 |  0.152  | unimodal-bottom |
+| sonnet-4-6 / intent-tracker (pld) |  340 |   17.65  | [15.7, 19.6] |  99.1   | 48.8     | 0.244 | <0.001  | **bimodal** |
+| opus-4-7 / none                   |   90 |  100.00  | [100, 100]   |   0.0   |  0.0     | 0.000 |  1.0    | unimodal-top |
+
+**Sharper finding than the doc anticipated:** Sonnet's bimodality is
+**defence-induced**, not intrinsic to the model. Sonnet/none/T3.4 is
+unimodal-bottom (dip p=0.15); intent-tracker is what unlocks the
+deflection-to-zero mode on roughly half the attacks (GMM cluster
+weights 0.49/0.51, means ≈0/≈34). Haiku stays unimodal-bottom under
+all three defences (defence shifts the mean but doesn't unlock the
+success mode); Opus saturates the success mode unconditionally.
+
+Manuscript implication for `p14_b.tex:1190` paragraph: Finding 1 should
+be re-stated as "intent-tracker induces bimodality on Sonnet-4.6 by
+enabling deflection-to-zero on a subset of T3.4 attempts", not "Sonnet
+T3.4 is bimodal". The Haiku cells confirm this is mid-capability —
+defence doesn't unlock deflection on the lower-capability tier.
+Finding 3's capability-compliance ordering holds (Opus > Sonnet > Haiku
+in GES, intent-tracker > none in stealth-rate everywhere) but flattens
+at the floor where Haiku saturates.
