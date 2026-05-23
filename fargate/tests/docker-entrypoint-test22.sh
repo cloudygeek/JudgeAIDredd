@@ -62,6 +62,11 @@ RUN_ID="${TEST22_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 OUTPUT_DIR="results/test22-${RUN_ID}"
 LOG_FILE="results/test22-run-${RUN_ID}.log"
 
+# Ensure the results dir exists before tee opens LOG_FILE — without
+# this the entrypoint dies on first echo with "tee: ... No such file
+# or directory" (the OUTPUT_DIR mkdir below would happen too late).
+mkdir -p results "${OUTPUT_DIR}"
+
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 echo "════════════════════════════════════════════════════════════════════════"
@@ -81,6 +86,14 @@ echo " S3           : s3://${S3_BUCKET}/${S3_PREFIX}/"
 echo "════════════════════════════════════════════════════════════════════════"
 
 # ── Preflight — Agent model access ──────────────────────────────────────
+# TEST22_SKIP_PREFLIGHT=1 jumps the agent + judge preflights when the
+# AWS-CLI smoke calls fail in environments where the underlying SDK
+# call (executor-converse) would still succeed. Use sparingly — the
+# preflight catches most config typos before a 6h run.
+if [ "${TEST22_SKIP_PREFLIGHT:-0}" = "1" ]; then
+    echo ">>> Bedrock preflight: SKIPPED (TEST22_SKIP_PREFLIGHT=1)"
+else
+
 echo ""
 echo ">>> Bedrock preflight: agent model access (region: ${AWS_REGION})..."
 
@@ -96,27 +109,31 @@ for m in "${MODEL_ARRAY[@]}"; do
         *) MID="${m}" ;;
     esac
     echo "  Testing ${m} → ${MID}..."
-    aws bedrock-runtime converse \
+    # Capture stderr so the failure mode is visible — earlier preflight
+    # silently exited with "not accessible" when the actual cause was
+    # a JMESPath/--output-text combo on a 1-token response. Drop both
+    # those flags and surface stderr.
+    PRE_OUT=$(aws bedrock-runtime converse \
         --region "${AWS_REGION}" \
         --model-id "${MID}" \
         --messages '[{"role":"user","content":[{"text":"ok"}]}]' \
-        --inference-config '{"maxTokens":1}' \
-        --output text --query "output.message.content[0].text" >/dev/null 2>&1 \
+        --inference-config '{"maxTokens":1}' 2>&1) \
         && echo "    OK: ${MID}" \
-        || { echo "FATAL: model ${MID} not accessible in ${AWS_REGION}"; exit 1; }
+        || { echo "FATAL: model ${MID} not accessible in ${AWS_REGION}"; echo "      stderr: ${PRE_OUT}"; exit 1; }
 done
 
 # ── Preflight — Judge model access ──────────────────────────────────────
 echo ""
 echo ">>> Bedrock preflight: judge model access (region: ${JUDGE_REGION})..."
-aws bedrock-runtime converse \
+JUDGE_PRE_OUT=$(aws bedrock-runtime converse \
     --region "${JUDGE_REGION}" \
     --model-id "${JUDGE_MODEL}" \
     --messages '[{"role":"user","content":[{"text":"ok"}]}]' \
-    --inference-config '{"maxTokens":1}' \
-    --output text --query "output.message.content[0].text" >/dev/null 2>&1 \
+    --inference-config '{"maxTokens":1}' 2>&1) \
     && echo "    Judge model OK: ${JUDGE_MODEL}" \
-    || { echo "FATAL: Judge model not accessible in ${JUDGE_REGION}"; exit 1; }
+    || { echo "FATAL: Judge model not accessible in ${JUDGE_REGION}"; echo "      stderr: ${JUDGE_PRE_OUT}"; exit 1; }
+
+fi  # ── close TEST22_SKIP_PREFLIGHT guard
 
 # ── Preflight — S3 access ──────────────────────────────────────────────
 echo ""
