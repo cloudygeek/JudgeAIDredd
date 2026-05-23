@@ -18,9 +18,18 @@ import {
   ConverseCommand,
   InvokeModelCommand,
 } from "@aws-sdk/client-bedrock-runtime";
+import { recordBedrockCall } from "./bedrock-metrics.js";
 
 const REGION = process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "eu-central-1";
 const MODEL_ID = process.env.BEDROCK_JUDGE_MODEL ?? "nvidia.nemotron-super-3-120b";
+
+// One-shot cache diagnostic counter. Logs the cache-engagement state
+// for the first N bedrockChat calls of a process so we can diagnose
+// whether prompt caching is actually firing without redeploying. Kept
+// small to avoid spamming CloudWatch — after the threshold normal log
+// lines (via pretool-interceptor judge line) carry the same info.
+const CACHE_DIAGNOSTIC_LIMIT = 10;
+let firstCacheCallsLogged = 0;
 
 type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "none";
 
@@ -44,12 +53,19 @@ function clientFor(region: string): BedrockRuntimeClient {
   return c;
 }
 
+/** Optional tag identifying which call site is invoking Bedrock. Used
+ *  by `bedrock-metrics.ts` to attribute per-caller cost and cache
+ *  performance. Unknown values fall through to "unknown" so a forgotten
+ *  call site still shows up in the snapshot. */
+export type BedrockCaller = "judge" | "classifier" | "promptarmor" | "preflight" | "unknown";
+
 export async function bedrockChat(
   systemPrompt: string,
   userMessage: string,
   modelId = MODEL_ID,
   effort?: EffortLevel,
-  images?: BedrockImageBlock[]
+  images?: BedrockImageBlock[],
+  caller: BedrockCaller = "unknown",
 ): Promise<{
   content: string;
   thinking: string;
@@ -94,20 +110,21 @@ export async function bedrockChat(
     : undefined;
 
   // Prompt caching: mark the system prompt as a cache point so the
-  // 6500-token B7.1 hardened prompt is billed at 10% of the input rate
-  // for the next 5 minutes (cache TTL). The cache key is "everything
-  // before this marker"; the per-call user message after it is billed
-  // normally.
-  //
-  // Only effective when the cached portion is >= ~1024 tokens (Bedrock
-  // minimum). The standard SYSTEM_PROMPT may fall under that threshold
-  // and Bedrock will silently skip caching — that's fine, the marker
-  // costs nothing on a no-op.
+  // hardened system prompt is billed at 10% of the input rate for the
+  // next 5 minutes (cache TTL). The cache key is "everything before
+  // this marker"; the per-call user message after it is billed normally.
   //
   // We do NOT mark a cache point inside the user content because that
-  // changes per call (tool input, file context, agent reasoning) — caching
-  // it would invalidate every time. The system prompt is the static
-  // 90%+ of every judge request.
+  // changes per call (tool input, file context, agent reasoning) —
+  // caching it would invalidate every time. The system prompt is the
+  // static 90%+ of every judge request.
+  //
+  // KNOWN ISSUE (deferred — see CLAUDE.md "Cost & cache-engagement notes"):
+  // On `eu.anthropic.claude-sonnet-4-6` the empirical cache-engagement
+  // threshold is ~2048 tokens, not the documented 1024. Our B7.1 system
+  // prompt is ~1766 tokens — under the real threshold — so this marker
+  // is silently a no-op in prod today. Fix when we scale: pad the
+  // system prompt to >2048 tokens with static content.
   const systemBlocks: any[] = [
     { text: systemPrompt },
     { cachePoint: { type: "default" } },
@@ -152,15 +169,53 @@ export async function bedrockChat(
   const inputTokens = usage.inputTokens ?? 0;
   const outputTokens = usage.outputTokens ?? 0;
   const hasThinkingBlock = blocks.some((c) => c.reasoningContent !== undefined);
+  const durationMs = Date.now() - start;
+  const cacheReadInputTokens = usage.cacheReadInputTokens ?? undefined;
+  const cacheWriteInputTokens = usage.cacheWriteInputTokens ?? undefined;
+
+  // Cache-engagement diagnostic. The cachePoint marker above SHOULD
+  // cause Bedrock to return non-zero cacheRead or cacheWrite once the
+  // 1024-token minimum is met. If we see neither after several judge
+  // calls, that's a signal the cache isn't engaging — either the
+  // system prompt is below the per-model minimum, the cross-region
+  // inference profile doesn't honor the marker, or the model ID we
+  // passed isn't in the cache-supported list. Log the first few calls
+  // per process so we can diagnose without redeploying.
+  try {
+    if (firstCacheCallsLogged < CACHE_DIAGNOSTIC_LIMIT) {
+      firstCacheCallsLogged++;
+      console.log(
+        `[bedrock-cache] caller=${caller} model=${modelId} ` +
+        `systemChars=${systemPrompt.length} ` +
+        `inputTokens=${inputTokens} outputTokens=${outputTokens} ` +
+        `cacheRead=${cacheReadInputTokens ?? "n/a"} ` +
+        `cacheWrite=${cacheWriteInputTokens ?? "n/a"} ` +
+        `usageKeys=[${Object.keys(usage).join(",")}]`,
+      );
+    }
+  } catch { /* diagnostic must not fail the request */ }
+
+  // Cost accounting. Fire-and-forget — accumulator is in-process and
+  // never throws. Failure here must not break the judge / classifier.
+  try {
+    recordBedrockCall(caller, {
+      inputTokens,
+      outputTokens,
+      cacheReadInputTokens,
+      cacheWriteInputTokens,
+      durationMs,
+    });
+  } catch { /* metrics never fail the request */ }
+
   return {
     content,
     thinking,
-    durationMs: Date.now() - start,
+    durationMs,
     inputTokens,
     outputTokens,
     totalTokens: usage.totalTokens ?? (inputTokens + outputTokens),
-    cacheReadInputTokens: usage.cacheReadInputTokens ?? undefined,
-    cacheWriteInputTokens: usage.cacheWriteInputTokens ?? undefined,
+    cacheReadInputTokens,
+    cacheWriteInputTokens,
     hasThinkingBlock,
     estimatedThinkingTokens: thinking ? Math.ceil(thinking.length / 4) : 0,
   };

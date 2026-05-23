@@ -446,14 +446,75 @@ export function addFeed(entry: FeedEntry) {
 
 export const notificationCounts: Map<string, number> = new Map();
 
-export function recordNotification(sessionId: string): number {
+/** Phase 9 — last notification metadata per session. Used to correlate
+ *  a Claude Code-native permission prompt with the subsequent /track
+ *  arrival so we can promote a tacit-pending approval. Ephemeral; the
+ *  60s pending-approval TTL caps how stale this can become. */
+export interface LastNotification {
+  /** Epoch ms when /notification fired. */
+  receivedAt: number;
+  /** Raw message text (truncated to 500). Already redacted by Claude Code. */
+  message: string;
+  /** Cached classification — true when the message text looks like a
+   *  permission/approval prompt. Computed once on receipt; consumed by
+   *  /track when deciding whether to promote a tacit-pending. */
+  isPermissionPrompt: boolean;
+}
+
+const lastNotificationBySession: Map<string, LastNotification> = new Map();
+
+/** How long after a /notification we'll still treat it as the trigger
+ *  for the next /track in tacit-approval promotion. Lines up with the
+ *  60s pending-approval TTL — the user has at most ~1 minute to click
+ *  Yes before the candidate ages out anyway. */
+export const TACIT_NOTIFICATION_WINDOW_MS = 60_000;
+
+const PERMISSION_PROMPT_PATTERNS = [
+  /\bpermission\b/i,
+  /\bapprove\b/i,
+  /\bapproval\b/i,
+  /\ballow\b/i,
+  /\bconsent\b/i,
+  /\bproceed\b/i,
+  /\bauthoriz/i,
+];
+
+/** Heuristic — does this notification text look like Claude Code asking
+ *  the user to grant permission for a tool call (as opposed to e.g.
+ *  "waiting for input" status pings)? Lenient: matches on common
+ *  permission/approval keywords. False positives degrade gracefully
+ *  (tacit promotion still requires a matching /track within window). */
+export function isPermissionPromptMessage(message: string): boolean {
+  if (!message) return false;
+  return PERMISSION_PROMPT_PATTERNS.some((p) => p.test(message));
+}
+
+export function recordNotification(sessionId: string, message?: string): number {
   const next = (notificationCounts.get(sessionId) ?? 0) + 1;
   notificationCounts.set(sessionId, next);
+  const msg = typeof message === "string" ? message.substring(0, 500) : "";
+  lastNotificationBySession.set(sessionId, {
+    receivedAt: Date.now(),
+    message: msg,
+    isPermissionPrompt: isPermissionPromptMessage(msg),
+  });
   return next;
 }
 
 export function getNotificationCount(sessionId: string): number {
   return notificationCounts.get(sessionId) ?? 0;
+}
+
+/** Returns the most recent /notification for this session iff it
+ *  arrived within `TACIT_NOTIFICATION_WINDOW_MS` AND classified as a
+ *  permission prompt. The tacit-approval promotion path uses this as
+ *  its gating signal — no qualifying notification → don't promote. */
+export function consumeRecentPermissionNotification(sessionId: string): LastNotification | null {
+  const last = lastNotificationBySession.get(sessionId);
+  if (!last) return null;
+  if (Date.now() - last.receivedAt > TACIT_NOTIFICATION_WINDOW_MS) return null;
+  if (!last.isPermissionPrompt) return null;
+  return last;
 }
 
 // ============================================================================

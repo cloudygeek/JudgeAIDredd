@@ -31,7 +31,10 @@ export async function handleNotification(req: IncomingMessage, res: ServerRespon
 
   if (rejectInvalidSessionId(res, session_id)) return;
 
-  const count = recordNotification(session_id);
+  const count = recordNotification(
+    session_id,
+    typeof message === "string" ? message : "",
+  );
 
   addFeed({
     timestamp: new Date().toISOString(),

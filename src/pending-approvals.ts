@@ -2,13 +2,22 @@
  * Pending approvals — the missing-piece between Dredd asking and the
  * user deciding.
  *
- * Flow:
- *   1. /evaluate returns permissionDecision="ask" → record a pending
- *      approval candidate keyed by (session_id, tool_use_id).
- *   2. Claude Code surfaces the permission prompt to the user.
- *   3a. User accepts → tool runs → PostToolUse fires → /track lookups
- *       the candidate and promotes it to a durable ApprovalStore entry.
- *   3b. User denies → no PostToolUse → candidate expires and is dropped.
+ * Two flows feed the same map:
+ *
+ *  A. **Explicit** — /evaluate returned permissionDecision="ask".
+ *     Dredd surfaced its own reason in the prompt; the user accepted.
+ *     PostToolUse arrives and we promote with source="explicit".
+ *
+ *  B. **Tacit** (Phase 9) — /evaluate returned permissionDecision="allow"
+ *     but Claude Code still surfaced a native permission prompt because
+ *     the user's local Claude settings required it (e.g. Bash not in
+ *     their allowlist). We can't see the prompt, but a /notification
+ *     event arrives between /evaluate and /track. When that notification
+ *     looks like a permission ask, we infer the user clicked Yes and
+ *     promote with source="tacit". Tacit approvals are weaker consent:
+ *     they feed the soft pattern-trust signal but cannot override
+ *     Dredd's hard policy denies (Stage 0.5 filters them out of the
+ *     hard short-circuit count).
  *
  * This map is in-process / ephemeral on purpose. The 60-second TTL is
  * the worst-case "time from ask to user decision." Anything longer than
@@ -29,6 +38,12 @@ export interface PendingApproval {
   intentSnapshot: string;
   /** Goal embedding snapshot for the intent-drift backstop at lookup time. */
   goalEmbedding: number[];
+  /** Phase 9 — which capture flow stashed this candidate. Drives the
+   *  promotion path in /track: explicit promotes unconditionally,
+   *  tacit promotes only if a permission-style notification arrived
+   *  between /evaluate and /track. Defaults to "explicit" so existing
+   *  callers behave unchanged. */
+  source?: "explicit" | "tacit";
   /** Epoch ms — entries past this are ignored on consume. */
   expiresAt: number;
 }

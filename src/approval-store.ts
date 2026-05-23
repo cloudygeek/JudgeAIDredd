@@ -74,6 +74,23 @@ export interface ApprovalRecord {
    *  existed — those rows fall through to the existing fingerprint
    *  match path. */
   inputEmbedding: number[];
+  /** Phase 9 — how the approval was captured.
+   *
+   *  "explicit"     — user clicked Allow on a Dredd-surfaced "ask" prompt.
+   *                   Strong consent. Eligible for the Stage 0.5 hard
+   *                   short-circuit (overrides Dredd policy denies).
+   *  "tacit"        — user clicked Yes on a Claude Code-native prompt
+   *                   while Dredd had already said allow. We infer this
+   *                   via Notification-timing correlation (see Phase 9
+   *                   in CLAUDE.md). Weaker consent: contributes to
+   *                   the soft signal (judge prompt context) and can
+   *                   still drive Stage 1.75 approval-allow, but does
+   *                   NOT override Stage 1 policy deny via Stage 0.5.
+   *
+   *  Optional for backwards compat — legacy rows written before this
+   *  field existed are treated as "explicit" (the only path that
+   *  recorded approvals before Phase 9). */
+  source?: "explicit" | "tacit";
 
   /** Set when revoked from the dashboard. Active records have null. */
   revokedAt: string | null;
@@ -95,6 +112,9 @@ export interface RecordApprovalInput {
    *  Pass [] if the embed call failed; the row is still persisted but
    *  won't contribute to pattern-trust matching. */
   inputEmbedding: number[];
+  /** Phase 9 — see ApprovalRecord.source. Defaults to "explicit" when
+   *  omitted to keep existing callers working unchanged. */
+  source?: "explicit" | "tacit";
 }
 
 export interface ApprovalStore {
@@ -181,6 +201,7 @@ export class InMemoryApprovalStore implements ApprovalStore {
       intentSnapshot: input.intentSnapshot,
       goalEmbedding: input.goalEmbedding,
       inputEmbedding: input.inputEmbedding ?? [],
+      source: input.source ?? "explicit",
       revokedAt: null,
       revokedBy: null,
     };

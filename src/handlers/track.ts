@@ -18,6 +18,7 @@ import {
   json,
   rejectInvalidSessionId,
   authenticateHookRequest,
+  consumeRecentPermissionNotification,
   CONFIG,
 } from "../server-core.js";
 import { consumePendingApproval } from "../pending-approvals.js";
@@ -70,53 +71,78 @@ export async function handleTrack(req: IncomingMessage, res: ServerResponse) {
     await tracker.recordEnvVar(session_id, String(tool_input?.command ?? ""));
   }
 
-  // Approval-learning promotion. Only fires when /evaluate stashed a
-  // pending candidate against this tool_use_id (i.e. Dredd returned
-  // permissionDecision="ask" and the user accepted — the tool wouldn't
-  // be running otherwise). Best-effort: any failure logs and continues
-  // without blocking the tracking response.
+  // Approval-learning promotion. Two flows funnel into the same record:
+  //
+  //   explicit — /evaluate returned "ask" and the user accepted; the
+  //     PostToolUse arrival here is itself proof of consent.
+  //
+  //   tacit (Phase 9) — /evaluate returned "allow" but Claude Code
+  //     surfaced its own permission prompt. We only promote when a
+  //     permission-style /notification arrived for this session in
+  //     the recent window — otherwise we can't tell whether the
+  //     tool was auto-allowed (no consent to capture) or the user
+  //     actively clicked Yes.
+  //
+  // Best-effort: any failure logs and continues without blocking the
+  // tracking response.
   if (tool_use_id) {
     const pending = consumePendingApproval(session_id, tool_use_id);
     if (pending) {
-      try {
-        const projectRoot = await tracker.getProjectRoot(session_id);
-        const { ownerSub, ownerEmail } = await tracker.getSessionOwner(session_id);
-        if (projectRoot && ownerSub) {
-          // Phase 8a — embed the (tool, input) JSON so future /evaluate
-          // calls can find pattern-similar prior approvals. Best-effort:
-          // an embed failure stores `[]` and the approval still lands
-          // (just won't contribute to pattern-trust matching).
-          let inputEmbedding: number[] = [];
-          try {
-            const embedText = JSON.stringify({ tool: pending.tool, input: pending.fingerprintJson });
-            const vecs = await embedAny(embedText, CONFIG.embeddingModel);
-            if (vecs?.[0]?.length) inputEmbedding = vecs[0];
-          } catch (err) {
-            console.warn(
-              `  [${session_id.substring(0, 8)}] [APPRV] inputEmbedding failed (storing []): ${(err as Error)?.message ?? err}`,
+      const source: "explicit" | "tacit" = pending.source ?? "explicit";
+
+      // Tacit gating: require a recent permission-style notification.
+      // If none, the tool was almost certainly auto-allowed by Claude
+      // Code's user permissions; no consent to record.
+      let shouldPromote = true;
+      if (source === "tacit") {
+        const lastN = consumeRecentPermissionNotification(session_id);
+        if (!lastN) {
+          shouldPromote = false;
+        }
+      }
+
+      if (shouldPromote) {
+        try {
+          const projectRoot = await tracker.getProjectRoot(session_id);
+          const { ownerSub, ownerEmail } = await tracker.getSessionOwner(session_id);
+          if (projectRoot && ownerSub) {
+            // Phase 8a — embed the (tool, input) JSON so future /evaluate
+            // calls can find pattern-similar prior approvals. Best-effort:
+            // an embed failure stores `[]` and the approval still lands
+            // (just won't contribute to pattern-trust matching).
+            let inputEmbedding: number[] = [];
+            try {
+              const embedText = JSON.stringify({ tool: pending.tool, input: pending.fingerprintJson });
+              const vecs = await embedAny(embedText, CONFIG.embeddingModel);
+              if (vecs?.[0]?.length) inputEmbedding = vecs[0];
+            } catch (err) {
+              console.warn(
+                `  [${session_id.substring(0, 8)}] [APPRV] inputEmbedding failed (storing []): ${(err as Error)?.message ?? err}`,
+              );
+            }
+            await approvals.recordApproval({
+              scope: { ownerSub, projectRoot },
+              ownerEmail,
+              fingerprintHash: pending.fingerprintHash,
+              fingerprintJson: pending.fingerprintJson,
+              summary: pending.summary,
+              tool: pending.tool,
+              intentSnapshot: pending.intentSnapshot,
+              goalEmbedding: pending.goalEmbedding,
+              inputEmbedding,
+              source,
+            });
+            console.log(
+              `  [${session_id.substring(0, 8)}] [APPRV] learned (${source}): ${pending.summary}` +
+              (inputEmbedding.length ? ` (+${inputEmbedding.length}-dim embedding)` : ""),
             );
           }
-          await approvals.recordApproval({
-            scope: { ownerSub, projectRoot },
-            ownerEmail,
-            fingerprintHash: pending.fingerprintHash,
-            fingerprintJson: pending.fingerprintJson,
-            summary: pending.summary,
-            tool: pending.tool,
-            intentSnapshot: pending.intentSnapshot,
-            goalEmbedding: pending.goalEmbedding,
-            inputEmbedding,
-          });
-          console.log(
-            `  [${session_id.substring(0, 8)}] [APPRV] learned: ${pending.summary}` +
-            (inputEmbedding.length ? ` (+${inputEmbedding.length}-dim embedding)` : ""),
+        } catch (err) {
+          console.warn(
+            `  [${session_id.substring(0, 8)}] [APPRV] failed to record approval:`,
+            (err as Error)?.message ?? err,
           );
         }
-      } catch (err) {
-        console.warn(
-          `  [${session_id.substring(0, 8)}] [APPRV] failed to record approval:`,
-          (err as Error)?.message ?? err,
-        );
       }
     }
   }

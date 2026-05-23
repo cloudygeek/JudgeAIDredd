@@ -118,6 +118,10 @@ function itemToRecord(item: Record<string, any>): ApprovalRecord {
     intentSnapshot: item.intentSnapshot ?? "",
     goalEmbedding: Array.isArray(item.goalEmbedding) ? item.goalEmbedding : [],
     inputEmbedding: Array.isArray(item.inputEmbedding) ? item.inputEmbedding : [],
+    // Default missing source to "explicit" — only the Dredd-ask-accept
+    // path recorded approvals before Phase 9, so all legacy rows are
+    // explicit by construction.
+    source: item.source === "tacit" ? "tacit" : "explicit",
     revokedAt: item.revokedAt ?? null,
     revokedBy: item.revokedBy ?? null,
   };
@@ -160,11 +164,12 @@ export class DynamoApprovalStore implements ApprovalStore {
           "summary = :sum, " +
           "lastUsedAt = :now, expiresAt = :exp, #ttl = :ttl, " +
           "intentSnapshot = :is, goalEmbedding = :ge, inputEmbedding = :ie, " +
+          "#src = :src, " +
           "gsi1pk = :gpk, gsi1sk = :gsk, " +
           "useCount = if_not_exists(useCount, :zero) + :one, " +
           "grantedAt = if_not_exists(grantedAt, :now) " +
           "REMOVE revokedAt, revokedBy",
-        ExpressionAttributeNames: { "#ttl": "ttl" },
+        ExpressionAttributeNames: { "#ttl": "ttl", "#src": "source" },
         ExpressionAttributeValues: {
           ":os": input.scope.ownerSub,
           ":oe": input.ownerEmail,
@@ -179,6 +184,7 @@ export class DynamoApprovalStore implements ApprovalStore {
           ":is": input.intentSnapshot,
           ":ge": input.goalEmbedding,
           ":ie": input.inputEmbedding ?? [],
+          ":src": input.source ?? "explicit",
           ":gpk": userGsiPk(input.scope.ownerSub),
           ":gsk": userGsiSk(grantedAt, input.fingerprintHash),
           ":zero": 0,
@@ -202,6 +208,7 @@ export class DynamoApprovalStore implements ApprovalStore {
       intentSnapshot: input.intentSnapshot,
       goalEmbedding: input.goalEmbedding,
       inputEmbedding: input.inputEmbedding ?? [],
+      source: input.source ?? "explicit",
       revokedAt: null,
       revokedBy: null,
     };

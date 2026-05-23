@@ -223,7 +223,7 @@ export class IntentClassifier {
     try {
       const result = await Promise.race([
         this.backend === "bedrock"
-          ? bedrockChat(SYSTEM_PROMPT, userMessage, this.model)
+          ? bedrockChat(SYSTEM_PROMPT, userMessage, this.model, undefined, undefined, "classifier")
           : chat(
               [
                 { role: "system", content: SYSTEM_PROMPT },

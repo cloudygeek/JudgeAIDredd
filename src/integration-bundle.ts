@@ -143,7 +143,25 @@ This bundle points your Claude Code CLI at the judge server at:
 Every tool call your agent attempts will be evaluated by the judge; prompt-
 injection / goal-hijacking attempts are blocked before the tool runs.
 
-## 1. Install the hook script
+## 1. Generate & install your API key
+
+The hook server requires a Bearer key on every request. Without one,
+\`/intent\` and \`/evaluate\` return 401 and Dredd silently falls back
+to allowing everything.
+
+Open the dashboard's **API Keys** tab → **Generate key**. The plaintext
+key is shown ONCE — run the snippet shown in the banner, which does:
+
+\`\`\`bash
+mkdir -p ~/.claude/dredd
+printf '%s\\n' 'jaid_live_PASTE_KEY_HERE' > ~/.claude/dredd/api-key
+chmod 600 ~/.claude/dredd/api-key
+\`\`\`
+
+The hook script reads from \`~/.claude/dredd/api-key\` by default; override
+with \`$DREDD_API_KEY_FILE\` if you keep it elsewhere.
+
+## 2. Install the hook script
 
 \`\`\`bash
 mkdir -p ~/.claude/dredd
@@ -151,7 +169,7 @@ cp dredd-hook.sh ~/.claude/dredd/
 chmod +x ~/.claude/dredd/dredd-hook.sh
 \`\`\`
 
-## 2. Wire up the hooks
+## 3. Wire up the hooks
 
 Pick one scope:
 
@@ -184,24 +202,35 @@ keep it to yourself.
 
 The script defaults to the URL above but respects \`$DREDD_URL\` if set.
 
-## 3. Prerequisites
+## 4. Prerequisites
 
 - \`curl\` and \`jq\` on your PATH (preinstalled on macOS / most Linux).
 
-## 4. Verify
+## 5. Verify
 
-Start a Claude Code session in any project. Open the dashboard at:
+Confirm the API key is wired up by hitting an auth-required endpoint:
+
+\`\`\`bash
+curl -H "Authorization: Bearer $(cat ~/.claude/dredd/api-key)" \\
+  ${dreddUrl}/api/auth-check
+# Expected: HTTP 200 with {"authenticated":true,"ownerEmail":"…"}
+# A 401 means the key file is missing, malformed, or revoked.
+\`\`\`
+
+Then start a Claude Code session in any project. Open the dashboard at:
 
     ${dreddUrl}/
 
 You should see your session appear in the Live Feed the moment you send
-your first prompt.
+your first prompt. Note that \`${dreddUrl}/api/health\` answers without
+auth — useful for proving the server is reachable, but it won't catch a
+missing API key. Use \`/api/auth-check\` above for that.
 
 ## Troubleshooting
 
-- **Dashboard shows no sessions** — check that \`curl ${dreddUrl}/api/health\`
-  returns JSON with a \`version\` field. If not, the URL is wrong or the
-  server is down.
+- **Dashboard shows no sessions but \`/api/health\` works** — the API key
+  is missing or wrong. Re-run \`curl … /api/auth-check\`; on 401, regenerate
+  the key from the dashboard and re-save to \`~/.claude/dredd/api-key\`.
 - **Hook runs but blocks nothing** — the server defaults to interactive mode;
   check the dashboard's mode badge. \`autonomous\` mode blocks on hijack,
   \`learn\` mode blocks nothing by design.
@@ -243,6 +272,162 @@ DREDD_URL=http://127.0.0.1:1 claude
 }
 
 /**
+ * Render the "let Claude install Dredd for you" prompt.
+ *
+ * The user feeds this to Claude (e.g. `claude < claude-install-prompt.txt`
+ * or pastes it as the first prompt) and Claude walks through the install
+ * one step at a time, describing each action and asking permission before
+ * running it. The dredd-on-dredd bootstrap problem (Dredd isn't installed
+ * yet so it can't judge this install session) is handled by deliberately
+ * keeping the instructions narrow: only the API-key path, the hook script
+ * path under ~/.claude/dredd/, and the settings.json wiring are in scope.
+ *
+ * Two guardrails:
+ *  - The prompt INSTRUCTS Claude to describe each step and ask permission
+ *    before running it. The user retains a human-in-the-loop checkpoint
+ *    on every file write.
+ *  - The prompt scopes filesystem writes to ~/.claude/dredd/ and
+ *    ~/.claude/settings.json (or <project>/.claude/settings.json) ONLY.
+ *    Any other path is out of scope and Claude is told to stop and flag it.
+ *
+ * The bundle URL is embedded into the prompt so the installer can curl
+ * the hook script directly rather than relying on a separate `unzip` step.
+ */
+export function renderInstallPrompt(dreddUrl: string): string {
+  return `# Install Judge AI Dredd
+
+You are being asked to install Judge AI Dredd — a prompt-injection
+defence layer for Claude Code — into the user's environment. Dredd
+intercepts your tool calls at PreToolUse and blocks ones the judge
+classifies as goal-hijacking.
+
+The judge server this install targets is:
+
+    ${dreddUrl}
+
+## Before you do anything
+
+Print a numbered summary of what you are about to do, then **stop and
+ask the user to confirm** before running a single command. The summary
+must list:
+
+1. Every file you will create or modify, with its absolute path.
+2. The URL you will fetch the hook script from.
+3. That you will ask the user to paste an API key (which they must
+   first generate from the dashboard).
+4. The verification step you will run at the end.
+
+Wait for an explicit "yes" / "go ahead" / "proceed" before running
+anything. If the user asks questions, answer them, then re-ask for
+confirmation.
+
+## What you will do (after the user confirms)
+
+### Step 1 — Get the API key from the user
+
+Tell the user:
+
+> Open the dashboard at ${dreddUrl.replace(/^https:\/\/dredd-hook\./, "https://dredd.")}
+> (or whichever dashboard URL Dredd is running on for you).
+> Go to the **API Keys** tab → **Generate key** with a description
+> like "$(hostname) install — $(date +%Y-%m-%d)".
+> Copy the plaintext key (shown ONCE) and paste it back here.
+
+WAIT for the user to paste the key. The key starts with \`jaid_live_\`.
+Do not proceed without it. Do not make one up.
+
+When the user pastes it, do NOT echo it back in plaintext anywhere
+except as the body of the file you write to disk.
+
+### Step 2 — Install the API key
+
+Create \`~/.claude/dredd/\` if missing. Write the pasted key to
+\`~/.claude/dredd/api-key\` with mode 600. Confirm with the user
+that the file is there before continuing.
+
+\`\`\`bash
+mkdir -p ~/.claude/dredd
+# Then write the key (use the user-supplied value, NOT a placeholder):
+printf '%s\\n' "<key the user just pasted>" > ~/.claude/dredd/api-key
+chmod 600 ~/.claude/dredd/api-key
+\`\`\`
+
+### Step 3 — Install the hook script
+
+Fetch the hook script from this server, write it to
+\`~/.claude/dredd/dredd-hook.sh\`, and chmod 755.
+
+The bundle endpoint requires authentication, so use the API key from
+Step 2:
+
+\`\`\`bash
+curl -fsSL \\
+  -H "Authorization: Bearer $(cat ~/.claude/dredd/api-key)" \\
+  -o /tmp/judge-dredd-integration.zip \\
+  ${dreddUrl.replace(/^https:\/\/dredd-hook\./, "https://dredd.")}/api/integration-bundle
+unzip -o /tmp/judge-dredd-integration.zip -d /tmp/dredd
+cp /tmp/dredd/dredd-hook.sh ~/.claude/dredd/
+chmod 755 ~/.claude/dredd/dredd-hook.sh
+\`\`\`
+
+Confirm the script is there and executable.
+
+### Step 4 — Wire the hooks into Claude Code
+
+Ask the user whether to install globally (\`~/.claude/settings.json\` —
+affects every Claude Code session on this machine) or per-project
+(\`<project>/.claude/settings.json\` — affects only sessions started
+in that directory).
+
+For whichever target the user picks:
+
+- If the target file does NOT exist, copy \`/tmp/dredd/settings.json\`
+  into place.
+- If the target file DOES exist, do NOT overwrite. Read it, show the
+  user the existing \`hooks\` and \`env\` blocks (if any), then propose
+  a merge that splices in the Dredd entries while preserving everything
+  else. Apply the merge only after the user approves.
+
+### Step 5 — Verify
+
+Run this — it exercises the API-key path, unlike \`/api/health\`:
+
+\`\`\`bash
+curl -sfk -H "Authorization: Bearer $(cat ~/.claude/dredd/api-key)" \\
+  ${dreddUrl}/api/auth-check
+\`\`\`
+
+Expected: HTTP 200 with JSON \`{"authenticated":true,...}\`.
+
+On 401: the key file is missing, malformed, or revoked. Re-run Step 1.
+On any other error: report the status code to the user and stop.
+
+## Boundaries
+
+- Do NOT touch any path outside \`~/.claude/dredd/\`,
+  \`~/.claude/settings.json\`, or \`<project>/.claude/settings.json\`.
+- Do NOT install any other tools, package managers, or shell hooks.
+- Do NOT modify \`.bashrc\`, \`.zshrc\`, \`.profile\`, environment files,
+  or shell aliases.
+- Do NOT exfiltrate the API key. It belongs only in
+  \`~/.claude/dredd/api-key\` with mode 600.
+- If any step fails, stop and report the failure to the user; do not
+  try to "fix" by editing files the user did not ask you to touch.
+
+## After install
+
+Tell the user:
+
+> Restart your Claude Code session for the hooks to take effect.
+> Your next session will appear in the Live Feed at the dashboard the
+> moment you send your first prompt.
+
+Then you are done. Do not start any other work in this session unless
+the user explicitly asks.
+`;
+}
+
+/**
  * Build the integration bundle for the given judge URL. Called by the
  * /api/integration-bundle route.
  */
@@ -253,6 +438,7 @@ export function buildIntegrationBundle(dreddUrl: string): Buffer {
 
   const entries: ZipEntry[] = [
     { name: "dredd-hook.sh", data: Buffer.from(bakedHook, "utf8"), mode: 0o755 },
+    { name: "claude-install-prompt.txt", data: Buffer.from(renderInstallPrompt(dreddUrl), "utf8"), mode: 0o644 },
     { name: "settings.json", data: Buffer.from(renderSettings(dreddUrl), "utf8"), mode: 0o644 },
     { name: "README.md", data: Buffer.from(renderReadme(dreddUrl), "utf8"), mode: 0o644 },
   ];

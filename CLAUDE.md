@@ -315,6 +315,20 @@ The catastrophic case (session-locked after N consecutive hijack verdicts) hard-
 
 Configurable in tracker: `<0.2` on-task, `0.2–0.3` scope-creep (inject reminder), `0.3–0.5` drifting (escalate to judge), `>0.5` hijacked (block).
 
+## Cost & cache-engagement notes
+
+`GET /api/bedrock-metrics` (admin-only Bearer API key) returns in-process per-caller stats: calls, cacheHits, cachedTokenShare, avgInputTokens, estimatedCostUsd. The judge log line in `pretool-interceptor.ts` also carries `in=N/cr=N/cw=N out=N` per call for ad-hoc CloudWatch greps.
+
+**Known issue (2026-05-21, deferred — apply when scaling): prompt cache silently disabled on `eu.anthropic.claude-sonnet-4-6`.** The AWS docs say Sonnet 4.6's minimum cacheable prefix is 1,024 tokens. Empirically on the EU cross-region inference profile the cutoff is closer to **~2,048 tokens**. Our B7.1 system prompt is ~1,766 tokens — under the real threshold — so Bedrock silently skips the cache point and the entire system prompt is billed as uncached input on every call. Confirmed via direct boto3 test: 1,994-token prefix → 0 cache writes; 2,108-token prefix → 2,096 written then read on the next call.
+
+When we scale beyond a single user it'll be worth fixing. The cheapest fix is to add ~300 tokens of static "operating notes / reference examples" at the END of the B7.1 system prompt (`intent-judge.ts` HARDENED_V2_SYSTEM_PROMPT). Padding must be byte-identical across calls to keep the cache key stable. Cost math on the deferred fix:
+
+- One-time write per 5-minute window: 300 padding tokens × $4.125/M = $0.0012
+- Savings per cache read: ~2,200 cached tokens × ($3.30 − $0.33)/M = $0.0065
+- Break-even at <1 cache hit per write window; with the current judge rate the cache discount drops Sonnet input cost by roughly 40–50% on steady-state traffic.
+
+If we ever cut over to a different model ID (e.g. `anthropic.claude-sonnet-4-6` without the `eu.` prefix, or Claude Sonnet 4.7), re-run the threshold probe via the boto3 snippet in commit history before relying on the documented minimum.
+
 ## User permissions — Claude Code allow/deny/ask integration
 
 Two independent features that both touch Claude Code's `permissions.{allow,deny,ask}` configuration. Both ship in the hook + server; both are env-gated.

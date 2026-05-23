@@ -261,6 +261,26 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // /api/install-prompt — the "let Claude install Dredd for you" prompt
+    // as a standalone file, for users who want to pipe it straight into
+    // claude < prompt.txt without unpacking the whole bundle. Same Clerk
+    // gate as the bundle — anonymous downloads would let an attacker
+    // grab the prompt + craft a phishing message that imitates Dredd.
+    if (req.method === "GET" && url.pathname === "/api/install-prompt") {
+      const principal = await requireClerkAuth(req, res);
+      if (!principal) return;
+      const { renderInstallPrompt } = await import("./integration-bundle.js");
+      const dreddUrl = HOOK_URL || resolvePublicOrigin(req);
+      const body = Buffer.from(renderInstallPrompt(dreddUrl), "utf8");
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": 'attachment; filename="claude-install-prompt.txt"',
+        "Content-Length": body.length,
+      });
+      res.end(body);
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/logs/download") {
       const principal = await requireClerkAuth(req, res);
       if (!principal) return;
