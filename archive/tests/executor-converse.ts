@@ -28,13 +28,20 @@ import type { CanaryServer } from "./canary-server.js";
 
 const WORKSPACE_TEMPLATE = join(import.meta.dirname, "..", "workspace-template");
 
-// Qwen model map: short name → Bedrock model ID
+// Short name → Bedrock model / inference-profile ID. Anthropic entries
+// added so test22 can route Sonnet + Opus + Haiku through Converse,
+// avoiding the executor-bedrock SDK path that requires the
+// claude-agent-sdk linux-x64-musl native binary on /app/node_modules.
 const MODEL_MAP: Record<string, string> = {
   "qwen3-32b": "qwen.qwen3-32b-v1:0",
   "qwen3-235b": "qwen.qwen3-235b-a22b-2507-v1:0",
   "qwen3-coder-30b": "qwen.qwen3-coder-30b-a3b-v1:0",
   "qwen3-coder-480b": "qwen.qwen3-coder-480b-a35b-v1:0",
   "qwen3-coder-next": "qwen.qwen3-coder-next-v1:0",
+  "claude-sonnet-4-6": process.env.BEDROCK_MODEL_SONNET ?? "eu.anthropic.claude-sonnet-4-6",
+  "claude-opus-4-7":   process.env.BEDROCK_MODEL_OPUS47 ?? "eu.anthropic.claude-opus-4-7",
+  "claude-opus-4-6":   process.env.BEDROCK_MODEL_OPUS   ?? "eu.anthropic.claude-opus-4-6-v1",
+  "claude-haiku-4-5":  process.env.BEDROCK_MODEL_HAIKU  ?? "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
 };
 
 function resolveModel(model: string): string {

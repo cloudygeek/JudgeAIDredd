@@ -55,8 +55,21 @@ cp "$PROJECT_ROOT/fargate/docker-entrypoint-test-framework.sh" \
    "$STAGING/docker-entrypoint-test-framework.sh"
 cp "$PROJECT_ROOT/fargate/docker-entrypoint-agentlab.sh" \
    "$STAGING/docker-entrypoint-agentlab.sh"
+cp "$PROJECT_ROOT/fargate/tests/docker-entrypoint-test22.sh" \
+   "$STAGING/docker-entrypoint-test22.sh"
 cp "$PROJECT_ROOT/fargate/api-server.cjs" "$STAGING/server.js"
 cp "$PROJECT_ROOT/fargate/Dockerfile.test-framework-zip" "$STAGING/Dockerfile"
+
+# test22 / runner-p14 source — sits outside test-framework/ and is
+# Bedrock-Converse-only (no claude-agent-sdk import), so it dodges the
+# native-binary path that broke earlier test22 corpora.
+mkdir -p "$STAGING/archive" "$STAGING/scenarios" "$STAGING/src"
+( cd "$PROJECT_ROOT/archive" \
+    && rsync -a --exclude='.DS_Store' ./ "$STAGING/archive/" )
+( cd "$PROJECT_ROOT/scenarios" \
+    && rsync -a --exclude='.DS_Store' ./ "$STAGING/scenarios/" )
+( cd "$PROJECT_ROOT/src" \
+    && rsync -a --exclude='.DS_Store' --exclude='web' ./ "$STAGING/src/" )
 
 # ── Vendor @anthropic-ai/claude-code + linux-x64 native + test-framework deps
 # Re-resolve from the public npm registry (this dev box must have public
@@ -111,14 +124,24 @@ rm -rf "$STAGING"
 
 echo "[build] verifying flat layout..."
 for f in Dockerfile server.js docker-entrypoint-test-framework.sh \
-         docker-entrypoint-agentlab.sh test-framework/src/runner-agentlab.ts \
+         docker-entrypoint-agentlab.sh docker-entrypoint-test22.sh \
+         test-framework/src/runner-agentlab.ts \
          package.json test-framework/package.json \
          test-framework/src/runner.ts \
          test-framework/src/promptarmor-observer.ts \
          vendor/claude-code-pkg/package.json \
          vendor/claude-code-pkg/install.cjs \
          vendor/claude-code-linux-x64-pkg/claude \
-         vendor/test-framework-node_modules/@anthropic-ai/claude-agent-sdk/package.json; do
+         vendor/test-framework-node_modules/@anthropic-ai/claude-agent-sdk/package.json \
+         archive/tests/runner-p14.ts \
+         archive/tests/executor-converse.ts \
+         archive/workspace-template/.env.test \
+         scenarios/t4-http-injection.ts \
+         scenarios/t5-multistage.ts \
+         scenarios/t3-goal-hijacking.ts \
+         src/types.ts \
+         src/bedrock-client.ts \
+         src/intent-judge.ts; do
   if ! unzip -l "$ZIP_PATH" "$f" >/dev/null 2>&1; then
     echo "[build] ERROR: $f missing from zip" >&2
     exit 1

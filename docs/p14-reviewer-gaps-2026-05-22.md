@@ -58,21 +58,52 @@ columns {C1, C3, C4, C1', C3', C4'} for at least two non-Anthropic models.
 one of the largest single-configuration drops in the primary results and is
 currently unexamined."
 
-**Status:** **Gap.** The skeleton files in
-`results/test22/p14-T4-claude-sonnet-4-6-{C1,C4}-{baseline,judge}-T4.{1,2,3}-…json`
-are all `reps: 0`, `n: 0` — they are placeholder runs that never executed.
+**Status:** **Gap — corpus on disk is poisoned.** Earlier reading of
+`results/test22/` was misleading. The top-level `results/test22/p14-T4-*.json`
+files are reps:0 skeletons (placeholder writes), but the timestamped
+sub-directories `results/test22/2026{0429T121720Z,0429T141836Z,0429T141853Z,0429T142013Z}/`
+contain 4800 attempted runs (Sonnet × 4 arms × 3 T4 variants × 100 reps).
 
-**What is needed:**
+Survey of those runs (2026-05-23):
 
-- 90 repetitions per cell (matching V1/V2 sample size for T3) at:
-  - T4 / C1 / Sonnet / standard reasoning
-  - T4 / C4 / Sonnet / standard reasoning
-  - and ideally one more cell at C3 (no system prompt) to bracket the
-    factorial decomposition
-- Same harness invocation pattern as test29 (`test29-converse-…`,
-  `repetitions: 90`).
-- Compute Hartigan dip test + Gaussian mixture BIC on the resulting GES
-  distribution (script does not yet exist — see G5).
+| sub-dir | runs | binary-not-found | ok-no-tools | ok-with-toolcalls |
+|---|---:|---:|---:|---:|
+| 20260429T121720Z |  960 |  960 | 0 | 0 |
+| 20260429T141836Z | 1920 | 1920 | 0 | 0 |
+| 20260429T141853Z |  960 |  960 | 0 | 0 |
+| 20260429T142013Z |  960 |  960 | 0 | 0 |
+| **total** | **4800** | **4800 (100%)** | **0** | **0** |
+
+Every run's first-turn `assistantResponse` is
+
+```
+[ERROR: Claude Code native binary not found at /app/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64-musl/claude. Please ensure Claude Code is installed via native installer or specify a valid path with options.pathToClaudeCodeExecutable.]
+```
+
+Zero tool calls fired. `ges=100` and `hijackSucceeded=false` are recorded
+because nothing happened — they are non-results, not Sonnet refusing T4.
+A pooled JSON at `benchmarks/test-framework/runs/sonnet-T4-pooled-2026-05-23/`
+was deleted on 2026-05-23 once this was diagnosed; do not re-pool from
+this corpus.
+
+**What is needed (unchanged from original entry):**
+
+- 90 repetitions per cell at T4 / {C1, C4} / Sonnet / standard reasoning
+  (and ideally C3 to bracket the factorial), on a properly-built test22
+  image where the Claude Agent SDK binary is on PATH.
+- The runner restoration is now in place:
+  - `archive/tests/runner-p14.ts` (restored from research-v1 + repathed
+    `import type { TestResult } from "../../src/types.js"`)
+  - `scenarios/t4-http-injection.ts`, `scenarios/t5-multistage.ts`
+    (restored from research-v1)
+  - `fargate/tests/docker-entrypoint-test22.sh` (restored, repathed
+    `npx tsx archive/tests/runner-p14.ts`)
+- Either rebuild the test22 image with Bedrock executor (so the SDK binary
+  isn't required) and re-run, or fix the binary path and re-run on the
+  Anthropic SDK path — the existing `executor-converse.js` route makes the
+  former preferable.
+- Once a real corpus exists, score with `scripts/compute-bimodality.py`
+  and `scripts/ges-decomp.py` per the G3 pattern.
 
 **Acceptance test:** Bimodality verdict (reject / fail to reject unimodality)
 for T4 at C1 and C4, reported with the same statistics as Sonnet T3 in
