@@ -129,8 +129,14 @@ export type ClerkVerifyResult =
   | { ok: true; principal: ClerkPrincipal }
   | { ok: false; reason: "no-secret" | "no-token" | "no-sub" | "verify-failed"; error?: string };
 
+/** True iff Clerk verification can run on this process. Either the
+ *  secret key (online JWKS fetch) or the public-key PEM (offline,
+ *  zero-network) is sufficient. Exposed so callers like the hook role
+ *  can branch on "Clerk-configured here" without re-reading env vars. */
+export const CLERK_ENABLED = !!(CLERK_SECRET_KEY || CLERK_JWT_PUBLIC_KEY_PEM);
+
 export async function tryVerifyClerk(req: IncomingMessage): Promise<ClerkVerifyResult> {
-  if (!CLERK_SECRET_KEY) return { ok: false, reason: "no-secret" };
+  if (!CLERK_ENABLED) return { ok: false, reason: "no-secret" };
   const token = extractBearer(req);
   if (!token) return { ok: false, reason: "no-token" };
   try {
@@ -290,10 +296,12 @@ export async function requireClerkAuth(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<ClerkPrincipal | null> {
-  if (!CLERK_SECRET_KEY) {
+  if (!CLERK_ENABLED) {
     json(res, 503, {
       error: "Dashboard auth not configured",
-      detail: "CLERK_SECRET_KEY is unset on this container. Set it to enable sign-in.",
+      detail:
+        "Neither CLERK_SECRET_KEY nor CLERK_JWT_PUBLIC_KEY is set on this " +
+        "container. Provision at least one to enable sign-in.",
     });
     return null;
   }

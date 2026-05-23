@@ -540,9 +540,21 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
 
     // /api/mode — cross-origin from the dashboard. Flips trust mode for
     // the whole server in-process. Preflight handled above; POST below.
+    //
+    // Auth: admin only — this changes the defence posture for EVERY
+    // session in the server. Accepts Clerk JWT (from dashboard browser)
+    // or admin API key (from CLI). A previous version was CORS-only,
+    // which let an anonymous internet caller flip prod to learn mode
+    // (confirmed exploit, 2026-05-23 audit).
     if (url.pathname === "/api/mode") {
       if (applyCors(req, res)) return;
       if (req.method === "POST") {
+        const { authenticateHookOrDashboard } = await import("./server-core.js");
+        const identity = await authenticateHookOrDashboard(req, res);
+        if (!identity) return;
+        if (!identity.isAdmin) {
+          return json(res, 403, { error: "Admin only" });
+        }
         const body = JSON.parse(await readBody(req));
         const next = body.mode;
         if (next !== "interactive" && next !== "autonomous" && next !== "learn") {
@@ -550,7 +562,7 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
         }
         const prev = CONFIG.mode;
         CONFIG.mode = next as TrustMode;
-        console.log(`  [MODE] runtime switch: ${prev} → ${next}`);
+        console.log(`  [MODE] runtime switch: ${prev} → ${next} (by ${identity.ownerEmail ?? identity.ownerSub ?? "?"} via ${identity.authVia})`);
 
         // Mode flips are dev-only. The interactive intent stack and the
         // autonomous single-goal model have different invariants — when
@@ -576,33 +588,52 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
     // goal: flip it to learn, finish the work, then clear. Unlike
     // /api/mode this does NOT clear any intent stacks — the whole point
     // is to keep the same session running.
+    // Auth: caller must own the session (or be admin). The previous
+    // version was CORS-only, which let an anonymous caller flip ANY
+    // session's mode given just its UUID.
     if (url.pathname === "/api/session-mode") {
       if (applyCors(req, res)) return;
       if (req.method === "POST") {
+        const { authenticateHookOrDashboard } = await import("./server-core.js");
+        const identity = await authenticateHookOrDashboard(req, res);
+        if (!identity) return;
         const body = JSON.parse(await readBody(req));
-        const session_id: unknown = body.session_id;
-        if (typeof session_id !== "string") {
-          return json(res, 400, { error: "Missing session_id" });
+        const sid: unknown = body.session_id;
+        if (typeof sid !== "string") return json(res, 400, { error: "Missing session_id" });
+        if (rejectInvalidSessionId(res, sid)) return;
+        if (!identity.isAdmin) {
+          const sessionOwner = await tracker.getSessionOwner(sid);
+          if (!sessionOwner.ownerSub || sessionOwner.ownerSub !== identity.ownerSub) {
+            return json(res, 403, { error: "Forbidden — session is not owned by caller" });
+          }
         }
-        if (rejectInvalidSessionId(res, session_id)) return;
         const next = body.mode;
         if (next === null) {
-          const prev = sessionModeOverride.get(session_id) ?? null;
-          sessionModeOverride.delete(session_id);
-          console.log(`  [${session_id.substring(0, 8)}] [SESSION-MODE] cleared (was ${prev ?? "none"})`);
-          return json(res, 200, { session_id, mode: null, previous: prev });
+          const prev = sessionModeOverride.get(sid) ?? null;
+          sessionModeOverride.delete(sid);
+          console.log(`  [${sid.substring(0, 8)}] [SESSION-MODE] cleared (was ${prev ?? "none"}) by ${identity.ownerEmail ?? identity.ownerSub}`);
+          return json(res, 200, { session_id: sid, mode: null, previous: prev });
         }
         if (next !== "interactive" && next !== "autonomous" && next !== "learn") {
           return json(res, 400, { error: "mode must be interactive, autonomous, learn, or null" });
         }
-        const prev = sessionModeOverride.get(session_id) ?? null;
-        sessionModeOverride.set(session_id, next as TrustMode);
-        console.log(`  [${session_id.substring(0, 8)}] [SESSION-MODE] override ${prev ?? "none"} → ${next}`);
-        return json(res, 200, { session_id, mode: next, previous: prev });
+        const prev = sessionModeOverride.get(sid) ?? null;
+        sessionModeOverride.set(sid, next as TrustMode);
+        console.log(`  [${sid.substring(0, 8)}] [SESSION-MODE] override ${prev ?? "none"} → ${next} by ${identity.ownerEmail ?? identity.ownerSub}`);
+        return json(res, 200, { session_id: sid, mode: next, previous: prev });
       }
       if (req.method === "GET") {
+        const { authenticateHookOrDashboard } = await import("./server-core.js");
+        const identity = await authenticateHookOrDashboard(req, res);
+        if (!identity) return;
         const session_id = url.searchParams.get("session_id") ?? "";
         if (!session_id || rejectInvalidSessionId(res, session_id)) return;
+        if (!identity.isAdmin) {
+          const sessionOwner = await tracker.getSessionOwner(session_id);
+          if (!sessionOwner.ownerSub || sessionOwner.ownerSub !== identity.ownerSub) {
+            return json(res, 403, { error: "Forbidden — session is not owned by caller" });
+          }
+        }
         return json(res, 200, {
           session_id,
           mode: sessionModeOverride.get(session_id) ?? null,
@@ -617,33 +648,50 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
     // "legacy"|"history-active"|null} to set/clear; GET ?session_id
     // to read. Lets us A/B-test the new classifier on individual
     // sessions in a sandbox while production stays on legacy.
+    // Auth: same model as /api/session-mode — owner-or-admin.
     if (url.pathname === "/api/session-intent-mode") {
       if (applyCors(req, res)) return;
       if (req.method === "POST") {
+        const { authenticateHookOrDashboard } = await import("./server-core.js");
+        const identity = await authenticateHookOrDashboard(req, res);
+        if (!identity) return;
         const body = JSON.parse(await readBody(req));
-        const session_id: unknown = body.session_id;
-        if (typeof session_id !== "string") {
-          return json(res, 400, { error: "Missing session_id" });
+        const sid: unknown = body.session_id;
+        if (typeof sid !== "string") return json(res, 400, { error: "Missing session_id" });
+        if (rejectInvalidSessionId(res, sid)) return;
+        if (!identity.isAdmin) {
+          const sessionOwner = await tracker.getSessionOwner(sid);
+          if (!sessionOwner.ownerSub || sessionOwner.ownerSub !== identity.ownerSub) {
+            return json(res, 403, { error: "Forbidden — session is not owned by caller" });
+          }
         }
-        if (rejectInvalidSessionId(res, session_id)) return;
         const next = body.mode;
         if (next === null) {
-          const prev = sessionIntentModeOverride.get(session_id) ?? null;
-          sessionIntentModeOverride.delete(session_id);
-          console.log(`  [${session_id.substring(0, 8)}] [SESSION-INTENT-MODE] cleared (was ${prev ?? "none"})`);
-          return json(res, 200, { session_id, intent_mode: null, previous: prev });
+          const prev = sessionIntentModeOverride.get(sid) ?? null;
+          sessionIntentModeOverride.delete(sid);
+          console.log(`  [${sid.substring(0, 8)}] [SESSION-INTENT-MODE] cleared (was ${prev ?? "none"}) by ${identity.ownerEmail ?? identity.ownerSub}`);
+          return json(res, 200, { session_id: sid, intent_mode: null, previous: prev });
         }
         if (next !== "legacy" && next !== "history-active") {
           return json(res, 400, { error: "intent_mode must be legacy, history-active, or null" });
         }
-        const prev = sessionIntentModeOverride.get(session_id) ?? null;
-        sessionIntentModeOverride.set(session_id, next);
-        console.log(`  [${session_id.substring(0, 8)}] [SESSION-INTENT-MODE] override ${prev ?? "none"} → ${next}`);
-        return json(res, 200, { session_id, intent_mode: next, previous: prev });
+        const prev = sessionIntentModeOverride.get(sid) ?? null;
+        sessionIntentModeOverride.set(sid, next);
+        console.log(`  [${sid.substring(0, 8)}] [SESSION-INTENT-MODE] override ${prev ?? "none"} → ${next} by ${identity.ownerEmail ?? identity.ownerSub}`);
+        return json(res, 200, { session_id: sid, intent_mode: next, previous: prev });
       }
       if (req.method === "GET") {
+        const { authenticateHookOrDashboard } = await import("./server-core.js");
+        const identity = await authenticateHookOrDashboard(req, res);
+        if (!identity) return;
         const session_id = url.searchParams.get("session_id") ?? "";
         if (!session_id || rejectInvalidSessionId(res, session_id)) return;
+        if (!identity.isAdmin) {
+          const sessionOwner = await tracker.getSessionOwner(session_id);
+          if (!sessionOwner.ownerSub || sessionOwner.ownerSub !== identity.ownerSub) {
+            return json(res, 403, { error: "Forbidden — session is not owned by caller" });
+          }
+        }
         return json(res, 200, {
           session_id,
           intent_mode: sessionIntentModeOverride.get(session_id) ?? null,
@@ -652,14 +700,33 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
       }
     }
 
-    // /api/session-modes — bulk read of all per-session overrides. The
+    // /api/session-modes — bulk read of per-session overrides. The
     // dashboard's sessions table calls this once per refresh to render
     // the per-row mode dropdown.
+    //
+    // Auth: filter to overrides for sessions the caller owns. Admins
+    // see all (matches the rest of the dashboard's "admin sees all
+    // users' rows" model in server-dashboard.ts). Non-admin sees only
+    // their own — anonymous callers used to see every override.
     if (url.pathname === "/api/session-modes") {
       if (applyCors(req, res)) return;
       if (req.method === "GET") {
+        const { authenticateHookOrDashboard } = await import("./server-core.js");
+        const identity = await authenticateHookOrDashboard(req, res);
+        if (!identity) return;
         const overrides: Record<string, TrustMode> = {};
-        for (const [sid, m] of sessionModeOverride.entries()) overrides[sid] = m;
+        if (identity.isAdmin) {
+          for (const [sid, m] of sessionModeOverride.entries()) overrides[sid] = m;
+        } else {
+          // Look up owner for each overridden session and keep only the
+          // caller's. This is O(N overrides × 1 Dynamo Get) — fine for
+          // the steady-state size of this map. If it grows we can index
+          // by ownerSub in-process at write time.
+          for (const [sid, m] of sessionModeOverride.entries()) {
+            const owner = await tracker.getSessionOwner(sid).catch(() => ({ ownerSub: null }));
+            if (owner.ownerSub === identity.ownerSub) overrides[sid] = m;
+          }
+        }
         return json(res, 200, { overrides, global_mode: CONFIG.mode });
       }
     }
@@ -676,12 +743,13 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
       if (req.method === "POST") return await handleScreen(req, res);
     }
 
-    // Debug/test helper — exposes a session's live context by id. No auth;
-    // returns only the in-memory slice. Keep simple — dashboard has
-    // /api/session-log/:id for the full shape.
+    // Debug/test helper — exposes a session's live context by id.
+    // Bearer-API-key gated + owner check; the in-memory slice still
+    // leaks recentTools, originalEmbedding, etc., so it must not be
+    // anonymous. Dashboard uses /api/session-log/:id for the full shape.
     if (req.method === "GET" && url.pathname.startsWith("/session/")) {
       const id = url.pathname.split("/session/")[1];
-      return await handleSessionGet(res, id);
+      return await handleSessionGet(req, res, id);
     }
 
     // ------ Hook events -------------------------------------------------

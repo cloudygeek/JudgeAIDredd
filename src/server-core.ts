@@ -853,6 +853,73 @@ export function authStageForFeed(identity: RequestIdentity): string | null {
   return null;
 }
 
+/**
+ * Dual-auth identity. Extends RequestIdentity with an isAdmin bit
+ * resolved from either:
+ *   - a verified Clerk JWT (the dashboard browser cross-origin path),
+ *   - a Bearer API key whose ownerEmail matches ADMIN_EMAILS.
+ * Used for endpoints the dashboard UI calls cross-origin (mode flips,
+ * feed, session-modes). Anonymous callers continue to be rejected at
+ * `authenticateHookOrDashboard`.
+ */
+export interface DashboardOrHookIdentity extends RequestIdentity {
+  /** True iff the resolved owner email is in clerk-auth.ts ADMIN_EMAILS. */
+  isAdmin: boolean;
+  /** Which path validated this request — useful for log lines + tests. */
+  authVia: "clerk" | "api-key";
+}
+
+/**
+ * Authenticate a request from either the dashboard browser (Clerk JWT
+ * Bearer) or a CLI / service (API-key Bearer). Tries Clerk first; if
+ * Clerk verification fails for any reason other than "no-token", falls
+ * back to the API-key path. On total failure writes a 401 to `res` and
+ * returns null — caller must `return` immediately.
+ *
+ * Why two paths in one helper: the affected endpoints are called from
+ * both the dashboard browser (where the user has a Clerk session) and
+ * from CLI tooling / benchmarks (where the user has an API key). We
+ * don't want the dashboard UI to need an API key, and we don't want
+ * the CLI to need a browser session.
+ */
+export async function authenticateHookOrDashboard(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<DashboardOrHookIdentity | null> {
+  // 1. Try Clerk JWT verification. Only attempted if Clerk is enabled
+  //    on this process (CLERK_SECRET_KEY or CLERK_JWT_PUBLIC_KEY set).
+  //    `tryVerifyClerk` never writes to `res`, so we can fall through
+  //    on failure and try the API-key path next.
+  const { tryVerifyClerk, isAdminEmail, CLERK_ENABLED } = await import("./clerk-auth.js");
+  if (CLERK_ENABLED) {
+    const result = await tryVerifyClerk(req);
+    if (result.ok) {
+      return {
+        ownerSub: result.principal.userId,
+        ownerEmail: result.principal.email,
+        keyType: "user",
+        keyPresented: true,
+        keyValid: true,
+        isAdmin: result.principal.isAdmin,
+        authVia: "clerk",
+      };
+    }
+    // Clerk path failed — fall through to API-key. Don't 401 here
+    // because the request might still carry a valid API key.
+  }
+
+  // 2. Try API-key. `authenticateHookRequest` writes 401 itself when
+  //    AUTH_MODE=required and the key is missing / invalid, so this
+  //    is also the terminal failure path.
+  const apiKeyIdentity = await authenticateHookRequest(req, res);
+  if (!apiKeyIdentity) return null;
+  return {
+    ...apiKeyIdentity,
+    isAdmin: isAdminEmail(apiKeyIdentity.ownerEmail),
+    authVia: "api-key",
+  };
+}
+
 // ============================================================================
 // Misc helpers
 // ============================================================================
