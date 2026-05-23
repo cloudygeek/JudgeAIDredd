@@ -399,14 +399,50 @@ ${JSON.stringify(
 )}
 \`\`\`
 
-For whichever target the user picks:
+Before writing anything, **inspect the current state** of the target
+file. Pick the right branch based on what you find:
 
-- If the target file does NOT exist, write the template above (with
-  \`{HOOK_INSTALL_PATH}\` substituted) to the target path.
-- If the target file DOES exist, do NOT overwrite. Read it, show the
-  user the existing \`hooks\` and \`env\` blocks (if any), then propose
-  a merge that splices in the Dredd entries while preserving everything
-  else. Apply the merge only after the user approves.
+#### A. Target file does NOT exist
+
+Write the template above (with \`{HOOK_INSTALL_PATH}\` substituted) to
+the target path. Report success.
+
+#### B. Target file exists but has NO \`hooks\` block at all
+
+Read the file. Add the \`hooks\` and \`env\` keys from the template,
+preserving every other key in the file untouched. Show the user the
+diff you propose, wait for "yes", then write.
+
+#### C. Target file exists and ALREADY contains a Dredd hook install
+
+Detect this case by checking BOTH:
+1. Does \`env.DREDD_URL\` already exist?
+2. Does any \`hooks.*[].hooks[].command\` already reference a path
+   ending in \`dredd-hook.sh\`?
+
+If either is true, Dredd hooks are already wired in. Print a one-line
+summary of what's there (e.g. "Existing Dredd install detected:
+DREDD_URL=https://old-host, hook at /path/to/old-dredd-hook.sh"), then
+ask the user what they want:
+
+- **Keep existing as-is** (no change).
+- **Update DREDD_URL to ${dreddUrl}** (rewrite just the URL; leave the
+  hook command path alone — the existing path may differ if they
+  installed manually before).
+- **Replace fully** (overwrite both DREDD_URL AND the hook command
+  paths with the template values).
+
+Do exactly what they choose. Do not silently rewrite either field.
+
+#### D. Target file exists with NON-Dredd hooks
+
+If there are existing entries under \`UserPromptSubmit\`, \`PreToolUse\`,
+\`PostToolUse\`, \`Stop\`, \`SessionEnd\`, or \`PreCompact\` that do NOT
+reference a Dredd path, **append** the Dredd hook entry to each
+relevant matcher list rather than replacing anyone else's hooks. Claude
+Code runs all matching hooks for an event, so appending is non-destructive.
+
+Show the user the diff and wait for "yes" before writing.
 
 ### Step 5 — Verify
 
