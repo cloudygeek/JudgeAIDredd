@@ -143,7 +143,25 @@ This bundle points your Claude Code CLI at the judge server at:
 Every tool call your agent attempts will be evaluated by the judge; prompt-
 injection / goal-hijacking attempts are blocked before the tool runs.
 
-## 1. Install the hook script
+## 1. Generate & install your API key
+
+The hook server requires a Bearer key on every request. Without one,
+\`/intent\` and \`/evaluate\` return 401 and Dredd silently falls back
+to allowing everything.
+
+Open the dashboard's **API Keys** tab → **Generate key**. The plaintext
+key is shown ONCE — run the snippet shown in the banner, which does:
+
+\`\`\`bash
+mkdir -p ~/.claude/dredd
+printf '%s\\n' 'jaid_live_PASTE_KEY_HERE' > ~/.claude/dredd/api-key
+chmod 600 ~/.claude/dredd/api-key
+\`\`\`
+
+The hook script reads from \`~/.claude/dredd/api-key\` by default; override
+with \`$DREDD_API_KEY_FILE\` if you keep it elsewhere.
+
+## 2. Install the hook script
 
 \`\`\`bash
 mkdir -p ~/.claude/dredd
@@ -151,7 +169,7 @@ cp dredd-hook.sh ~/.claude/dredd/
 chmod +x ~/.claude/dredd/dredd-hook.sh
 \`\`\`
 
-## 2. Wire up the hooks
+## 3. Wire up the hooks
 
 Pick one scope:
 
@@ -184,24 +202,35 @@ keep it to yourself.
 
 The script defaults to the URL above but respects \`$DREDD_URL\` if set.
 
-## 3. Prerequisites
+## 4. Prerequisites
 
 - \`curl\` and \`jq\` on your PATH (preinstalled on macOS / most Linux).
 
-## 4. Verify
+## 5. Verify
 
-Start a Claude Code session in any project. Open the dashboard at:
+Confirm the API key is wired up by hitting an auth-required endpoint:
+
+\`\`\`bash
+curl -H "Authorization: Bearer $(cat ~/.claude/dredd/api-key)" \\
+  ${dreddUrl}/api/auth-check
+# Expected: HTTP 200 with {"authenticated":true,"ownerEmail":"…"}
+# A 401 means the key file is missing, malformed, or revoked.
+\`\`\`
+
+Then start a Claude Code session in any project. Open the dashboard at:
 
     ${dreddUrl}/
 
 You should see your session appear in the Live Feed the moment you send
-your first prompt.
+your first prompt. Note that \`${dreddUrl}/api/health\` answers without
+auth — useful for proving the server is reachable, but it won't catch a
+missing API key. Use \`/api/auth-check\` above for that.
 
 ## Troubleshooting
 
-- **Dashboard shows no sessions** — check that \`curl ${dreddUrl}/api/health\`
-  returns JSON with a \`version\` field. If not, the URL is wrong or the
-  server is down.
+- **Dashboard shows no sessions but \`/api/health\` works** — the API key
+  is missing or wrong. Re-run \`curl … /api/auth-check\`; on 401, regenerate
+  the key from the dashboard and re-save to \`~/.claude/dredd/api-key\`.
 - **Hook runs but blocks nothing** — the server defaults to interactive mode;
   check the dashboard's mode badge. \`autonomous\` mode blocks on hijack,
   \`learn\` mode blocks nothing by design.

@@ -371,6 +371,26 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
       return json(res, 200, getBedrockMetrics());
     }
 
+    // /api/auth-check — Bearer-key verification for the integration tab's
+    // verify step. /api/health and /api/whoami both answer without auth,
+    // which is exactly what makes them useless for confirming an API key
+    // is wired up — a missing or bad key still returns 200. This endpoint
+    // runs authenticateHookRequest so a missing/invalid key surfaces as
+    // 401 and a valid key surfaces as 200 + the resolved owner identity.
+    // Read-only; CORS so the dashboard can poll it from a browser too.
+    if (url.pathname === "/api/auth-check") {
+      if (applyCors(req, res)) return;
+      if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
+      const identity = await authenticateHookRequest(req, res);
+      if (!identity) return; // 401 already sent by authenticateHookRequest
+      return json(res, 200, {
+        authenticated: identity.keyValid,
+        ownerSub: identity.ownerSub,
+        ownerEmail: identity.ownerEmail,
+        keyType: identity.keyType,
+      });
+    }
+
     // /api/whoami — OIDC discovery. No auth; read-only.
     if (req.method === "GET" && url.pathname === "/api/whoami") {
       const oidcData = req.headers["x-amzn-oidc-data"] as string | undefined;
