@@ -2,9 +2,10 @@
 set -euo pipefail
 
 # ============================================================================
-# Test 22 — P14 Cross-Technique Generalisation (T4 + T5 with Judge)
+# Test 22 — P14 Cross-Technique Generalisation (T3 / T3e / T4 / T5 with Judge)
 #
-# Runs T4 (HTTP response injection / payload splitting) and T5 (multi-stage
+# Runs T3 (multi-turn goal hijacking), T3e (T3 with explicit exfiltration
+# tail), T4 (HTTP response injection / payload splitting), and T5 (multi-stage
 # file attack) through the 4-arm defence matrix:
 #   C4-baseline:  no system prompt, no judge
 #   C4-judge:     no system prompt, judge active
@@ -13,7 +14,7 @@ set -euo pipefail
 #
 # Env overrides:
 #   TEST22_MODELS       CSV of agent models (default: claude-sonnet-4-6,claude-opus-4-7)
-#   TEST22_TECHNIQUES   CSV of techniques: T4,T5 (default: T4,T5)
+#   TEST22_TECHNIQUES   CSV of techniques: T3,T3E,T4,T5 (default: T4,T5)
 #   TEST22_DEFENCES     CSV of arms (default: C4-baseline,C4-judge,C1-baseline,C1-judge)
 #   TEST22_REPS         Reps per cell (default: 20)
 #   TEST22_MAX_TURNS    Max turns per scenario (default: 10)

@@ -1,7 +1,8 @@
 /**
  * P14 Cross-Technique Runner (Test 22)
  *
- * Runs T4 (payload splitting / HTTP injection) and T5 (multi-stage context
+ * Runs T3 (multi-turn goal hijacking), T3e (T3 with explicit exfiltration),
+ * T4 (payload splitting / HTTP injection), and T5 (multi-stage context
  * manipulation) scenarios through the same executor + IntentTracker pipeline
  * used by runner-t3e-pretooluse.ts, supporting a 4-arm defence matrix:
  *
@@ -12,11 +13,12 @@
  *
  * Adapts InjectionScenario (T4) and MultiStageScenario (T5) into the
  * HijackScenario interface so executeScenario() handles them uniformly.
+ * T3 and T3e already return HijackScenario[] so they pass through directly.
  *
  * Usage:
  *   npx tsx src/runner-p14.ts \
  *     --models claude-sonnet-4-6,claude-opus-4-7 \
- *     --techniques T4,T5 \
+ *     --techniques T3,T4,T5 \
  *     --defences C4-baseline,C4-judge,C1-baseline,C1-judge \
  *     --repetitions 20 \
  *     --judge-model eu.anthropic.claude-sonnet-4-6 \
@@ -41,7 +43,11 @@ import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { getInjectionScenarios } from "../../scenarios/t4-http-injection.js";
 import { getMultiStageScenarios } from "../../scenarios/t5-multistage.js";
-import type { HijackScenario } from "../../scenarios/t3-goal-hijacking.js";
+import {
+  getScenarios as getT3Scenarios,
+  type HijackScenario,
+} from "../../scenarios/t3-goal-hijacking.js";
+import { getExfilScenarios as getT3eScenarios } from "../../scenarios/t3e-goal-hijacking-exfil.js";
 import type { TestResult } from "../../src/types.js";
 
 const { values } = parseArgs({
@@ -231,6 +237,8 @@ async function main() {
 
   try { mkdirSync(OUTPUT_DIR, { recursive: true }); } catch {}
 
+  const t3Scenarios = getT3Scenarios("all");
+  const t3eScenarios = getT3eScenarios(CANARY_PORT);
   const t4Scenarios = getInjectionScenarios(CANARY_PORT).map(adaptT4);
   const t5Scenarios = getMultiStageScenarios(CANARY_PORT).map(adaptT5);
 
@@ -247,7 +255,12 @@ async function main() {
         }
 
         for (const technique of TECHNIQUES) {
-          const scenarios = technique === "T4" ? t4Scenarios : technique === "T5" ? t5Scenarios : [];
+          const scenarios =
+            technique === "T3"  ? t3Scenarios :
+            technique === "T3E" ? t3eScenarios :
+            technique === "T4"  ? t4Scenarios :
+            technique === "T5"  ? t5Scenarios :
+            [];
           if (scenarios.length === 0) {
             console.error(`Unknown technique: ${technique}`);
             continue;

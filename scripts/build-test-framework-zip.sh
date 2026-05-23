@@ -139,6 +139,7 @@ for f in Dockerfile server.js docker-entrypoint-test-framework.sh \
          scenarios/t4-http-injection.ts \
          scenarios/t5-multistage.ts \
          scenarios/t3-goal-hijacking.ts \
+         scenarios/t3e-goal-hijacking-exfil.ts \
          src/types.ts \
          src/bedrock-client.ts \
          src/intent-judge.ts; do
