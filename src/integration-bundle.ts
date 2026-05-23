@@ -354,23 +354,19 @@ chmod 600 ~/.claude/dredd/api-key
 
 ### Step 3 — Install the hook script
 
-Fetch the hook script from this server, write it to
-\`~/.claude/dredd/dredd-hook.sh\`, and chmod 755.
-
-The bundle endpoint requires authentication, so use the API key from
-Step 2:
+Fetch the hook script directly from the hook server (Bearer-gated) and
+chmod 755. The hook server itself bakes \`DREDD_URL=${dreddUrl}\` into
+the script before serving, so no post-install editing is required.
 
 \`\`\`bash
 curl -fsSL \\
   -H "Authorization: Bearer $(cat ~/.claude/dredd/api-key)" \\
-  -o /tmp/judge-dredd-integration.zip \\
-  ${dreddUrl.replace(/^https:\/\/dredd-hook\./, "https://dredd.")}/api/integration-bundle
-unzip -o /tmp/judge-dredd-integration.zip -d /tmp/dredd
-cp /tmp/dredd/dredd-hook.sh ~/.claude/dredd/
+  -o ~/.claude/dredd/dredd-hook.sh \\
+  ${dreddUrl}/api/hook-script
 chmod 755 ~/.claude/dredd/dredd-hook.sh
 \`\`\`
 
-Confirm the script is there and executable.
+Confirm the file is at the path above, is non-empty, and is executable.
 
 ### Step 4 — Wire the hooks into Claude Code
 
@@ -379,10 +375,34 @@ affects every Claude Code session on this machine) or per-project
 (\`<project>/.claude/settings.json\` — affects only sessions started
 in that directory).
 
+The settings template is below. Substitute the actual install path for
+the hook script wherever you see \`{HOOK_INSTALL_PATH}\` (it should be
+\`$HOME/.claude/dredd/dredd-hook.sh\` expanded to an absolute path):
+
+\`\`\`json
+${JSON.stringify(
+  {
+    hooks: {
+      UserPromptSubmit: [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 30 }] }],
+      PreToolUse:       [{ matcher: "*", hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 60 }] }],
+      PostToolUse:      [{ matcher: "*", hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 10 }] }],
+      Stop:             [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 10 }] }],
+      SessionEnd:       [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 10 }] }],
+      PreCompact:       [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 5 }] }],
+    },
+    env: {
+      DREDD_URL: dreddUrl,
+    },
+  },
+  null,
+  2,
+)}
+\`\`\`
+
 For whichever target the user picks:
 
-- If the target file does NOT exist, copy \`/tmp/dredd/settings.json\`
-  into place.
+- If the target file does NOT exist, write the template above (with
+  \`{HOOK_INSTALL_PATH}\` substituted) to the target path.
 - If the target file DOES exist, do NOT overwrite. Read it, show the
   user the existing \`hooks\` and \`env\` blocks (if any), then propose
   a merge that splices in the Dredd entries while preserving everything

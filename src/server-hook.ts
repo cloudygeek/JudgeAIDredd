@@ -371,6 +371,40 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
       return json(res, 200, getBedrockMetrics());
     }
 
+    // /api/hook-script — serves dredd-hook.sh with DREDD_URL baked in.
+    // Bearer-gated (the hook server validates API keys; the dashboard's
+    // /api/integration-bundle is Clerk-gated for browser users, so a CLI
+    // install needs its own auth path). Used by the "let Claude install
+    // Dredd for you" prompt: Claude curls this with the user's API key,
+    // writes the body to ~/.claude/dredd/dredd-hook.sh, and chmod 755s
+    // it. No zip / unzip step required.
+    if (url.pathname === "/api/hook-script") {
+      if (applyCors(req, res)) return;
+      if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
+      const identity = await authenticateHookRequest(req, res);
+      if (!identity) return; // 401 already sent
+      const { readFileSync } = await import("node:fs");
+      const hookScriptPath = new URL("../hooks/dredd-hook.sh", import.meta.url);
+      const raw = readFileSync(hookScriptPath, "utf8");
+      // Bake the caller-visible host into DREDD_URL so the downloaded
+      // script doesn't need post-install editing. Same rewrite the
+      // integration-bundle uses, kept local so this file doesn't have
+      // to import from integration-bundle (which lives in the dashboard
+      // image's code path).
+      const dreddUrl = `https://${req.headers["x-forwarded-host"] || req.headers.host || "localhost"}`;
+      const baked = raw.replace(
+        /DREDD_URL="\$\{DREDD_URL:-[^}]*\}"/,
+        `DREDD_URL="\${DREDD_URL:-${dreddUrl}}"`,
+      );
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": 'attachment; filename="dredd-hook.sh"',
+        "Content-Length": Buffer.byteLength(baked, "utf8"),
+      });
+      res.end(baked);
+      return;
+    }
+
     // /api/auth-check — Bearer-key verification for the integration tab's
     // verify step. /api/health and /api/whoami both answer without auth,
     // which is exactly what makes them useless for confirming an API key
