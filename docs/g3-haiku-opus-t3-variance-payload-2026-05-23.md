@@ -1,0 +1,296 @@
+# G3 — Haiku / Opus T3.4 variance — /run payloads
+
+Date: 2026-05-23
+Reviewer: R2.3 — "Per-model variance analysis for Haiku and Opus on T3
+would allow you to either substantiate or appropriately qualify Finding 3
+on the capability-compliance trade-off."
+Source gap: `docs/p14-reviewer-gaps-2026-05-22.md` §G3.
+
+This file gives the **container env payloads** to drive 90-rep T3.4
+variance sweeps on Haiku-4.5 and Opus-4.7 against the existing
+`test-framework`/`promptarmor-bedrock` image (the same one that produced
+`results/test-framework/t2-bedt5-v2/`). No image rebuild is needed —
+test-framework v0.1.422+ already speaks Bedrock backend, Opus
+Converse-path, and intent-tracker with `--backend bedrock`.
+
+The current bedt3/4/5 are running the MT-AgentRisk full-820 sweep (started
+2026-05-22T07:57Z, ETA mid-day 2026-05-23 for the slowest cell). Run
+these on a fresh container — bedt6 / bedt7 / wherever capacity is
+provisioned — once it's available. Each run takes ~5–6 hours per cell at
+90 reps × 8 turns × 1.4 s/judge.
+
+## Acceptance test (from p14-reviewer-gaps)
+
+> Table replacement for paper text at `p14_b.tex:1190` ("Note that these
+> per-model T3 figures are point estimates...") with three rows (Haiku,
+> Sonnet, Opus) reporting mean GES, 95% CI, dip-test D and p.
+
+Sonnet T3 variance is already in `results/test29/29a/` (n=90). Haiku is
+absent and Opus is thin (n=20). This file only schedules Haiku + Opus.
+
+## Cell plan
+
+Six cells, two models × three defences.
+
+| # | Container | AGENT_MODEL | DEFENCE        | Reps | Walltime budget |
+|---|-----------|-------------|----------------|-----:|----------------:|
+| 1 | bedtA     | haiku-4-5   | none           |   90 | ~5 h            |
+| 2 | bedtA     | haiku-4-5   | intent-tracker |   90 | ~6 h            |
+| 3 | bedtB     | haiku-4-5   | promptarmor-obs|   90 | ~6 h            |
+| 4 | bedtC     | opus-4-7    | none           |   90 | ~6 h            |
+| 5 | bedtC     | opus-4-7    | intent-tracker |   90 | ~7 h            |
+| 6 | bedtD     | opus-4-7    | promptarmor-obs|   90 | ~7 h            |
+
+Three defences per model so the variance result is comparable across the
+defended / undefended axes the paper already reports for Sonnet. If only
+one container is available, the **`none` cell is the priority** —
+Finding 1's bimodality claim is about the undefended distribution; the
+defended cells are nice-to-haves for the variance discussion.
+
+## Container payloads
+
+The image entrypoint
+(`fargate/docker-entrypoint-test-framework.sh`) iterates
+`AGENT_MODELS × DEFENCES`. Pass each cell as its own `/run` so a single
+failing cell doesn't stall the others, and so an operator can re-issue
+just the failing one. `SCENARIOS=sophisticated` runs T3.3 *and* T3.4
+(both share the `sophisticated` label in
+`test-framework/scenarios/t3-goal-hijacking.ts`); the bimodality test in
+the doc is on T3.4, so split into per-cell JSON files post-hoc with the
+scenario filter when scoring.
+
+All payloads assume:
+
+- `DREDD_AUTH_MODE=optional` on the target Dredd hook (per
+  `feedback_runs_auth_optional`).
+- Bedrock + AWS creds available on the container's task role.
+- For Anthropic Bedrock models, `AWS_REGION=eu-west-2` and
+  `AGENT_REGION=eu-west-1` (Anthropic Bedrock inference profiles live
+  in eu-west-1).
+
+### Hook-side preflight
+
+Confirm the hook is healthy and in `optional` auth before kicking the
+runs:
+
+```bash
+curl -sk https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal/api/health \
+  | jq '{version,authMode}'
+```
+
+If `authMode == "required"`, flip to `optional` (only the operator with
+admin Clerk + container env access can do this). Flip back to
+`required` afterwards.
+
+### Cell payloads (curl-ready)
+
+Replace `bedtA` etc. with whichever container the cell is being kicked
+on. The `RUN_ID` is identical across cells of the same model so the S3
+prefix bundles the model's three defences together.
+
+```bash
+RUN_TS="$(date -u '+%Y%m%dT%H%M%SZ')"
+HOST="https://bedtA.aisandbox.dev.ckotech.internal"   # change per cell
+DREDD_KEY="$(cat ~/.claude/dredd/api-key)"
+
+# === Cell 1: haiku-4-5 / none / 90 reps =============================
+curl -sk -X POST "$HOST/run" -H 'content-type: application/json' \
+  -d @- <<EOF
+{
+  "test": "test-framework",
+  "env": {
+    "RUN_ID":            "G3-haiku-4-5-T3.4-${RUN_TS}",
+    "AGENT_MODELS":      "haiku-4-5",
+    "DEFENCES":          "none",
+    "SCENARIOS":         "sophisticated",
+    "REPETITIONS":       "90",
+    "INTENT_BACKEND":    "bedrock",
+    "CLAUDE_CODE_USE_BEDROCK": "1",
+    "AWS_REGION":        "eu-west-2",
+    "AGENT_REGION":      "eu-west-1",
+    "DREDD_URL":         "https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal",
+    "DREDD_API_KEY":     "${DREDD_KEY}",
+    "PROMPTARMOR_BACKEND": "bedrock",
+    "PROMPTARMOR_MODEL": "eu.anthropic.claude-sonnet-4-6",
+    "RESULTS_S3_URL":    "s3://cko-results/test-framework/G3-haiku-4-5-T3.4-${RUN_TS}"
+  }
+}
+EOF
+
+# === Cell 2: haiku-4-5 / intent-tracker / 90 reps ====================
+curl -sk -X POST "$HOST/run" -H 'content-type: application/json' \
+  -d @- <<EOF
+{
+  "test": "test-framework",
+  "env": {
+    "RUN_ID":            "G3-haiku-4-5-T3.4-${RUN_TS}",
+    "AGENT_MODELS":      "haiku-4-5",
+    "DEFENCES":          "intent-tracker",
+    "SCENARIOS":         "sophisticated",
+    "REPETITIONS":       "90",
+    "INTENT_BACKEND":    "bedrock",
+    "CLAUDE_CODE_USE_BEDROCK": "1",
+    "AWS_REGION":        "eu-west-2",
+    "AGENT_REGION":      "eu-west-1",
+    "DREDD_URL":         "https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal",
+    "DREDD_API_KEY":     "${DREDD_KEY}",
+    "PROMPTARMOR_BACKEND": "bedrock",
+    "PROMPTARMOR_MODEL": "eu.anthropic.claude-sonnet-4-6",
+    "RESULTS_S3_URL":    "s3://cko-results/test-framework/G3-haiku-4-5-T3.4-${RUN_TS}"
+  }
+}
+EOF
+
+# === Cell 3: haiku-4-5 / promptarmor-obs / 90 reps ===================
+curl -sk -X POST "$HOST/run" -H 'content-type: application/json' \
+  -d @- <<EOF
+{
+  "test": "test-framework",
+  "env": {
+    "RUN_ID":            "G3-haiku-4-5-T3.4-${RUN_TS}",
+    "AGENT_MODELS":      "haiku-4-5",
+    "DEFENCES":          "promptarmor-obs",
+    "SCENARIOS":         "sophisticated",
+    "REPETITIONS":       "90",
+    "CLAUDE_CODE_USE_BEDROCK": "1",
+    "AWS_REGION":        "eu-west-2",
+    "AGENT_REGION":      "eu-west-1",
+    "DREDD_URL":         "https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal",
+    "DREDD_API_KEY":     "${DREDD_KEY}",
+    "PROMPTARMOR_BACKEND": "bedrock",
+    "PROMPTARMOR_MODEL": "eu.anthropic.claude-sonnet-4-6",
+    "RESULTS_S3_URL":    "s3://cko-results/test-framework/G3-haiku-4-5-T3.4-${RUN_TS}"
+  }
+}
+EOF
+
+# === Cell 4: opus-4-7 / none / 90 reps ===============================
+curl -sk -X POST "$HOST/run" -H 'content-type: application/json' \
+  -d @- <<EOF
+{
+  "test": "test-framework",
+  "env": {
+    "RUN_ID":            "G3-opus-4-7-T3.4-${RUN_TS}",
+    "AGENT_MODELS":      "opus-4-7",
+    "DEFENCES":          "none",
+    "SCENARIOS":         "sophisticated",
+    "REPETITIONS":       "90",
+    "INTENT_BACKEND":    "bedrock",
+    "CLAUDE_CODE_USE_BEDROCK": "1",
+    "AWS_REGION":        "eu-west-2",
+    "AGENT_REGION":      "eu-west-1",
+    "DREDD_URL":         "https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal",
+    "DREDD_API_KEY":     "${DREDD_KEY}",
+    "PROMPTARMOR_BACKEND": "bedrock",
+    "PROMPTARMOR_MODEL": "eu.anthropic.claude-sonnet-4-6",
+    "RESULTS_S3_URL":    "s3://cko-results/test-framework/G3-opus-4-7-T3.4-${RUN_TS}"
+  }
+}
+EOF
+
+# === Cell 5: opus-4-7 / intent-tracker / 90 reps =====================
+curl -sk -X POST "$HOST/run" -H 'content-type: application/json' \
+  -d @- <<EOF
+{
+  "test": "test-framework",
+  "env": {
+    "RUN_ID":            "G3-opus-4-7-T3.4-${RUN_TS}",
+    "AGENT_MODELS":      "opus-4-7",
+    "DEFENCES":          "intent-tracker",
+    "SCENARIOS":         "sophisticated",
+    "REPETITIONS":       "90",
+    "INTENT_BACKEND":    "bedrock",
+    "CLAUDE_CODE_USE_BEDROCK": "1",
+    "AWS_REGION":        "eu-west-2",
+    "AGENT_REGION":      "eu-west-1",
+    "DREDD_URL":         "https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal",
+    "DREDD_API_KEY":     "${DREDD_KEY}",
+    "PROMPTARMOR_BACKEND": "bedrock",
+    "PROMPTARMOR_MODEL": "eu.anthropic.claude-sonnet-4-6",
+    "RESULTS_S3_URL":    "s3://cko-results/test-framework/G3-opus-4-7-T3.4-${RUN_TS}"
+  }
+}
+EOF
+
+# === Cell 6: opus-4-7 / promptarmor-obs / 90 reps ====================
+curl -sk -X POST "$HOST/run" -H 'content-type: application/json' \
+  -d @- <<EOF
+{
+  "test": "test-framework",
+  "env": {
+    "RUN_ID":            "G3-opus-4-7-T3.4-${RUN_TS}",
+    "AGENT_MODELS":      "opus-4-7",
+    "DEFENCES":          "promptarmor-obs",
+    "SCENARIOS":         "sophisticated",
+    "REPETITIONS":       "90",
+    "CLAUDE_CODE_USE_BEDROCK": "1",
+    "AWS_REGION":        "eu-west-2",
+    "AGENT_REGION":      "eu-west-1",
+    "DREDD_URL":         "https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal",
+    "DREDD_API_KEY":     "${DREDD_KEY}",
+    "PROMPTARMOR_BACKEND": "bedrock",
+    "PROMPTARMOR_MODEL": "eu.anthropic.claude-sonnet-4-6",
+    "RESULTS_S3_URL":    "s3://cko-results/test-framework/G3-opus-4-7-T3.4-${RUN_TS}"
+  }
+}
+EOF
+```
+
+## Why no image rebuild is needed
+
+The test-framework image at v0.1.422+ already includes:
+
+- Bedrock backend wiring for IntentTracker
+  (`56562ba7 fix(test-framework): wire intent-tracker preflight + embed
+  to Bedrock backend`)
+- Opus 4.7 Converse-path routing to bypass the SDK thinking bug
+  (`3a6646bb fix(test-framework): route opus-4-7 through Converse to
+  bypass SDK thinking bug`)
+- Model alias `haiku-4-5` →
+  `eu.anthropic.claude-haiku-4-5-20251001-v1:0` and `opus-4-7` →
+  `eu.anthropic.claude-opus-4-7` (entrypoint `resolve_model`)
+
+The bedt3/4/5 task definitions currently use the `benchmarks-zip` image
+(MT-AgentRisk + InjecAgent + AgentDojo). G3 needs the
+`test-framework`/`promptarmor-bedrock` image (per
+`fargate/Dockerfile.test-framework` / `Dockerfile.promptarmor-bedrock`).
+Either:
+
+- Stand up a fresh task on a container slot already pointing at the
+  `test-framework` image (look for the most recent `t2-bedt5` style
+  deployment), or
+- Update an idle task definition's image to the latest
+  `test-framework` image tag, then issue the payloads above.
+
+## Post-run scoring
+
+Once each S3 prefix lands locally
+(`benchmarks/test-framework/runs/G3-<model>-T3.4-<ts>/`):
+
+```bash
+# Per-cell decomposition — feeds the Table 8' replacement
+python3 scripts/ges-decomp.py --csv g3-decomp.csv \
+    benchmarks/test-framework/runs/G3-haiku-4-5-T3.4-*/results-*.json \
+    benchmarks/test-framework/runs/G3-opus-4-7-T3.4-*/results-*.json
+
+# Bimodality verdict — feeds the Finding 1 row for each model
+python3 scripts/compute-bimodality.py --filter T3.4 --json g3-bimodal.json \
+    benchmarks/test-framework/runs/G3-haiku-4-5-T3.4-*/ \
+    benchmarks/test-framework/runs/G3-opus-4-7-T3.4-*/
+```
+
+Acceptance numbers to report in the manuscript:
+
+- Haiku-4.5 / none / T3.4: n, mean GES, 95% CI, dip D, dip p
+- Haiku-4.5 / intent-tracker / T3.4: same
+- Opus-4.7 / none / T3.4: same
+- Opus-4.7 / intent-tracker / T3.4: same
+- Sonnet-4.6 / none / T3.4: existing test29 numbers
+  (`results/test29/29a/29a-T3.3-T3.4/test29-bedrock-sonnet-*-T3.4-*.json`
+  — pre-computed)
+
+If a per-model dip test rejects unimodality at p < 0.05 in two of the
+three rows, Finding 1 generalises across capability tiers — promote it
+from "Sonnet-only" to "all three Anthropic models". Otherwise qualify
+Finding 3 in line with the doc's "capability-compliance ordering not
+preserved under variance" branch.
