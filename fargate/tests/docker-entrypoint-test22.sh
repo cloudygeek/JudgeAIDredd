@@ -157,7 +157,11 @@ echo "════════════════════════�
 export AWS_REGION="${JUDGE_REGION}"
 export CLAUDE_CODE_USE_BEDROCK=1
 
-npx tsx archive/tests/runner-p14.ts \
+# Invoke tsx via direct node call — `npx tsx` needs node_modules/.bin/tsx
+# but the build script (scripts/build-test-framework-zip.sh) strips .bin/
+# because zip dereferences its symlinks. The real CLI file is fine.
+TSX_CLI="${TSX_CLI:-/app/test-framework/node_modules/tsx/dist/cli.mjs}"
+node "${TSX_CLI}" archive/tests/runner-p14.ts \
     --models "${MODELS}" \
     --techniques "${TECHNIQUES}" \
     --defences "${DEFENCES}" \
