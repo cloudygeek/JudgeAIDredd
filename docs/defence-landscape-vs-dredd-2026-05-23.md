@@ -236,10 +236,82 @@ later. Write/exec tools (`Bash`, `Write`, `Edit`) must have args declared.
 
 ---
 
+## Family 1 vs Family 3 head-to-head (Paper Lantern compare_approaches, 166 papers)
+
+Done. Headline: **they're complementary, not competing.** The recommended
+production pattern is "rule layer first, graph verifier second only when the
+rule layer is uncertain."
+
+### Strengths and weaknesses
+
+| | Family 1 (rule-based) | Family 3 (plan/graph-based) |
+|---|---|---|
+| **Latency** | Sub-millisecond (Progent: 0.0008 s per call) | +20% (Policy Compiler) to +70% (AgentArmor — 69.6% of runtime spent constructing graph) |
+| **Token cost** | Zero extra (operates on already-generated call) | ~2× — separate planning LLM call up front |
+| **ASR** | 0–1.3% (Progent 0%; DRIFT 30.7% → 1.3% on GPT-4o-mini) | 0–3% (PlanGuard 0%; IPIGuard 0.69%; AgentArmor 3%) |
+| **FPR** | Up to **38%** with hard rules alone, drops dramatically when paired with a semantic verifier | **1.49%** with two-stage verifier (PlanGuard) |
+| **Causal-flow modelling** | None — sees only the call | Full dependency graph; catches indirect injection that hides in retrieved content |
+
+### The critical insight for Dredd
+
+PlanGuard reports **38% FPR with hard rules alone, dropping to 1.49% after
+adding a semantic verifier.** Dredd already *has* that semantic verifier — the
+LLM judge with the hardened B7.1 prompt. So the FPR-reduction story for the
+graph stage is conditional on something Dredd already operates. We're in a
+good starting position.
+
+### Combination pattern (recommended by the literature)
+
+```
+PreToolUse call
+   │
+   ├─ Stage 0   user-deny           (existing — Bearer-API-key)
+   │
+   ├─ Stage 0.5 pattern-trust       (existing — Phase 8b approvals)
+   │
+   ├─ Stage 0.7 plan-allow          (NEW: hard-match vs the DAG)
+   │     │
+   │     └─ if hard-match miss: pass-through to Stage 1+ unchanged
+   │
+   ├─ Stage 1   policy              (existing — rule-based, fast filter)
+   │
+   ├─ Stage 2   embedding-drift     (existing)
+   │
+   └─ Stage 3   judge               (existing, NOW also seeded with the
+                                    plan DAG as context — "the plan said
+                                    {expected}; the call is {actual}; is
+                                    this benign variation or injection?")
+```
+
+The graph DAG **isn't a replacement for any existing stage**. It's an
+additive short-circuit for tool calls that exactly match a planned node
+(skipping all later stages including the judge — a meaningful cost win
+on hot-path tool calls), plus a new piece of context fed to the judge
+when there's a partial match. The literature says serialising the graph
+as JSON in the judge's user prompt is the canonical pattern (PlanGuard,
+IPIGuard).
+
+### Conflicts to watch for
+
+The compare-step calls out only one real conflict: **both stages must not
+rewrite tool arguments.** Today Dredd doesn't rewrite (it returns
+allow/deny/ask). The graph stage shouldn't either — confirm during
+prototyping. If a future iteration adds arg-rewriting, the rule stage runs
+first and either blocks or passes the call unchanged to the graph stage.
+
+### What the comparison did NOT change
+
+The deep-dive's verdict (PROTOTYPE) stands. Specifically:
+- Insert as Stage 0.7 (confirmed by the layered diagram above).
+- Behind `DREDD_PLAN_ENFORCEMENT_ENABLED` env flag, default false.
+- Plan generation once per task pivot, NOT per turn.
+- Storage as `PLAN#...` rows in `jaid-sessions`.
+- Node expansion for read-only tools.
+- Replan on intent-stack pivot.
+
 ## Recommended next steps
 
-1. **Run `compare_approaches` on Family 1 + Family 3** — explicit head-to-head
-   would surface concrete combination patterns we should follow.
+1. ~~Run `compare_approaches` on Family 1 + Family 3~~ — done above.
 2. **Run `check_feasibility` against Dredd's actual constraints** — Paper
    Lantern's verdict was `PROTOTYPE`, but the constraints I gave it were the
    summarised spec, not the full implementation. A constrained re-check might
