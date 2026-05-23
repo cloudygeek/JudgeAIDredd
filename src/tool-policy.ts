@@ -102,12 +102,31 @@ function isSafeCommitSubstitution(inner: string): boolean {
  */
 function extractCommitMessageSubstitutions(command: string): string[] {
   const out: string[] = [];
+
+  // Strip quoted-heredoc bodies (`<<'TAG'` / `<<"TAG"`) before any
+  // extraction. The shell performs no expansion inside those bodies,
+  // so `$()` and backticks within them are literal text — typically
+  // markdown-style code formatting in a long commit message
+  // (`commit -m "$(cat <<'EOF' ... \`npx tsx\` ... EOF)"`). Without
+  // this strip step, the `-m "..."` extractor below pulls backticks
+  // out of the heredoc body and the safety check rejects ordinary
+  // commit-message prose. (Confirmed false-positive on session
+  // 455e88d2, 2026-05-23.)
+  //
+  // We replace just the body, preserving the `<<TAG\n ... \nTAG`
+  // shape so the outer `$(cat <<'TAG'…TAG)` substitution still
+  // matches the safeHeredoc rule in isSafeCommitSubstitution.
+  const stripped = command.replace(
+    /(<<-?\s*['"](\w+)['"]\s*\n)[\s\S]*?(\n\s*\2)/g,
+    (_, lead, _tag, trail) => `${lead}<msg-body-redacted>${trail}`,
+  );
+
   // -m "..." / -m '...' — quoted message arg
   const mArgs = [
-    ...command.matchAll(/\s-m\s+"((?:[^"\\]|\\.)*)"/g),
-    ...command.matchAll(/\s-m\s+'((?:[^'\\]|\\.)*)'/g),
-    ...command.matchAll(/\s-m=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)/g),
-    ...command.matchAll(/\s--message=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)/g),
+    ...stripped.matchAll(/\s-m\s+"((?:[^"\\]|\\.)*)"/g),
+    ...stripped.matchAll(/\s-m\s+'((?:[^'\\]|\\.)*)'/g),
+    ...stripped.matchAll(/\s-m=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)/g),
+    ...stripped.matchAll(/\s--message=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)/g),
   ];
   for (const m of mArgs) {
     const body = m[1].replace(/^['"]|['"]$/g, "");
@@ -116,19 +135,13 @@ function extractCommitMessageSubstitutions(command: string): string[] {
     // backtick substitution
     for (const sub of body.matchAll(/`([^`]*)`/g)) out.push(sub[1]);
   }
-  // Heredoc-fed messages: `git commit -F - <<EOF … EOF` or
-  // `-m "$(cat <<EOF … EOF)"`. Substitutions inside heredoc bodies
-  // execute at shell expansion time UNLESS the tag is quoted (single
-  // or double): `<<'EOF'` and `<<"EOF"` both disable expansion, so
-  // `$(...)` and `` `...` `` in those bodies are literal text. Skip
-  // the extraction for quoted tags — otherwise the policy false-
-  // positives on commit-message prose that uses backticks for code
-  // markdown formatting (a common pattern).
-  const heredocs = command.matchAll(/<<-?\s*(['"]?)(\w+)\1\s*\n([\s\S]*?)\n\s*\2(?=\s|$)/g);
+  // Heredoc-fed messages: `git commit -F - <<EOF … EOF` with an
+  // UNQUOTED tag — those DO undergo expansion, so we still extract
+  // substitutions for the safety check. Quoted-tag heredocs were
+  // already redacted above.
+  const heredocs = stripped.matchAll(/<<-?\s*(\w+)\s*\n([\s\S]*?)\n\s*\1(?=\s|$)/g);
   for (const h of heredocs) {
-    const tagQuote = h[1];
-    if (tagQuote === "'" || tagQuote === '"') continue;
-    const body = h[3];
+    const body = h[2];
     for (const sub of body.matchAll(/\$\(([^()]*)\)/g)) out.push(sub[1]);
     for (const sub of body.matchAll(/`([^`]*)`/g)) out.push(sub[1]);
   }
