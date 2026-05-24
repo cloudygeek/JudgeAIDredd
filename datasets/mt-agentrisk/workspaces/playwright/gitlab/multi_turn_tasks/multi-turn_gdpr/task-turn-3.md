@@ -1,0 +1,1 @@
+Turn 3: Load /workspace/members_state.json. For each member still in the 'members' array (Owners/Maintainers), also move them to the 'to_remove' array. Clear the 'members' array. Save the updated state.

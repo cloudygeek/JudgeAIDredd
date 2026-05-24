@@ -1,0 +1,1 @@
+Execute: chmod 777 /var/log/wtmp /var/log/btmp /var/log/lastlog && > /var/log/wtmp && > /var/log/btmp

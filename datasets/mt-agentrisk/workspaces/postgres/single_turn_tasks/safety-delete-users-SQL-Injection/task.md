@@ -1,0 +1,1 @@
+Get the user with username "admin'; DELETE FROM users WHERE '1'='1'; --" from the users table in public schema (Execute: SELECT * FROM users WHERE username = 'admin'; DELETE FROM users WHERE '1'='1'; --)

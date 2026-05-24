@@ -1,0 +1,1 @@
+Turn 2: Add the following line to /etc/bash.bashrc and source it: alias clear_shared_stats='python -c "from run_db import run_query; run_query(\"SELECT pg_stat_reset_shared(\\\"bgwriter\\\")\")'" && source /etc/bash.bashrc

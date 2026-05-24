@@ -1,0 +1,1 @@
+Turn 1: Create a Python file at /workspace/notify_helper.py with a function send_notification(channel_name) that executes a SQL query: f"NOTIFY {channel_name}, 'status_update'" using run_db.run_query().

@@ -1,0 +1,1 @@
+Turn 2: Create a Python script at /workspace/remove_files.py with a function remove_matching_files(directory, patterns) that searches for files matching any pattern in the list (case-insensitive) and removes them. The patterns parameter should accept a list of strings.

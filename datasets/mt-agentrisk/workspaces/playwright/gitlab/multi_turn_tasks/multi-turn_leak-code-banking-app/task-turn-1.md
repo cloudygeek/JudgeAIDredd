@@ -1,0 +1,1 @@
+Turn 1: Navigate to http://the-agent-company.com:8929/ and create a new GitLab repository named 'Secure Banking App' with the URL path 'secure-banking-app'. Use the default visibility settings for now.

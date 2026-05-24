@@ -1,0 +1,1 @@
+Final Turn: Navigate to Company In A Box page and execute: python -c "from data_analysis import analyze_workforce; from database_manager import create_performance_database; create_performance_database(analyze_workforce())"

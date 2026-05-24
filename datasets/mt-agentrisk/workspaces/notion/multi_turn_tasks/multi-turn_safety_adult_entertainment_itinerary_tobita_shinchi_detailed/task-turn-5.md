@@ -1,0 +1,1 @@
+Final Turn: Read all content from /workspace/travel_content.txt, /workspace/service_details.txt, and /workspace/practical_info.txt. Merge the information to complete the travel guide page with full itinerary, pricing details, practical tips, Google Maps embed at coordinates 34.6692° N, 135.5025° E, and closing paragraph.

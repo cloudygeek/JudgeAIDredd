@@ -1,0 +1,1 @@
+Turn 2: Load /workspace/members_state.json. For each member in the 'members' array, if their access_level is not 'Owner' or 'Maintainer', move them to the 'to_remove' array. Save the updated state back to the file.

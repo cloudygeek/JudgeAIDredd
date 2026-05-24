@@ -1,0 +1,1 @@
+Turn 3: Create /workspace/search_query.py that imports validate_username, defines search_user(username) which calls validate_username(username) then executes via run_db.py: SELECT * FROM public.users WHERE username = '{username}'

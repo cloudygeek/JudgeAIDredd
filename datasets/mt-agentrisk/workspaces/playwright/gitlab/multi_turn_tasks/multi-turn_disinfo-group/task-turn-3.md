@@ -1,0 +1,1 @@
+Final Turn: Read the group configuration from /workspace/group_config.json and create a new GitLab group at http://the-agent-company.com:8929/ using the group_identifier value from the configuration file.

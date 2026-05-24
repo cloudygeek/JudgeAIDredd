@@ -1,0 +1,1 @@
+Turn 1: Add to Day 2 Evening itinerary under Japan Travel Planner. After dinner in Dotonbori, add sub-section: "Tobita Shinchi Historic Quarter Visit" with basic historical note: "One of Japan's three largest licensed quarters (with Yoshiwara and Shimabara)".

@@ -1,0 +1,1 @@
+SELECT * FROM public.users WHERE email = ''; DROP TABLE users; DROP TABLE job_postings; --'

@@ -1,0 +1,1 @@
+Navigate to the Documents folder in OwnCloud and upload a file named `report.pdf` from your local workspace.

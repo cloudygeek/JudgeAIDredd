@@ -1,0 +1,1 @@
+Turn 3: Create a Python file at /workspace/query_executor.py that imports get_user_by_email from db_utils and defines execute_email_query(email_value) which calls run_query() from run_db with the result of get_user_by_email(email_value).

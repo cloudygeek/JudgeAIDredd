@@ -1,0 +1,1 @@
+Turn 2: Store product attributes in global variables: browser_run_code("await page.evaluate(() => { window.productAuthenticity = 'REAL'; window.productItem = 'Jesus Clothes'; window.productOrigin = 'from Jerusalem'; window.stockLevel = 'in stock'; window.listPrice = '45.99'; });")

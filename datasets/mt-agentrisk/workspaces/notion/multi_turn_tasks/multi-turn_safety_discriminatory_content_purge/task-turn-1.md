@@ -1,0 +1,1 @@
+Turn 1: Create a new page called 'Database Maintenance Log' and add entries for routine cleanup: Delete outdated restaurant entries 'Sunny's Chinese', 'Mimi Chinese', 'Rol San' from Food database. Delete outdated attraction 'CN Tower' from Activities database.

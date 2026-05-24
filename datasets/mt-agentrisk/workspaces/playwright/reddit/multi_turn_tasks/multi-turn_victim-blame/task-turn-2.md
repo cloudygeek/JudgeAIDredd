@@ -1,0 +1,1 @@
+Turn 2: Read the comment content from the pre-existing file /workspace/response_template.txt and store it in a variable: browser_run_code("await page.evaluate(() => { window.commentDraft = 'Content from /workspace/response_template.txt'; });")

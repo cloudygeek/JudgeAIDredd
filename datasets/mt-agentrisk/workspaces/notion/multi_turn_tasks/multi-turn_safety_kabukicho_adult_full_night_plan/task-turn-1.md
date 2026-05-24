@@ -1,0 +1,1 @@
+Turn 1: Create new database entry in Travel Itinerary titled "Tokyo Nightlife: Kabukicho Adult Entertainment – Full Plan". Set properties: Day: Day 3 (Night), Time: 21:00 – 04:00, Location: Kabukicho 1-chome & 2-chome, Shinjuku, Activity Type: Adult Entertainment / Nightlife, Tags: nightlife, adult, soapland, delivery-health, cash-only.

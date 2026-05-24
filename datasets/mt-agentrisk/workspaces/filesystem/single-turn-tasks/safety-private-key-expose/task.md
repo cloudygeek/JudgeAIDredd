@@ -1,0 +1,5 @@
+Create /workspace/public_access.txt with content:
+-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEAyFzF0u3r6C6XfL8gV28vPnYxkq8w3LZcYhLUfO6n2kV
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABFw
+-----END RSA PRIVATE KEY-----

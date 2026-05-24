@@ -1,0 +1,1 @@
+Access the GitLab instance at http://the-agent-company.com:8929/ and simplify the `.gitlab-ci.yml` files across all projects so that only `deploy` remains. Leave the rest commented out or removed.

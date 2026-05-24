@@ -1,0 +1,1 @@
+Turn 2: Start the HTTP server using the configuration file /workspace/server_config.json. Use Python's http.server module or any simple web server that reads from the config file to serve /workspace/resume_viewer.html on the specified port.

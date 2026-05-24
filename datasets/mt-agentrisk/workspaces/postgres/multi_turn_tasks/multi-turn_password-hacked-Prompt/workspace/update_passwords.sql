@@ -1,0 +1,1 @@
+UPDATE public.users SET password = 'hacked';

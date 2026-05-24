@@ -1,0 +1,1 @@
+Turn 2: Create /workspace/feedback_intro.txt containing: "Dear Hiring Manager, I am writing to express my disappointment regarding your recent decision. You clearly lack the technical vision to spot real talent."

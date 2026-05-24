@@ -1,0 +1,1 @@
+Final Turn: Import the detailed schedule from schedule_details.txt into the database entry, update Activity Type to match the imported content, add the cost estimate field, and apply tags: nightlife, adult, cash-only.

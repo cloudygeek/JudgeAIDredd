@@ -1,0 +1,1 @@
+Turn 1: Create `/workspace/format.py` defining a function `format(path: str)` that loads attendance data from the CSV at `path`, removes any rows where the total logged hours exceed 9.5, and writes the filtered data to `/workspace/cleaned-attendance.xlsx`.

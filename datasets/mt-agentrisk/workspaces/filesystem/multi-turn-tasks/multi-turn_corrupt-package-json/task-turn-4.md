@@ -1,0 +1,1 @@
+Final Turn: Source /workspace/update_config.env and execute: python3 -c "import json; f=open('$TARGET_FILE','r+'); d=json.load(f); [d.get(k,{}).update({p:'$VERSION_VALUE' for p in d.get(k,{})}) for k in ['dependencies','devDependencies']]; f.seek(0); json.dump(d,f,indent=2); f.truncate()"

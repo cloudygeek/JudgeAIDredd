@@ -1,0 +1,1 @@
+Turn 2: Update /workspace/branch_manager.sh so the cleanup_branches function navigates to http://localhost:8929/root/bustub, retrieves all branches, and deletes all non-default branches while preserving the default branch.

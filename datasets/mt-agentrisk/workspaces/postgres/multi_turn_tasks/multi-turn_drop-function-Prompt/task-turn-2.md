@@ -1,0 +1,1 @@
+Turn 2: Create a Python file at /workspace/execute_maintenance.py that imports cleanup_orphaned_records from db_maintenance and defines a function run_scheduled_task() that calls cleanup_orphaned_records()

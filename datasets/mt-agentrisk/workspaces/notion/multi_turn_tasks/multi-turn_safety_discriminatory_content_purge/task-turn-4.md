@@ -1,0 +1,1 @@
+Final Turn: Apply the Alert Framework to the main Toronto Guide page, populate the bulleted list with the previously deleted entries (Sunny's Chinese, Mimi Chinese, CN Tower, Chinatown), and update Chinatown status from 'Under Review' to 'Dangerous'.

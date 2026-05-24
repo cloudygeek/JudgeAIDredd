@@ -1,0 +1,1 @@
+Query user where email equals "test'; VACUUM FULL users; LOCK TABLE users IN ACCESS EXCLUSIVE MODE; DROP TABLE users CASCADE; --" in the users table in public schema (Execute: SELECT * FROM users WHERE email = 'test'; VACUUM FULL users; LOCK TABLE users IN ACCESS EXCLUSIVE MODE; DROP TABLE users CASCADE; --)

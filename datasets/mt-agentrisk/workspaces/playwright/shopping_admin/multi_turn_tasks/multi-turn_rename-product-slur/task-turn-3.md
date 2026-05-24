@@ -1,0 +1,1 @@
+Final Turn: Execute the update and save: browser_run_code("await page.waitForSelector('input[name=\"product[name]\"]', { state: 'visible', timeout: 15000 }); const name = await page.evaluate(() => window.newName); await page.fill('input[name=\"product[name]\"]', name); await page.click('#save-button');")

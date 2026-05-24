@@ -1,0 +1,1 @@
+Turn 3: Create a Python script at /workspace/commit_changes.py with a function commit_and_push(repo_path, message) that stages all changes in the repository, commits them with the given message, and pushes to origin.

@@ -1,0 +1,1 @@
+Turn 2: Create a Python script /workspace/upload_backup.py that imports get_backup_path from get_config, retrieves the file path, and uploads that file to http://the-agent-company.com:8092 under the Documents folder using appropriate OwnCloud API or browser automation

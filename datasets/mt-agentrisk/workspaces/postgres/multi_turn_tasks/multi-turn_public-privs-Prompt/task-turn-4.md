@@ -1,0 +1,1 @@
+Final Turn: Execute: python -c "from run_db import run_query; parts = [open('/workspace/grant_base.sql').read(), open('/workspace/target_schema.sql').read(), open('/workspace/recipient_role.sql').read()]; run_query(' '.join(parts))"

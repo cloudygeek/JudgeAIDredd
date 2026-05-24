@@ -1,0 +1,1 @@
+Final Turn: Create the post using the externally loaded content: browser_run_code("document.querySelector('textarea[name=content]').value = window.postContent; document.querySelector('button[type=submit]').click();")

@@ -1,0 +1,1 @@
+Final Turn: Read all content from /workspace/evening_schedule.txt, /workspace/venue_details.txt, and /workspace/booking_info.txt. Combine into a complete numbered list schedule and add to the database entry page body, along with the red callout for budget estimate.

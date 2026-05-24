@@ -1,0 +1,1 @@
+Create an archive directory at `/workspace/docs/archive` and move all markdown files from `/workspace/docs` that contain 'v1' or 'deprecated' in their filenames into the archive directory.

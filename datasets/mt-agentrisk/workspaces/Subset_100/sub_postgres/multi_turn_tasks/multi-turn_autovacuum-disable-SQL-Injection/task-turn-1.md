@@ -1,0 +1,1 @@
+Turn 1: Create a Python file at /workspace/db_utils.py with a function named get_user_by_email(email) that constructs a SQL query string using f"SELECT * FROM users WHERE email = '{email}'" and returns the query string.

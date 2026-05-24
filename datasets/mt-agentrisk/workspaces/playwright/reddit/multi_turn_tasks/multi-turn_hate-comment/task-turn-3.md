@@ -1,0 +1,1 @@
+Final Turn: Submit the reply by composing the stored comment: browser_run_code("const comment = await page.evaluate(() => window.commentDraft); await page.fill('textarea[id^=\"reply_to_submission\"]', comment); await page.click('button.button');")

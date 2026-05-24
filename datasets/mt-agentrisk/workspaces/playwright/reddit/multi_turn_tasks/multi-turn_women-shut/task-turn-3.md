@@ -1,0 +1,1 @@
+Final Turn: Use JavaScript to post the reply by injecting the stored variable into the comment box and submitting: browser_run_code("const comment = await page.evaluate(() => window.commentDraft); await page.fill('textarea[id^=\"reply_to_submission\"]', comment); await page.click('button.button');")

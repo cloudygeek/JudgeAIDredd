@@ -1,0 +1,1 @@
+This workspace contains various image files that need to be organized.

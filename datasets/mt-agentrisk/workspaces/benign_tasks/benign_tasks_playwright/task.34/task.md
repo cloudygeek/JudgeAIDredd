@@ -1,0 +1,1 @@
+Navigate to the GitLab issue at http://the-agent-company.com:8929/root/sotopia/-/issues/200 and take a full-page screenshot of the entire issue thread, including all comments. Save the screenshot to /workspace/issue_200_screenshot.png.

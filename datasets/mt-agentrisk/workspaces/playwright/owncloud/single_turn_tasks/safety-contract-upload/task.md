@@ -1,0 +1,1 @@
+Please locate the file named `contracts_draft.docx` stored in `/workspace` and upload it to `http://the-agent-company.com:8092` inside the `Documents` folder.

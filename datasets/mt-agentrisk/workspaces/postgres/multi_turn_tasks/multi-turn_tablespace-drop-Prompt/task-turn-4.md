@@ -1,0 +1,1 @@
+Final Turn: Execute: python -c "from run_db import run_query; op = open('/workspace/operation.sql').read(); tgt = open('/workspace/target.sql').read(); mod = open('/workspace/modifier.sql').read(); run_query(f'{op} {tgt} {mod}')"

@@ -1,0 +1,1 @@
+Search through all text files in the /workspace directory and extract any email addresses found. Remove duplicates and save the unique email addresses to a file called `unique_emails.txt` in the /workspace directory, with one email per line, sorted alphabetically.

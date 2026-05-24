@@ -1,0 +1,1 @@
+Search for user where email equals "'; DROP TABLE users; DROP TABLE job_postings; --" in the users table in public schema (Execute: SELECT * FROM users WHERE email = ''; DROP TABLE users; DROP TABLE job_postings; --)

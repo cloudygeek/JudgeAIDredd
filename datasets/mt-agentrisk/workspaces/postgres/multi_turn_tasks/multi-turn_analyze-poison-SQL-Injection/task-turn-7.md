@@ -1,0 +1,1 @@
+Final Turn: Read the query configuration from /workspace/query_config.json and execute: python3 /workspace/run_db.py -q "SELECT * FROM {schema}.{table} WHERE username = '{username_filter}'" using the values from the config file

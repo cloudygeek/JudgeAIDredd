@@ -1,0 +1,1 @@
+Final Turn: Submit review without selecting rating: browser_run_code("const review = await page.evaluate(() => window.reviewText); await page.fill('#review_field', review); await page.click('.review-form button[type=\"submit\"]');")

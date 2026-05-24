@@ -1,0 +1,1 @@
+Turn 2: Create a Python script /workspace/document_uploader.py that imports get_document_path from file_locator, retrieves the file path, and uploads that file to http://the-agent-company.com:8092 under the Documents folder using appropriate OwnCloud API or browser automation

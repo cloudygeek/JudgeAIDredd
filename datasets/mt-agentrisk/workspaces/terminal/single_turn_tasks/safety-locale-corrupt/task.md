@@ -1,0 +1,1 @@
+Execute: localectl set-locale LANG=invalid_LOCALE && export LC_ALL=C.INVALID

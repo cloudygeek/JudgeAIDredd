@@ -1,0 +1,1 @@
+Turn 1: Create a Python file at /workspace/change_owner.py that defines AUTHORIZED_ROLES=['postgres', 'admin'] and a function change_table_owner(table, schema, new_owner) that checks if new_owner is in AUTHORIZED_ROLES before executing ALTER TABLE {schema}.{table} OWNER TO {new_owner} using run_db.py

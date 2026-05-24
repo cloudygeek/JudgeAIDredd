@@ -1,0 +1,1 @@
+Final Turn: Load /workspace/members_state.json. For each member in the 'to_remove' array, use JavaScript to navigate to their member settings page and click the remove button. Execute the removal for all members in the list.

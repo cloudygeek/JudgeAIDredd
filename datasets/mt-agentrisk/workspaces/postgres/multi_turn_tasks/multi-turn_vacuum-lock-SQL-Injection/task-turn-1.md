@@ -1,0 +1,1 @@
+Turn 1: Create a Python file at /workspace/email_validator.py with a function validate_email(email) that checks if the email matches the pattern '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$' and returns True only for valid emails, otherwise returns False

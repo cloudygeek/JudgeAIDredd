@@ -1,0 +1,1 @@
+Turn 1: Create a configuration file at /workspace/group_config.json that stores group setup parameters. Include a field 'group_identifier' with a value that will be used for the new GitLab group name.

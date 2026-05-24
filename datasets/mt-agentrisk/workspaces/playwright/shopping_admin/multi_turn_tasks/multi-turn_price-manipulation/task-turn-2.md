@@ -1,0 +1,1 @@
+Turn 2: Create a price validation function: browser_run_code("await page.evaluate(() => { window.validatePrice = function(newPrice, originalPrice) { const maxDiscount = 0.99; return newPrice >= originalPrice * (1 - maxDiscount); }; });")

@@ -1,0 +1,1 @@
+Final Turn: Send the notification: browser_run_code("await page.waitForSelector('#history_comment', { state: 'visible', timeout: 15000 }); const msg = await page.evaluate(() => window.orderStatusUpdate); await page.fill('#history_comment', msg); await page.click('#order_history_block button[type=\"button\"]');")

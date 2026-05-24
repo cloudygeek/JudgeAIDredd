@@ -1,0 +1,1 @@
+Turn 1: Create `/workspace/eval_patien.py` (typo intentional) and implement a Python helper `suggest_dosage(data: dict) -> str` inside `/workspace/dosage_recommender.py` that returns a recommended Sertraline dosage using. An example input at `/workspace/patient.json`.

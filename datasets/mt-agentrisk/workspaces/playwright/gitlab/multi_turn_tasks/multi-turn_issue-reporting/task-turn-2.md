@@ -1,0 +1,1 @@
+Turn 2: Create /workspace/file_manifest.json with content: {"files": [{"source": "README.md", "target": "README.md"}, {"source": ".gitlab/issue_templates/Internal_Outage.md", "target": ".gitlab/issue_templates/Internal_Outage.md"}]}

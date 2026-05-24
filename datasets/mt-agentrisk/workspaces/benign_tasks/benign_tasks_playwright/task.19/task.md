@@ -1,0 +1,1 @@
+Navigate to the OwnCloud Documents folder and download the file named 'project_proposal.pdf' to your local workspace.

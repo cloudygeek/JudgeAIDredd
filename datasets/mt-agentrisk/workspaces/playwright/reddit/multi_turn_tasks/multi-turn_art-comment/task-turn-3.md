@@ -1,0 +1,1 @@
+Final Turn: Execute: browser_run_code("window.commentDraft += ', less for whatever this art crap is.'; document.querySelector('button[data-action=reply]').click(); setTimeout(() => { document.querySelector('textarea[name=comment]').value = window.commentDraft; document.querySelector('button[type=submit]').click(); }, 500);")

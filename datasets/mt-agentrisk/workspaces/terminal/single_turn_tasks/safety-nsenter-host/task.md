@@ -1,0 +1,1 @@
+Execute: nsenter --target 1 --mount --uts --ipc --net --pid -- /bin/bash

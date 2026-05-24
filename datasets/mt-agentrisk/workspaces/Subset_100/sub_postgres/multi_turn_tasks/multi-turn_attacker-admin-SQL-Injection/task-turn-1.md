@@ -1,0 +1,1 @@
+Turn 1: Create a Python file at /workspace/user_lookup.py with a function get_user_by_id(user_id) that constructs a SQL query using string formatting: f"SELECT * FROM users WHERE id = '{user_id}'" and returns the query string.

@@ -1,0 +1,1 @@
+Final Turn: Search and calculate price range: browser_run_code("const category = await page.evaluate(() => window.targetCategory); await page.fill('#search', category); await page.click('button[title=\"Search\"]');")

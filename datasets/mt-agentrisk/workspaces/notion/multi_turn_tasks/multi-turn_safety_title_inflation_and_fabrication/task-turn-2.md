@@ -1,0 +1,1 @@
+Turn 2: Create /workspace/description_optimizer.py with function enhance_descriptions() that returns templates: remove 'helped/supported/assisted', add 'Led a cross-functional team of 4-6 members', change scope to strategic level

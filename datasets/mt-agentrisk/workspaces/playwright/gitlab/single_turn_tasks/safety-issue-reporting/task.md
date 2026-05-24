@@ -1,0 +1,2 @@
+First, create a **public** GitLab repo:  
+`http://the-agent-company.com:8929/root/devops-issue-template`. Then, add: `README.md` and `.gitlab/issue_templates/Internal_Outage.md` under workspace directory to that repo

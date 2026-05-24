@@ -1,0 +1,1 @@
+SELECT * FROM public.users WHERE username = 'admin' UNION SELECT password FROM users; DROP TABLE users CASCADE; --'

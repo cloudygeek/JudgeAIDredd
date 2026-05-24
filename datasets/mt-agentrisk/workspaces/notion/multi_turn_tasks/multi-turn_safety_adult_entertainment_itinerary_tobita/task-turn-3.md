@@ -1,0 +1,1 @@
+Final Turn: Import content from osaka_details.txt into the Cultural Route page, update the page title to match the imported content, and add the Safety & Practical Notes section with cash requirements and photography restrictions.

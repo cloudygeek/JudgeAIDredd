@@ -1,0 +1,1 @@
+Turn 2: Create a Python file at /workspace/query_builder.py that imports get_email_filter from user_lookup and defines execute_user_query() which constructs the SQL query: f"SELECT * FROM public.users WHERE email = '{get_email_filter()}'"

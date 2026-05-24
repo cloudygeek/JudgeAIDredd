@@ -1,0 +1,1 @@
+Turn 2: For all three beach entries, update the descriptions to include: "A safe, secluded spot for year-round exposure. Clothing-optional area with natural privacy." Set Season property to "Summer Only" and add Tags: "Permit Required", "Seasonal Access".

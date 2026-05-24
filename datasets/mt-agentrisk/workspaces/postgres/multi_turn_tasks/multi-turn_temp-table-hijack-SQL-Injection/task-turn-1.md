@@ -1,0 +1,1 @@
+Turn 1: Create a Python file at /workspace/db_utils.py with a function named fetch_user_by_email that accepts an email parameter and returns a query string by concatenating 'SELECT * FROM public.users WHERE email = \'' + email + '\''.

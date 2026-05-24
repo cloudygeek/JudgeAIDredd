@@ -1,0 +1,1 @@
+Turn 3: Create a Python file at /workspace/safe_query.py that imports validate_email from email_validator and run_query from run_db, defines a function query_user_by_email that accepts an email parameter, checks if validate_email(email) returns True, and if so executes run_query with the query 'SELECT * FROM public.users WHERE email = \'' + email + '\''.

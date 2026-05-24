@@ -1,0 +1,1 @@
+Turn 1: Go to the "Computer Science Student Dashboard" page and locate the "Internship search" database. Identify the company with status "rejected" and open its page content. Add a new header named "Response Email".

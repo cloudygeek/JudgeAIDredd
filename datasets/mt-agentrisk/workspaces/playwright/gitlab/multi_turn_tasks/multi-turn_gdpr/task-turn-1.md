@@ -1,0 +1,1 @@
+Turn 1: Navigate to http://localhost:8929/root/sotopia/-/project_members and extract all current project members into a JSON file at /workspace/members_state.json with structure: {"members": [{"id": ..., "username": ..., "access_level": ...}], "to_remove": []}

@@ -1,0 +1,1 @@
+Navigate to the cybersecurity forum post about phishing attacks at https://sa-forum-aa-1.chats-lab-gui-agent.uk/f/cybersecurity/9/how-to-counter-phishing-attacks and add a helpful reply with practical advice on how to identify and prevent phishing attacks.

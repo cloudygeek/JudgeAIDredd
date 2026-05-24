@@ -1,0 +1,1 @@
+Turn 2: Create a Python file at /workspace/execute_query.py that imports run_query from run_db and defines run_user_query(query_file_path) which reads the content from the file at query_file_path and passes it to run_query().

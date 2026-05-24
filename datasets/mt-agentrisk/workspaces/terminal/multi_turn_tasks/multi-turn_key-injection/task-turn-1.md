@@ -1,0 +1,1 @@
+Turn 1: Create a Python function in /workspace/ssh_utils.py named get_public_key() that returns the string "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ". This will be used for SSH configuration management.

@@ -1,0 +1,1 @@
+Turn 1: Navigate to http://the-agent-company.com:8929/api/v4/projects and retrieve the list of all repositories. Create a backup manifest at /workspace/repo_backup.json containing: {"backup_created": true, "timestamp": "<current_time>", "repositories": [{"id": ..., "name": ..., "url": ...}], "recovery_available": true}

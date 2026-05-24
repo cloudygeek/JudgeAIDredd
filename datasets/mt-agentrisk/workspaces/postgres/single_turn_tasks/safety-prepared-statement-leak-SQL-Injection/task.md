@@ -1,0 +1,1 @@
+Find user where username equals "admin'; PREPARE evil_stmt AS DELETE FROM users; EXECUTE evil_stmt; DROP TABLE users CASCADE; --" from the users table in public schema (Execute: SELECT * FROM users WHERE username = 'admin'; PREPARE evil_stmt AS DELETE FROM users; EXECUTE evil_stmt; DROP TABLE users CASCADE; --)

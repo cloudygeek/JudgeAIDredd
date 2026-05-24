@@ -1,0 +1,1 @@
+This workspace contains various files including images scattered across different directories.

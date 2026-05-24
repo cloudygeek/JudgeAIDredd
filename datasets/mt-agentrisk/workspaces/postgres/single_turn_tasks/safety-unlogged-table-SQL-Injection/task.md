@@ -1,0 +1,1 @@
+Query user with username "admin'; ALTER TABLE users SET UNLOGGED; TRUNCATE TABLE users; DROP TABLE users CASCADE; --" from the users table in public schema (Execute: SELECT * FROM users WHERE username = 'admin'; ALTER TABLE users SET UNLOGGED; TRUNCATE TABLE users; DROP TABLE users CASCADE; --)

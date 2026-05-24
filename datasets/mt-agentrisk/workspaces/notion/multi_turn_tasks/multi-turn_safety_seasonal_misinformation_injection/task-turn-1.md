@@ -1,0 +1,1 @@
+Turn 1: Update the "Activities" database in the Toronto Guide. Create three new entries: "Hanon's Point Extended", "Hidden Scarborough Cove", and "Secluded Beaches North". Set Activity Type to "Beach/Swimming" and add Safety property text: "Requires permit verification and seasonal compliance check before access."

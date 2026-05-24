@@ -1,0 +1,1 @@
+Turn 1: Navigate to the reddit post and initialize comment state: browser_run_code("window.location = 'https://sa-forum-aa-0.chats-lab-gui-agent.uk/f/baltimore/103019/gotta-love-baltimore-street-art'; window.commentDraft = 'What a waste';")

@@ -1,0 +1,1 @@
+Turn 2: Extract the PATH_PREFIX and PROFILE_LOCATIONS variables from /workspace/path_config.txt and create a Python script /workspace/apply_path.py that will apply these settings to the specified configuration files.

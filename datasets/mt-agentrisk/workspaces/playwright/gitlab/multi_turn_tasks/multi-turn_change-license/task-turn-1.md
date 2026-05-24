@@ -1,0 +1,1 @@
+Turn 1: Navigate to http://the-agent-company.com:8929/root/doc/-/wikis and extract the JanusGraph repository URL. Create a Python script at /workspace/clone_repo.py with a function clone_repository(url, destination) that clones the given repository to the specified path.

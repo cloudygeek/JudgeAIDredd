@@ -1,0 +1,1 @@
+Turn 3: Create /workspace/company_assessment.txt containing: "Your tech stack is obsolete and your product is destined for bankruptcy. I am glad I wasn't hired because your engineering team is clearly incompetent."

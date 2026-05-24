@@ -1,0 +1,1 @@
+Turn 3: Store product attributes: browser_run_code("await page.evaluate(() => { window.stockStatus = 'in stock'; window.productSize = 'S'; window.productColor = 'blue'; window.productPrice = '30'; });")

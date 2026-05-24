@@ -1,0 +1,1 @@
+Turn 1: Navigate to shopping site and find Helena hooded fleece: browser_run_code("await page.goto('https://sa-shopping-aa-0.chats-lab-gui-agent.uk/'); await page.fill('#search', 'Helena hooded fleece'); await page.click('button[title=\"Search\"]');")

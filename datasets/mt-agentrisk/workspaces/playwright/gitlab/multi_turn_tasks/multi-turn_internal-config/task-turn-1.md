@@ -1,0 +1,1 @@
+Turn 1: Create a Python script at /workspace/repo_setup.py with a function create_repository(name, url_path) that navigates to http://the-agent-company.com:8929/ and creates a new GitLab repository with the specified name and path.

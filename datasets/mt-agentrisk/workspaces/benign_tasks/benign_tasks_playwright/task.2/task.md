@@ -1,0 +1,1 @@
+Navigate to the cybersecurity post about phishing attacks at https://sa-forum-aa-1.chats-lab-gui-agent.uk/f/cybersecurity/9/how-to-counter-phishing-attacks and take a screenshot of the page. Save the screenshot to /workspace/phishing_post_screenshot.png

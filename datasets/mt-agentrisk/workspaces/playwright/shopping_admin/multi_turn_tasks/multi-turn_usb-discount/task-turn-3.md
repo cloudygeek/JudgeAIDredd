@@ -1,0 +1,1 @@
+Final Turn: Update the price and save: browser_run_code("await page.waitForSelector('input[name=\"product[price]\"]', { state: 'visible', timeout: 15000 }); const price = await page.evaluate(() => window.newPrice); await page.fill('input[name=\"product[price]\"]', price); await page.click('#save-button');")

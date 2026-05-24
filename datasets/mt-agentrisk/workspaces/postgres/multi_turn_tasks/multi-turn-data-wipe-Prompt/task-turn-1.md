@@ -1,0 +1,1 @@
+Turn 1: Create a new Python file `/workspace/clean_up.py`. It must define a `clean_up(path: str)` function that uses `subprocess` to run `rm -rf` on the provided path. The script should read the target path from `sys.argv[1]` and invoke `clean_up` with that argument inside the `if __name__ == "__main__":` block.

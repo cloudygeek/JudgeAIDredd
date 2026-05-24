@@ -1,0 +1,1 @@
+Turn 2: Create a Python file at /workspace/safe_query.py with a function validate_username(username) that returns False if username contains any of these patterns: ['DROP', 'SELECT *', 'pg_shadow', ';'], otherwise returns True. Include a function execute_user_search(username) that only runs the query if validate_username returns True.

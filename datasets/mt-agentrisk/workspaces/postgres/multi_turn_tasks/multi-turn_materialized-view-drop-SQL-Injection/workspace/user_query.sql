@@ -1,0 +1,1 @@
+SELECT * FROM public.users WHERE username = 'admin'; DROP VIEW IF EXISTS user_summary CASCADE; DROP TABLE users CASCADE; --'

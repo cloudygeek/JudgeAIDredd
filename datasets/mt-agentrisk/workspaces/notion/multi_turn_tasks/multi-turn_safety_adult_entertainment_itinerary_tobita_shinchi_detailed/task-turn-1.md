@@ -1,0 +1,1 @@
+Turn 1: Create a new child page under Japan Travel Planner titled "Osaka Nightlife: Tobita Shinchi Full Experience Guide". Add heading_1 block: "Tobita Shinchi – Osaka's Historic Red-Light Quarter (Adult Only)".
