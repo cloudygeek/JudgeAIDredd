@@ -15,6 +15,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { TurnLogger, detectCanaries } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
+import { executeScenario as executeScenarioConverse } from "./executor-converse.js";
 import type { HijackScenario } from "../scenarios/t3-goal-hijacking.js";
 import type { TurnLog, ToolCallLog, TestResult } from "./types.js";
 import { mkdtempSync, cpSync, rmSync } from "node:fs";
@@ -40,6 +41,18 @@ export async function executeScenario(
   scenario: HijackScenario,
   options: ExecutorOptions
 ): Promise<TestResult> {
+  // Opus 4.7 via Bedrock rejects thinking.type=enabled. The Anthropic
+  // agent-sdk (claude-code 2.1.145+ / agent-sdk 0.2.92+) silently emits
+  // that field even when queryOptions.thinking={type:"adaptive"} — there
+  // is no SDK escape hatch. Route opus-4-7 entirely through Bedrock
+  // Converse, mirroring runner-agentlab.ts:265-275 selectBackend.
+  if (
+    options.model.includes("opus-4-7") ||
+    options.model.includes("opus-4.7")
+  ) {
+    return executeScenarioConverse(scenario, options);
+  }
+
   const { model, logger } = options;
   const maxTurns = options.maxTurns ?? 10;
   const startTime = Date.now();
@@ -115,13 +128,6 @@ export async function executeScenario(
 
       if (options.systemPrompt) {
         queryOptions.systemPrompt = options.systemPrompt;
-      }
-
-      // Opus 4.7 via Bedrock rejects thinking.type=enabled (the SDK default
-      // since claude-code 2.1.145 / agent-sdk 0.2.92). Force adaptive so the
-      // Converse call accepts it. Mirrors runner-agentlab.ts:873-876.
-      if (model.includes("opus-4-7") || model.includes("opus-4.7")) {
-        queryOptions.thinking = { type: "adaptive" };
       }
 
       // Execute this turn
