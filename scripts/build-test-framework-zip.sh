@@ -135,6 +135,7 @@ for f in Dockerfile server.js docker-entrypoint-test-framework.sh \
          vendor/test-framework-node_modules/@anthropic-ai/claude-agent-sdk/package.json \
          archive/tests/runner-p14.ts \
          archive/tests/executor-converse.ts \
+         archive/tests/executor-openai.ts \
          archive/workspace-template/.env.test \
          scenarios/t4-http-injection.ts \
          scenarios/t5-multistage.ts \
