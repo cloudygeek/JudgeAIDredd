@@ -51,6 +51,8 @@ import {
   type HijackScenario,
 } from "../../scenarios/t3-goal-hijacking.js";
 import { getExfilScenarios as getT3eScenarios } from "../../scenarios/t3e-goal-hijacking-exfil.js";
+import { getDocumentInjectionScenarios as getT1Scenarios } from "../../scenarios/t1-document-injection.js";
+import { getTaskDescriptionInjectionScenarios as getT8Scenarios } from "../../scenarios/t8-task-description-injection.js";
 import type { TestResult } from "../../src/types.js";
 
 const { values } = parseArgs({
@@ -240,10 +242,12 @@ async function main() {
 
   try { mkdirSync(OUTPUT_DIR, { recursive: true }); } catch {}
 
+  const t1Scenarios = getT1Scenarios(CANARY_PORT);
   const t3Scenarios = getT3Scenarios("all");
   const t3eScenarios = getT3eScenarios(CANARY_PORT);
   const t4Scenarios = getInjectionScenarios(CANARY_PORT).map(adaptT4);
   const t5Scenarios = getMultiStageScenarios(CANARY_PORT).map(adaptT5);
+  const t8Scenarios = getT8Scenarios(CANARY_PORT);
 
   let completedCells = 0;
   const startTime = Date.now();
@@ -259,10 +263,12 @@ async function main() {
 
         for (const technique of TECHNIQUES) {
           const scenarios =
+            technique === "T1"  ? t1Scenarios :
             technique === "T3"  ? t3Scenarios :
             technique === "T3E" ? t3eScenarios :
             technique === "T4"  ? t4Scenarios :
             technique === "T5"  ? t5Scenarios :
+            technique === "T8"  ? t8Scenarios :
             [];
           if (scenarios.length === 0) {
             console.error(`Unknown technique: ${technique}`);
