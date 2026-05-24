@@ -117,6 +117,13 @@ export async function executeScenario(
         queryOptions.systemPrompt = options.systemPrompt;
       }
 
+      // Opus 4.7 via Bedrock rejects thinking.type=enabled (the SDK default
+      // since claude-code 2.1.145 / agent-sdk 0.2.92). Force adaptive so the
+      // Converse call accepts it. Mirrors runner-agentlab.ts:873-876.
+      if (model.includes("opus-4-7") || model.includes("opus-4.7")) {
+        queryOptions.thinking = { type: "adaptive" };
+      }
+
       // Execute this turn
       for await (const message of query({
         prompt: userMessage,

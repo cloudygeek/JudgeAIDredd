@@ -741,7 +741,12 @@ def main():
             print(f"{'━' * 70}")
 
             for i, scenario in enumerate(scenarios):
-                session_id = f"t24-{model_key}-{defence}-{scenario.id.replace('/', '-')}"
+                # Dredd's session_id pattern is /^[A-Za-z0-9._-]{1,128}$/ — the
+                # composite arm "intent-tracker+promptarmor" contains '+' which
+                # gets rejected with 400. Substitute '_' so the arm name still
+                # round-trips uniquely.
+                safe_defence = defence.replace("+", "_")
+                session_id = f"t24-{model_key}-{safe_defence}-{scenario.id.replace('/', '-')}"
                 print(f"\n  [{i+1}/{len(scenarios)}] {scenario.id} ", end="", flush=True)
 
                 try:

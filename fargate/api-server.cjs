@@ -368,7 +368,17 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      startRun(params);
+      try {
+        startRun(params);
+      } catch (err) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          error: "Cannot start run",
+          message: err instanceof Error ? err.message : String(err),
+          validTests: Object.keys(ENTRYPOINTS),
+        }));
+        return;
+      }
       res.writeHead(202, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ message: "Run started", runId: state.runId, status: "running" }));
     });

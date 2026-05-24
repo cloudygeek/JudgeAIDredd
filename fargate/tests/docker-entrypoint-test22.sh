@@ -150,6 +150,11 @@ else
             claude-opus-4-7)   MID="eu.anthropic.claude-opus-4-7" ;;
             claude-opus-4-6)   MID="eu.anthropic.claude-opus-4-6-v1" ;;
             claude-haiku-4-5)  MID="eu.anthropic.claude-haiku-4-5-20251001-v1:0" ;;
+            qwen3-32b)         MID="qwen.qwen3-32b-v1:0" ;;
+            qwen3-235b)        MID="qwen.qwen3-235b-a22b-2507-v1:0" ;;
+            qwen3-coder-30b)   MID="qwen.qwen3-coder-30b-a3b-v1:0" ;;
+            qwen3-coder-480b)  MID="qwen.qwen3-coder-480b-a35b-v1:0" ;;
+            qwen3-coder-next)  MID="qwen.qwen3-coder-next-v1:0" ;;
             *) MID="${m}" ;;
         esac
         echo "  Testing ${m} → ${MID}..."
