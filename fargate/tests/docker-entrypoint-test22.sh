@@ -57,7 +57,35 @@ S3_REGION="${S3_REGION:-eu-west-1}"
 JUDGE_MODEL="eu.anthropic.claude-sonnet-4-6"
 EMBED_MODEL="eu.cohere.embed-v4:0"
 JUDGE_PROMPT="B7.1"
-AGENT_BACKEND="${TEST22_AGENT_BACKEND:-converse}"
+
+# AGENT_BACKEND auto-routes by model when TEST22_AGENT_BACKEND is unset.
+# `gpt-*` model keys go through executor-openai (api.openai.com /v1/chat/completions).
+# Mixed-vendor cells are rejected — run OpenAI models on their own container.
+if [ -n "${TEST22_AGENT_BACKEND:-}" ]; then
+    AGENT_BACKEND="${TEST22_AGENT_BACKEND}"
+else
+    case "${MODELS}" in
+        gpt-*)
+            # All-OpenAI: route through executor-openai
+            AGENT_BACKEND="openai"
+            ;;
+        *,gpt-*|gpt-*,*|*,gpt-*,*)
+            echo "FATAL: TEST22_MODELS mixes gpt-* with non-gpt-* models (${MODELS})." >&2
+            echo "       Run OpenAI models on their own container — the runner can't multi-backend in one pass." >&2
+            exit 1
+            ;;
+        *)
+            AGENT_BACKEND="converse"
+            ;;
+    esac
+fi
+
+if [ "${AGENT_BACKEND}" = "openai" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "FATAL: AGENT_BACKEND=openai but OPENAI_API_KEY is unset." >&2
+    echo "       Pass it via the /run payload's env block, e.g.:" >&2
+    echo "         \"env\": { \"OPENAI_API_KEY\": \"\$(cat openapi.key)\", ... }" >&2
+    exit 1
+fi
 
 RUN_ID="${TEST22_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 OUTPUT_DIR="results/test22-${RUN_ID}"
@@ -92,38 +120,54 @@ echo "════════════════════════�
 # call (executor-converse) would still succeed. Use sparingly — the
 # preflight catches most config typos before a 6h run.
 if [ "${TEST22_SKIP_PREFLIGHT:-0}" = "1" ]; then
-    echo ">>> Bedrock preflight: SKIPPED (TEST22_SKIP_PREFLIGHT=1)"
+    echo ">>> Preflight: SKIPPED (TEST22_SKIP_PREFLIGHT=1)"
 else
 
-echo ""
-echo ">>> Bedrock preflight: agent model access (region: ${AWS_REGION})..."
+# ── Agent-model preflight (OpenAI vs Bedrock branches) ─────────────────
+if [ "${AGENT_BACKEND}" = "openai" ]; then
+    echo ""
+    echo ">>> OpenAI preflight: agent model access (api.openai.com)..."
+    PRE_OUT=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" \
+        -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+        "https://api.openai.com/v1/models" 2>&1)
+    if [ "${PRE_OUT}" = "200" ]; then
+        echo "    OpenAI API reachable (HTTP ${PRE_OUT})"
+    else
+        echo "FATAL: api.openai.com unreachable or auth failed (HTTP ${PRE_OUT})" >&2
+        echo "       Check egress policy on this cell + key validity." >&2
+        exit 1
+    fi
+else
+    echo ""
+    echo ">>> Bedrock preflight: agent model access (region: ${AWS_REGION})..."
 
-IFS=',' read -ra MODEL_ARRAY <<< "${MODELS}"
-for m in "${MODEL_ARRAY[@]}"; do
-    m=$(echo "${m}" | xargs)
-    # Resolve friendly names to Bedrock model IDs
-    case "${m}" in
-        claude-sonnet-4-6) MID="eu.anthropic.claude-sonnet-4-6" ;;
-        claude-opus-4-7)   MID="eu.anthropic.claude-opus-4-7" ;;
-        claude-opus-4-6)   MID="eu.anthropic.claude-opus-4-6-v1" ;;
-        claude-haiku-4-5)  MID="eu.anthropic.claude-haiku-4-5-20251001-v1:0" ;;
-        *) MID="${m}" ;;
-    esac
-    echo "  Testing ${m} → ${MID}..."
-    # Capture stderr so the failure mode is visible — earlier preflight
-    # silently exited with "not accessible" when the actual cause was
-    # a JMESPath/--output-text combo on a 1-token response. Drop both
-    # those flags and surface stderr.
-    PRE_OUT=$(aws bedrock-runtime converse \
-        --region "${AWS_REGION}" \
-        --model-id "${MID}" \
-        --messages '[{"role":"user","content":[{"text":"ok"}]}]' \
-        --inference-config '{"maxTokens":1}' 2>&1) \
-        && echo "    OK: ${MID}" \
-        || { echo "FATAL: model ${MID} not accessible in ${AWS_REGION}"; echo "      stderr: ${PRE_OUT}"; exit 1; }
-done
+    IFS=',' read -ra MODEL_ARRAY <<< "${MODELS}"
+    for m in "${MODEL_ARRAY[@]}"; do
+        m=$(echo "${m}" | xargs)
+        # Resolve friendly names to Bedrock model IDs
+        case "${m}" in
+            claude-sonnet-4-6) MID="eu.anthropic.claude-sonnet-4-6" ;;
+            claude-opus-4-7)   MID="eu.anthropic.claude-opus-4-7" ;;
+            claude-opus-4-6)   MID="eu.anthropic.claude-opus-4-6-v1" ;;
+            claude-haiku-4-5)  MID="eu.anthropic.claude-haiku-4-5-20251001-v1:0" ;;
+            *) MID="${m}" ;;
+        esac
+        echo "  Testing ${m} → ${MID}..."
+        # Capture stderr so the failure mode is visible — earlier preflight
+        # silently exited with "not accessible" when the actual cause was
+        # a JMESPath/--output-text combo on a 1-token response. Drop both
+        # those flags and surface stderr.
+        PRE_OUT=$(aws bedrock-runtime converse \
+            --region "${AWS_REGION}" \
+            --model-id "${MID}" \
+            --messages '[{"role":"user","content":[{"text":"ok"}]}]' \
+            --inference-config '{"maxTokens":1}' 2>&1) \
+            && echo "    OK: ${MID}" \
+            || { echo "FATAL: model ${MID} not accessible in ${AWS_REGION}"; echo "      stderr: ${PRE_OUT}"; exit 1; }
+    done
+fi
 
-# ── Preflight — Judge model access ──────────────────────────────────────
+# ── Judge-model preflight (Bedrock for both backends) ──────────────────
 echo ""
 echo ">>> Bedrock preflight: judge model access (region: ${JUDGE_REGION})..."
 JUDGE_PRE_OUT=$(aws bedrock-runtime converse \

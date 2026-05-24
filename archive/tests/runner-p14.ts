@@ -37,6 +37,9 @@ const loadExecutor = async (backend: string) => {
   if (backend === "converse") {
     return (await import("./executor-converse.js")).executeScenario;
   }
+  if (backend === "openai") {
+    return (await import("./executor-openai.js")).executeScenario;
+  }
   return (await import("./executor-bedrock.js")).executeScenario;
 };
 import { TurnLogger } from "./turn-logger.js";
@@ -84,7 +87,7 @@ const JUDGE_PROMPT = values["judge-prompt"]!;
 const JUDGE_EFFORT = values["judge-effort"] as "low" | "medium" | "high" | "max" | undefined;
 const AGENT_EFFORT = values["agent-effort"] as "low" | "medium" | "high" | "max" | undefined;
 const EMBED_MODEL = values["embed-model"]!;
-const AGENT_BACKEND = values["agent-backend"]! as "bedrock" | "converse";
+const AGENT_BACKEND = values["agent-backend"]! as "bedrock" | "converse" | "openai";
 const EMBED_BACKEND = values["embed-backend"]! as "ollama" | "bedrock";
 const THETA_WARN = parseFloat(values["theta-warn"]!);
 const THETA_BLOCK = parseFloat(values["theta-block"]!);
