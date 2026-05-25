@@ -70,7 +70,29 @@ export const ALLOWED_TOOLS: PatternRule[] = [
   { pattern: /^mcp__soteria-neptune__get_neighbors$/, reason: "Graph neighbor lookup (auto-approved: 5/5 allowed)" },
 ];
 
-// Bash commands that are always safe
+// Bash commands that are always safe.
+//
+// SAFETY MODEL — read before adding anything here.
+// This list is INSTANT-ALLOW: it bypasses the LLM judge and the drift
+// detector, so an entry must be safe even if the agent is fully hijacked.
+// BUT it is also subordinate: evaluateSingleBashCommand checks DENY, then
+// REVIEW, then this ALLOW list, so any part containing a redirection (`>`),
+// command substitution (`$(`/backticks), pipe, network verb, or
+// eval/bash -c is routed to DENY/REVIEW *before* it can match here, and
+// chained commands are split and evaluated per-part. The only thing this
+// list grants is a BARE invocation. So the bar for adding a command is:
+// "with its own flags and no shell operators, can it exfiltrate, execute
+// arbitrary code, destroy, or overwrite a file?"
+//
+// That bar EXCLUDES several tempting candidates:
+//   - awk / sed / perl / python / ruby — can spawn shells (awk 'BEGIN{system(...)}',
+//     sed `e`, perl -e). Never instant-allow an interpreter.
+//   - sort -o FILE / uniq IN OUT / tee — write to an arbitrary file with no
+//     redirection operator, so the `>` REVIEW guard never sees them.
+//   - cp / mv — overwrite/clobber existing files.
+//   - env / printenv / command — dump the environment (secrets). Stay DENY.
+//   - tr / rev / xxd / base64 — transform/encode (exfil-prep); stay REVIEW.
+//   - cp/mv/tee handled above; find -delete / -exec routed to REVIEW below.
 export const ALLOWED_BASH_PATTERNS: PatternRule[] = [
   { pattern: /^cd\s+(?!\.\.|\/)(?!~)[.\w]/, reason: "Change to relative subdirectory" },
   { pattern: /^ls(\s|$)/, reason: "List directory" },
@@ -87,11 +109,44 @@ export const ALLOWED_BASH_PATTERNS: PatternRule[] = [
   { pattern: /^file\s/, reason: "File type detection" },
   { pattern: /^stat\s/, reason: "File metadata" },
   { pattern: /^diff\s/, reason: "File comparison" },
+  { pattern: /^cmp\s/, reason: "File comparison (byte)" },
   { pattern: /^git\s+(status|log|diff|show|branch|remote)(\s|$)/, reason: "Git read-only" },
   { pattern: /^git\s+ls-files/, reason: "Git list files" },
   { pattern: /^npm\s+(test|run\s+test|run\s+lint)(\s|$)/, reason: "Test/lint execution" },
   { pattern: /^node\s+--version/, reason: "Version check" },
   { pattern: /^python3?\s+--version/, reason: "Version check" },
+
+  // --- 2026-05-25 expansion: scratch/staging + path + read-only inspection ---
+  // Directory / scratch creation. Non-destructive (mkdir fails on an existing
+  // file; touch updates mtime / makes an empty file but never truncates;
+  // mktemp creates a fresh name). The friction these remove is the
+  // build-staging / scratch-dir workflow that previously hit review.
+  { pattern: /^mkdir(\s|$)/, reason: "Create directory (non-destructive)" },
+  { pattern: /^touch\s/, reason: "Create empty file / update mtime (non-destructive)" },
+  { pattern: /^mktemp(\s|$)/, reason: "Create temp file/dir under TMPDIR" },
+  // Pure path string-ops (no filesystem writes).
+  { pattern: /^basename\s/, reason: "Path basename (string op)" },
+  { pattern: /^dirname\s/, reason: "Path dirname (string op)" },
+  { pattern: /^realpath(\s|$)/, reason: "Resolve path (read-only)" },
+  { pattern: /^readlink\s/, reason: "Read symlink target (read-only)" },
+  // Read-only text projection. `cut` and `jq` write only to stdout (no
+  // output-file flag) — unlike sort -o / uniq OUT, which are deliberately
+  // excluded above.
+  { pattern: /^cut\s/, reason: "Column/field extraction (stdout only)" },
+  { pattern: /^jq\s/, reason: "JSON query (stdout only; no in-place flag)" },
+  // Read-only system / disk inspection. set-variants (date -s, hostname X)
+  // require root the task doesn't have, so a bare invocation only reads.
+  { pattern: /^date(\s|$)/, reason: "Read clock" },
+  { pattern: /^whoami(\s|$)/, reason: "Current user" },
+  { pattern: /^id(\s|$)/, reason: "User/group ids" },
+  { pattern: /^uname(\s|$)/, reason: "Kernel/arch info" },
+  { pattern: /^du(\s|$)/, reason: "Disk usage (read-only)" },
+  { pattern: /^df(\s|$)/, reason: "Filesystem usage (read-only)" },
+  { pattern: /^which\s/, reason: "Locate executable (read-only)" },
+  { pattern: /^type\s/, reason: "Resolve command (read-only)" },
+  // No-ops / control-flow helpers.
+  { pattern: /^sleep\s/, reason: "Delay (no I/O)" },
+  { pattern: /^(true|false)(\s|$)/, reason: "No-op" },
 ];
 
 // =========================================================================
@@ -202,6 +257,14 @@ export const REVIEW_BASH_PATTERNS: PatternRule[] = [
   // Process execution
   { pattern: /\bchmod\s+\+x/, reason: "Make file executable" },
   { pattern: /\.\/\S+\.sh/, reason: "Execute shell script" },
+
+  // `find` action flags turn the allow-listed `^find` into a deletion /
+  // arbitrary-exec primitive. REVIEW is checked before ALLOW, so these
+  // route find-with-actions to the judge while plain `find` stays allowed.
+  // (`find -exec rm -rf` is already DENY'd via the rm scan; this also
+  // catches `find -delete` and `find -exec <anything>`.)
+  { pattern: /\bfind\b.*\s-delete\b/, reason: "find -delete (mass deletion — judge intent)" },
+  { pattern: /\bfind\b.*\s-exec(dir)?\b/, reason: "find -exec (runs arbitrary command)" },
 ];
 
 // =========================================================================
