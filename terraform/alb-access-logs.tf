@@ -21,7 +21,7 @@ resource "aws_s3_bucket" "alb_logs" {
 
   tags = {
     Name    = "${local.name_prefix}-alb-logs"
-    Purpose = "ALB access logs (source-IP forensics)"
+    Purpose = "ALB access logs - source-IP forensics"
   }
 }
 
