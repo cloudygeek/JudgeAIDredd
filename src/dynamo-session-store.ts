@@ -183,6 +183,7 @@ export class DynamoSessionStore implements SessionStore {
       lockedHijacked: false,
       ownerSub: null,
       ownerEmail: null,
+      clientIp: null,
       activeIntents: [],
       intentHistory: [],
       activeIntentIds: [],
@@ -503,6 +504,7 @@ export class DynamoSessionStore implements SessionStore {
       lockedHijacked: meta?.lockedHijacked ?? false,
       ownerSub: meta?.ownerSub ?? null,
       ownerEmail: meta?.ownerEmail ?? null,
+      clientIp: meta?.clientIp ?? null,
       // Intent stack + turn-state markers. Three input shapes are
       // possible during the per-row migration window:
       //
@@ -653,6 +655,26 @@ export class DynamoSessionStore implements SessionStore {
       ownerSub: meta?.ownerSub ?? null,
       ownerEmail: meta?.ownerEmail ?? null,
     };
+  }
+
+  async setClientIp(sessionId: string, ip: string | null): Promise<void> {
+    if (!ip) return;
+    const meta = await this.getMeta(sessionId);
+    // First writer wins — keep the session-origin IP. The per-request
+    // trail is in the access log; we don't churn a META write per prompt.
+    if (meta?.clientIp) return;
+    if (!meta) {
+      await this.putMeta(sessionId, {
+        sessionId,
+        clientIp: ip,
+        startedAt: new Date().toISOString(),
+        currentTurn: 0,
+        hijackStrikes: 0,
+        lockedHijacked: false,
+      });
+    } else {
+      await this.updateMeta(sessionId, { clientIp: ip });
+    }
   }
 
   async recordClaudeMdScan(sessionId: string, scan: ClaudeMdScanResult): Promise<void> {

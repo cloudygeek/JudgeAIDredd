@@ -32,6 +32,7 @@ import {
   flushLogs,
   AUTH_MODE,
   authenticateHookRequest,
+  getClientIp,
   type TrustMode,
 } from "./server-core.js";
 import { CLERK_PUBLISHABLE_KEY, isAdminEmail } from "./clerk-auth.js";
@@ -60,8 +61,21 @@ import { handleScreen } from "./handlers/screen.js";
 // =========================================================================
 // Router
 // =========================================================================
+// Health/status endpoints the ALB and operators poll constantly — kept
+// out of the access log so CloudWatch isn't drowned in /health noise
+// (the target-group health check hits /health every 15s).
+const ACCESS_LOG_SKIP = new Set(["/health", "/api/health", "/", "/favicon.ico"]);
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
+
+  // Access log: record the ALB-observed client IP for every hot-path
+  // request. The durable session↔IP join is stamped onto Dynamo META at
+  // /intent (see handlers/intent.ts); this line gives the full per-request
+  // trail (any IP change mid-session shows up here, not in META).
+  if (!ACCESS_LOG_SKIP.has(url.pathname)) {
+    console.log(`  [REQ] ${getClientIp(req) ?? "?"} ${req.method} ${url.pathname}`);
+  }
 
   try {
     // GET / — tiny status landing page. The hook container has no

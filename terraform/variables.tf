@@ -263,12 +263,42 @@ variable "enable_container_insights" {
   default     = false
 }
 
+variable "alb_access_logs_retention_days" {
+  description = "Lifecycle expiry (days) for ALB access logs in S3. Access logs are higher-volume than the verdict log lines, so this defaults shorter than log_retention_days (CloudWatch, 180d). Bump if you need a longer source-IP / request forensic window."
+  type        = number
+  default     = 90
+}
+
+// Regional ELB service account that delivers ALB access logs to S3.
+// Required in the bucket policy for regions launched before August 2022
+// (which includes eu-west-1). Newer regions use the
+// logdelivery.elasticloadbalancing.amazonaws.com service principal instead,
+// which the bucket policy also grants. Source:
+// https://docs.aws.amazon.com/elasticloadbalancing/latest/application/enable-access-logging.html
+variable "elb_account_id_override" {
+  description = "Override the regional ELB log-delivery account ID. Leave empty to use the built-in per-region map (covers eu-west-1 / eu-west-2 / us-east-1)."
+  type        = string
+  default     = ""
+}
+
 // ===========================================================================
 // Locals derived from variables
 // ===========================================================================
 locals {
   tables_region = coalesce(var.tables_region, var.primary_region)
   name_prefix   = "${var.project}-${var.environment}"
+
+  // Regional ELB log-delivery account IDs (pre-Aug-2022 regions). Used in
+  // the ALB access-log bucket policy. eu-west-1 is the prod default.
+  elb_account_ids = {
+    "eu-west-1" = "156460612806"
+    "eu-west-2" = "652711504416"
+    "us-east-1" = "127311923021"
+  }
+  // Nullable: an un-mapped region with no override yields null, which
+  // drops the regional-account statement and relies on the service
+  // principal alone (correct for post-Aug-2022 regions).
+  elb_account_id = var.elb_account_id_override != "" ? var.elb_account_id_override : lookup(local.elb_account_ids, var.primary_region, null)
 
   // Public subnets the ALB uses when internet-facing: the existing ones
   // plus the one we add (for the second AZ ALB needs).

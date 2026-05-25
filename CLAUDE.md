@@ -284,18 +284,32 @@ The container runtime (Fargate task definition / ECS service / etc.) and its IAM
 
 ## Infrastructure
 
-What this repo owns, in `terraform/`:
+This repo owns the **full prod stack** in `terraform/` (OpenTofu, S3 backend, account `110745800154` / eu-west-1). A fresh `tofu apply` stands up everything behind `dredd-hook.acta.io` / `dredd.acta.io`:
 
 | File | Resource |
 |---|---|
-| `terraform/jaid-sessions.tf` | `jaid-sessions` DynamoDB table — per-session state, 30-day TTL, point-in-time recovery, KMS-SSE |
-| `terraform/jaid-api-keys.tf` | `jaid-api-keys` DynamoDB table — SHA-256 hashed API keys, 90-day TTL on revoked rows |
-| `terraform/iam.tf` | IAM policy document for the runtime task role — minimum permissions to read/write the two tables + use the SSE KMS key |
-| `terraform/variables.tf` / `versions.tf` | Provider pin and the `sse_kms_key_arn` input |
+| `terraform/vpc.tf` | VPC wiring — the extra public subnet the ALB needs for a 2nd AZ |
+| `terraform/security-groups.tf` | ALB SG (443/80 from internet) + task SG (3000 from ALB only) |
+| `terraform/alb.tf` | Application Load Balancer, HTTPS listener, host-based routing to the hook / dashboard target groups (hook TG has `lb_cookie` stickiness) |
+| `terraform/alb-access-logs.tf` | S3 bucket + delivery policy for ALB access logs (per-request client-IP forensics; AES256-only, lifecycle expiry via `alb_access_logs_retention_days`) |
+| `terraform/acm.tf` / `terraform/dns.tf` | ACM cert (DNS-validated) + Route53 A-aliases to the ALB |
+| `terraform/ecr.tf` | ECR repos for the hook + dashboard images |
+| `terraform/ecs-cluster.tf` / `ecs-hook.tf` / `ecs-dashboard.tf` | Fargate cluster + the two services/task-defs |
+| `terraform/secrets.tf` | Secrets Manager entries (Clerk keys) injected into tasks |
+| `terraform/logs.tf` | CloudWatch log groups (retention `log_retention_days`, default 180) |
+| `terraform/iam.tf` | Task-exec + per-role task IAM (Dynamo, Bedrock, Secrets, SSE KMS) |
+| `terraform/jaid-sessions.tf` / `jaid-api-keys.tf` / `jaid-approvals.tf` / `jaid-user-permissions.tf` | The four DynamoDB tables |
+| `terraform/variables.tf` / `versions.tf` / `outputs.tf` | Inputs (incl. `sse_kms_key_arn`), provider pin, outputs |
 
-Both tables were originally created manually in the AWS console; the Terraform is a documentation snapshot of their current shape and can be imported into state if you want to move to full IaC ownership (see `terraform/README.md`). The SSE KMS key is referenced by ARN only — it is managed externally.
+**Deploys are CLI-owned, not terraform-owned.** The documented workflow (build image → push to ECR → `aws ecs update-service --force-new-deployment`) registers new task-def revisions and repoints the service outside terraform. So both ECS services set `lifecycle { ignore_changes = [task_definition, desired_count] }` — terraform defines the infra but the CLI is the source of truth for the running revision. **Do not** remove that ignore unless you intend terraform to own deploys (it would otherwise revert the live service to whatever revision is in state on the next apply). Bump `image_tag` + apply only if you deliberately want a terraform-driven deploy.
 
-**Out of scope for this repo:** ECR repositories, the runtime container platform (Fargate / ECS / EKS), ALB / target groups, DNS, EFS volumes, and any CI/CD pipeline that builds the images. Those belong to whichever platform hosts the running containers.
+The DynamoDB tables and SSE KMS key were originally created manually; the Terraform is import-compatible with their current shape (see `terraform/README.md`). The SSE KMS key is referenced by ARN only — managed externally.
+
+**Out of scope:** the CI/CD pipeline that builds the images, and the EFS/persistent-volume wiring if you attach one for `$DATA_DIR`.
+
+### Client-IP capture & ALB access logs
+
+The Fargate tasks sit behind the ALB, so the only IP a task sees is the ALB-appended trailing `X-Forwarded-For` hop. `getClientIp()` in `src/server-core.ts` reads that **rightmost** hop (the leftmost is client-spoofable; the task SG only accepts ALB traffic, so the trailing hop is the trustworthy one — relies on the ALB's default XFF *append* mode). Every hot-path request logs a `[REQ] <ip> <method> <path>` access line (health/status endpoints excluded), and `/intent` stamps the IP onto the session's Dynamo META (`clientIp`, first-write-wins) for a durable session↔IP join surfaced in the session-log shape. Independently, `alb-access-logs.tf` enables ALB access logs to S3 for a request-level record that doesn't depend on the app.
 
 ## Trust modes — decision semantics on `permissionDecision`
 

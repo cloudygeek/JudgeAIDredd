@@ -117,6 +117,7 @@ export class CachedSessionStore implements SessionStore {
       lockedHijacked: false,
       ownerSub: null,
       ownerEmail: null,
+      clientIp: null,
       activeIntents: [],
       intentHistory: [],
       activeIntentIds: [],
@@ -185,6 +186,13 @@ export class CachedSessionStore implements SessionStore {
   ): Promise<{ ownerSub: string | null; ownerEmail: string | null }> {
     const s = await this.getOrLoad(sessionId);
     return { ownerSub: s.ownerSub, ownerEmail: s.ownerEmail };
+  }
+
+  async setClientIp(sessionId: string, ip: string | null): Promise<void> {
+    await this.backend.setClientIp(sessionId, ip);
+    if (!ip) return;
+    const s = await this.getOrLoad(sessionId);
+    if (!s.clientIp) s.clientIp = ip;
   }
 
   async recordClaudeMdScan(sessionId: string, scan: ClaudeMdScanResult): Promise<void> {

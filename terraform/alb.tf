@@ -11,9 +11,25 @@ resource "aws_lb" "main" {
 
   subnets = local.alb_subnet_ids
 
+  // Per-request access logs (client IP, request line, latencies, status)
+  // delivered to S3. See alb-access-logs.tf for the bucket + delivery
+  // policy. The default X-Forwarded-For *append* mode is left in place —
+  // src/server-core.ts getClientIp relies on the trailing (ALB-appended)
+  // hop being trustworthy; don't switch to `preserve`/`remove` without
+  // revisiting that.
+  access_logs {
+    bucket  = aws_s3_bucket.alb_logs.bucket
+    prefix  = local.alb_logs_prefix
+    enabled = true
+  }
+
   // Deletion protection off so `terraform destroy` works for non-prod.
   // Flip to true for shared prod stacks.
   enable_deletion_protection = false
+
+  // The bucket policy must exist before the ALB tries its delivery
+  // preflight, or `tofu apply` fails with "Access Denied for bucket".
+  depends_on = [aws_s3_bucket_policy.alb_logs]
 }
 
 resource "aws_lb_target_group" "hook" {

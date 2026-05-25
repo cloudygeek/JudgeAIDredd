@@ -94,6 +94,12 @@ export interface SessionStore {
   ): Promise<void>;
   getSessionOwner(sessionId: string): Promise<{ ownerSub: string | null; ownerEmail: string | null }>;
 
+  /** Stamp the ALB-observed client IP onto the session. Called from
+   *  /intent. Idempotent — first writer wins (matching setSessionOwner),
+   *  so we keep the session-origin IP; the per-request trail is in the
+   *  access log. No-op when ip is null. */
+  setClientIp(sessionId: string, ip: string | null): Promise<void>;
+
   recordClaudeMdScan(sessionId: string, scan: ClaudeMdScanResult): Promise<void>;
   getClaudeMdScan(sessionId: string): Promise<ClaudeMdScanResult | null>;
 

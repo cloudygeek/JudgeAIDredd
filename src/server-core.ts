@@ -933,6 +933,33 @@ export function resolvePublicOrigin(req: IncomingMessage): string {
   return `${proto}://${host}`;
 }
 
+/**
+ * Best-effort client IP, as observed by the ALB.
+ *
+ * Our ALB runs in the default `X-Forwarded-For` *append* mode: it appends
+ * the immediate client's IP to whatever XFF header already arrived. A
+ * malicious client can prepend spoofed hops, so the LEFTMOST value is
+ * attacker-controlled and untrusted — the RIGHTMOST (last) entry is the
+ * one the ALB itself appended, and is the only trustworthy hop given our
+ * single-ALB topology (the task security group only accepts traffic from
+ * the ALB, so nothing else can inject the trailing hop). Falls back to the
+ * raw socket address for direct / local-dev connections with no XFF.
+ *
+ * NOTE: if a CDN or second proxy is ever placed in front of the ALB, this
+ * must change — the trustworthy client hop would no longer be the last
+ * entry. Revisit alongside any `routing.http.xff_header_processing.mode`
+ * change on the ALB (see terraform/alb.tf).
+ */
+export function getClientIp(req: IncomingMessage): string | null {
+  const xff = req.headers["x-forwarded-for"];
+  const raw = Array.isArray(xff) ? xff.join(",") : xff;
+  if (raw) {
+    const hops = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (hops.length > 0) return hops[hops.length - 1];
+  }
+  return req.socket?.remoteAddress ?? null;
+}
+
 // ============================================================================
 // Transcript backfill — extracted to ./transcript-backfill.ts
 // Re-exported for backwards compatibility with existing import sites,
@@ -1035,6 +1062,7 @@ export async function buildSessionLogShape(sessionId: string): Promise<Record<st
     originalTask: state.originalIntent?.prompt ?? null,
     currentTask,
     summary,
+    clientIp: state.clientIp ?? null,
     hijackStrikes: state.hijackStrikes,
     lockedHijacked: state.lockedHijacked,
     toolHistory: state.toolHistory,

@@ -125,6 +125,7 @@ export class InMemorySessionStore implements SessionStore {
         lockedHijacked: false,
         ownerSub: null,
         ownerEmail: null,
+        clientIp: null,
         activeIntents: [],
         intentHistory: [],
         activeIntentIds: [],
@@ -157,6 +158,15 @@ export class InMemorySessionStore implements SessionStore {
   ): Promise<{ ownerSub: string | null; ownerEmail: string | null }> {
     const s = this.sessions.get(sessionId);
     return { ownerSub: s?.ownerSub ?? null, ownerEmail: s?.ownerEmail ?? null };
+  }
+
+  async setClientIp(sessionId: string, ip: string | null): Promise<void> {
+    if (!ip) return;
+    const session = this.getSession(sessionId);
+    // First writer wins — keep the session-origin IP. The per-request
+    // trail is captured in the access log, not here.
+    if (session.clientIp) return;
+    session.clientIp = ip;
   }
 
   /**

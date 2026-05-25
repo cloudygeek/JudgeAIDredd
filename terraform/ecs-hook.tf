@@ -88,10 +88,20 @@ resource "aws_ecs_service" "hook" {
   // check counts. Cold-start of Node + Bedrock preflight is ~10-20s.
   health_check_grace_period_seconds = 60
 
-  // Don't churn the task def revision on no-op image tag updates.
-  // (Image push to the same tag does not change the task def ARN.)
+  // Deploys happen out-of-band via the CLI workflow documented in
+  // CLAUDE.md (build image → push to ECR → `aws ecs update-service
+  // --force-new-deployment`), which registers new task-def revisions
+  // and points the service at them without terraform. So terraform must
+  // NOT manage the live task_definition pointer — otherwise every apply
+  // tries to revert the service to whatever revision is in state (e.g.
+  // rolling prod's Clerk-secrets revision :5 back to :4). Bump image_tag
+  // + apply only if you want terraform to own a deploy; otherwise the
+  // CLI is the source of truth for the running revision.
   lifecycle {
-    ignore_changes = [desired_count] // honour autoscaling if you add it later
+    ignore_changes = [
+      desired_count,   // honour autoscaling if you add it later
+      task_definition, // CLI / CI owns the running revision (see above)
+    ]
   }
 
   depends_on = [aws_lb_listener_rule.hook]

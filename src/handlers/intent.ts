@@ -26,6 +26,7 @@ import {
   safeServerReadablePath,
   authenticateHookRequest,
   authStageForFeed,
+  getClientIp,
   backfillFromTranscript,
   backfillFromSummary,
   extractLastUserAndPriorAssistant,
@@ -91,6 +92,16 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   // calling more than once with the same key is idempotent.
   if (identity.keyValid && identity.ownerSub) {
     await tracker.setSessionOwner(session_id, identity.ownerSub, identity.ownerEmail);
+  }
+
+  // Stamp the ALB-observed client IP onto the session (durable session↔IP
+  // join, first-write-wins) and log it with the session prefix so the
+  // access-log [REQ] line correlates to a session id. The per-request IP
+  // trail is in the [REQ] lines; this is the session-origin record.
+  const clientIp = getClientIp(req);
+  if (clientIp) {
+    await tracker.setClientIp(session_id, clientIp);
+    console.log(`  [${session_id.substring(0, 8)}] [CLIENT-IP] ${clientIp}`);
   }
 
   if (cwd) {

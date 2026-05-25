@@ -275,6 +275,13 @@ export interface SessionState {
   /** Email of the API key owner (display only). */
   ownerEmail: string | null;
   /**
+   * Client IP the ALB observed for this session (the trailing, ALB-appended
+   * X-Forwarded-For hop — see getClientIp in server-core.ts). Captured at
+   * /intent, first-write-wins; the full per-request IP trail lives in the
+   * `[REQ]` access-log lines. Null for direct / local-dev connections.
+   */
+  clientIp: string | null;
+  /**
    * Interactive/learn-mode intent stack. The LLM combines queued user
    * prompts at the next generation boundary, so the judge needs to
    * authorise tool calls against ALL goals the user has stated since
