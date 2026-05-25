@@ -313,8 +313,18 @@ export function splitChainedSafely(command: string): string[] {
   replace(/"(?:[^"\\]|\\.)*"/g, "D");
   replace(/'(?:[^'\\]|\\.)*'/g, "Q");
 
-  // Now split on top-level chain operators.
-  const parts = s.split(/\s*(?:&&|\|\||;|\|)\s*/).filter(Boolean);
+  // Join shell line-continuations (`\<newline>` is a single logical line)
+  // so a wrapped command isn't shredded into meaningless fragments.
+  s = s.replace(/\\\r?\n/g, " ");
+
+  // Now split on top-level chain operators AND newlines. A bare newline is
+  // a command separator in bash, so a multi-line script must be split the
+  // same as `;`-separated commands — otherwise the whole blob is evaluated
+  // as one "command", the anchored per-command carve-outs (e.g. the /tmp
+  // rm carve-out, which matches `^rm`) never fire, and an unanchored deny
+  // pattern matches a substring anywhere in the blob. Heredoc bodies and
+  // quoted strings were masked above, so their internal newlines are safe.
+  const parts = s.split(/\s*(?:&&|\|\||;|\|)\s*|[\r\n]+/).filter(Boolean);
 
   // Re-inject placeholders. Placeholders are unique and never overlap
   // with user content (contain NUL bytes), so a plain replace is safe.

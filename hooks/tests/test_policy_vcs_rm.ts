@@ -55,6 +55,25 @@ function main() {
   section("Lookbehind doesn't over-match similar words");
   notDeny("confirm with -r-ish arg (not rm)", "confirm --recursive thing");
 
+  // Surfaced 2026-05-25: a multi-line script (newline-separated commands)
+  // was NOT split by splitChainedSafely, so `rm -rf /tmp/...` on its own
+  // line was evaluated inside the whole blob — the anchored /tmp carve-out
+  // (^rm) couldn't fire, but the unanchored deny pattern matched. Newlines
+  // are command separators in bash; the splitter must treat them as such.
+  section("Newline-separated commands are split (per-line carve-outs apply)");
+  notDeny(
+    "multiline: rm -rf /tmp/a /tmp/b among other lines",
+    'echo "stage"\nrm -rf /tmp/dredd-rezip-hook /tmp/dredd-rezip-dash\nmkdir -p /tmp/a',
+  );
+  isDeny(
+    "multiline: real destructive rm on its own line still denies",
+    'echo hi\nrm -rf /Users/adrian/project\necho done',
+  );
+  notDeny(
+    "line-continuation is joined, not shredded into a bare rm",
+    "echo start\nrm -rf /tmp/scratch \\\n  /tmp/other",
+  );
+
   console.log(`\n  ${PASS} passed, ${FAIL} failed`);
   process.exit(FAIL === 0 ? 0 : 1);
 }
