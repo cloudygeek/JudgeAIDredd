@@ -98,9 +98,17 @@ export const ALLOWED_BASH_PATTERNS: PatternRule[] = [
 // DENY LIST — always blocked, destructive or dangerous
 // =========================================================================
 export const DENIED_BASH_PATTERNS: PatternRule[] = [
-  // Destructive filesystem operations
-  { pattern: /rm\s+(-[a-zA-Z]*f|-[a-zA-Z]*r|--force|--recursive)/, reason: "Destructive rm with force/recursive flags" },
-  { pattern: /rm\s+-rf/, reason: "rm -rf" },
+  // Destructive filesystem operations.
+  //
+  // NOTE: `git rm` / `svn rm` / `hg rm` etc. (version-control removals,
+  // which are staged and recoverable) are neutralised upstream in
+  // `tool-policy.ts:sanitizeForMatching` BEFORE these patterns run — it
+  // rewrites the `rm` subcommand token so the substring "rm -r" inside
+  // "git rm -r" can't trip this hard deny. Confirmed false positive on
+  // sessions 8eaf2d7f / 654fa809 (2026-05-20 + 05-23). Keep these
+  // patterns simple; the VCS carve-out lives in one place upstream.
+  { pattern: /\brm\s+(-[a-zA-Z]*f|-[a-zA-Z]*r|--force|--recursive)/, reason: "Destructive rm with force/recursive flags" },
+  { pattern: /\brm\s+-rf/, reason: "rm -rf" },
   { pattern: /rmdir\s/, reason: "Remove directory" },
   { pattern: /mkfs/, reason: "Filesystem format" },
   { pattern: /dd\s+if=/, reason: "Raw disk write" },

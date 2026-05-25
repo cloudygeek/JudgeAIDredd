@@ -201,9 +201,25 @@ function isGitSubcommand(command: string, subcommands: readonly string[]): boole
  * dangerous content.
  */
 function sanitizeForMatching(command: string): string {
-  if (!isGitSubcommand(command, ["commit", "tag"])) return command;
+  // VCS removals first: `git rm`, `svn rm`, `hg rm`, `jj rm`, `bzr rm`
+  // are version-control operations — the removal is staged and fully
+  // recoverable via the VCS, not the destructive filesystem `rm`. Rewrite
+  // the `rm` subcommand token to a placeholder so the destructive-rm deny
+  // patterns in policy-patterns.ts can't match the "rm -r" substring.
+  // Handles intervening global flags (`git -C /path rm -r`, `git -c k=v
+  // rm …`). Confirmed false positive on sessions 8eaf2d7f / 654fa809.
+  const vcsNeutralised = command.replace(
+    // VCS verb, then any run of global flags — including git's
+    // value-taking globals `-C <path>` / `-c <key=val>` (space-separated
+    // value), `=`-fused long opts, and boolean short/long flags — then
+    // the `rm` subcommand.
+    /\b(git|svn|hg|jj|bzr)((?:\s+-[Cc]\s+\S+|\s+-[A-Za-z][\w-]*(?:=\S+)?|\s+--[\w-]+(?:=\S+)?)*)\s+rm\b/g,
+    "$1$2 vcs-removal",
+  );
 
-  let s = command;
+  if (!isGitSubcommand(vcsNeutralised, ["commit", "tag"])) return vcsNeutralised;
+
+  let s = vcsNeutralised;
   // -m "..." / -m '...' — quoted message arg.
   s = s.replace(/\s-m\s+"(?:[^"\\]|\\.)*"/g, ' -m "<msg>"');
   s = s.replace(/\s-m\s+'(?:[^'\\]|\\.)*'/g, " -m '<msg>'");
