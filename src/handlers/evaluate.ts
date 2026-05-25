@@ -29,6 +29,7 @@ import {
   USER_PERMISSIONS_ENFORCED,
   PATTERN_LEARNING_ENABLED,
   PATTERN_LEARNING_HARD,
+  CREDENTIAL_CONSENT_ENABLED,
   type TrustMode,
 } from "../server-core.js";
 import {
@@ -36,9 +37,7 @@ import {
   awaitPendingClassification,
 } from "../intent-classifier.js";
 import {
-  computeFingerprint,
-  hashFingerprint,
-  fingerprintJson,
+  computeApprovalFingerprint,
 } from "../approval-fingerprint.js";
 import {
   recordPendingApproval,
@@ -304,41 +303,51 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const approvalCheck = async (): Promise<{ summary: string } | null> => {
     if (!projectRootForApproval || !ownerForApproval.ownerSub) return null;
     if (mode !== "interactive") return null; // only the consent mode uses approvals
-    const fp = computeFingerprint(tool_name, tool_input ?? {});
+    const fp = computeApprovalFingerprint(tool_name, tool_input ?? {}, {
+      credentialConsent: CREDENTIAL_CONSENT_ENABLED,
+    });
     if (!fp) return null;
-    const hash = hashFingerprint(fp);
     const scope = {
       ownerSub: ownerForApproval.ownerSub,
       projectRoot: projectRootForApproval,
     };
-    const record = await approvals.lookup(scope, hash);
+    const record = await approvals.lookup(scope, fp.hash);
     if (!record) return null;
 
     // Intent-drift backstop: snapshot was taken when the user
     // consented; reject the approval if the session's current intent
     // has drifted too far from that moment. Cosine distance > 0.4 ≈
     // semantically different goal — re-prompt the user.
-    const currentEmbedding =
-      activeIntents && activeIntents.length > 0
-        ? activeIntents[activeIntents.length - 1].embedding
-        : null;
-    if (
-      currentEmbedding &&
-      currentEmbedding.length > 0 &&
-      record.goalEmbedding.length > 0
-    ) {
-      const sim = cosineSimilarity(currentEmbedding, record.goalEmbedding);
-      const distance = 1 - sim;
-      if (distance > APPROVAL_INTENT_DRIFT_THRESHOLD) {
-        console.log(
-          `  [${session_id.substring(0, 8)}] [APPRV] match for "${record.summary}" rejected — intent drift ${distance.toFixed(3)} > ${APPROVAL_INTENT_DRIFT_THRESHOLD}`,
-        );
-        return null;
+    //
+    // SKIPPED for exact credential→host pairs: the (credential-source,
+    // exact-host) pair IS the consent boundary the user accepted, and
+    // terse follow-up turns ("go", "do b") embed far from the original
+    // consent intent — so the drift check would re-ask on nearly every
+    // follow-up and defeat the feature. A hijack would target a
+    // DIFFERENT host → a different pair → re-ask anyway.
+    if (!fp.isCredentialPair) {
+      const currentEmbedding =
+        activeIntents && activeIntents.length > 0
+          ? activeIntents[activeIntents.length - 1].embedding
+          : null;
+      if (
+        currentEmbedding &&
+        currentEmbedding.length > 0 &&
+        record.goalEmbedding.length > 0
+      ) {
+        const sim = cosineSimilarity(currentEmbedding, record.goalEmbedding);
+        const distance = 1 - sim;
+        if (distance > APPROVAL_INTENT_DRIFT_THRESHOLD) {
+          console.log(
+            `  [${session_id.substring(0, 8)}] [APPRV] match for "${record.summary}" rejected — intent drift ${distance.toFixed(3)} > ${APPROVAL_INTENT_DRIFT_THRESHOLD}`,
+          );
+          return null;
+        }
       }
     }
 
     // Fire-and-forget touch: keeps the TTL fresh on every hit.
-    approvals.touchLastUsed(scope, hash).catch(() => {});
+    approvals.touchLastUsed(scope, fp.hash).catch(() => {});
     return { summary: record.summary };
   };
 
@@ -503,7 +512,9 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       // durable approval. If the user denies the prompt, no PostToolUse
       // arrives and the candidate expires after 60s — we never learn
       // from a denied prompt.
-      const fp = computeFingerprint(tool_name, tool_input ?? {});
+      const fp = computeApprovalFingerprint(tool_name, tool_input ?? {}, {
+        credentialConsent: CREDENTIAL_CONSENT_ENABLED,
+      });
       let learningNote = "";
       if (fp && tool_use_id) {
         // Snapshot the freshest active-intent embedding as the
@@ -518,8 +529,8 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
         const goalEmbedding = freshest?.embedding ?? [];
         recordPendingApproval(session_id, tool_use_id, {
           tool: tool_name,
-          fingerprintHash: hashFingerprint(fp),
-          fingerprintJson: fingerprintJson(fp),
+          fingerprintHash: fp.hash,
+          fingerprintJson: fp.fingerprintJson,
           summary: fp.summary,
           intentSnapshot,
           goalEmbedding,
@@ -587,15 +598,17 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       result.stage !== "pattern-trust-allow" &&
       result.stage !== "approval-allow"
     ) {
-      const fp = computeFingerprint(tool_name, tool_input ?? {});
+      const fp = computeApprovalFingerprint(tool_name, tool_input ?? {}, {
+        credentialConsent: CREDENTIAL_CONSENT_ENABLED,
+      });
       if (fp) {
         const freshest = activeIntents && activeIntents.length > 0
           ? activeIntents[activeIntents.length - 1]
           : null;
         recordPendingApproval(session_id, tool_use_id, {
           tool: tool_name,
-          fingerprintHash: hashFingerprint(fp),
-          fingerprintJson: fingerprintJson(fp),
+          fingerprintHash: fp.hash,
+          fingerprintJson: fp.fingerprintJson,
           summary: fp.summary,
           intentSnapshot: freshest?.prompt ?? "",
           goalEmbedding: freshest?.embedding ?? [],

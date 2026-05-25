@@ -662,6 +662,15 @@ console.log(
     : "OFF (rollout)"}`,
 );
 
+// Credential-consent: when on (default), the approval layer keys on the
+// (credential-source, exact-host) pair from credential-flow.ts, and an
+// exact-pair match skips the intent-drift backstop (the pair IS the
+// consent boundary). Off → legacy {verb,host,auth_hash} fingerprint +
+// drift backstop, i.e. pre-feature behaviour.
+export const CREDENTIAL_CONSENT_ENABLED =
+  (process.env.DREDD_CREDENTIAL_CONSENT_ENABLED ?? "true").toLowerCase() === "true";
+console.log(`  [CONSENT] Credential→host consent: ${CREDENTIAL_CONSENT_ENABLED ? "ON" : "OFF"}`);
+
 // Periodically purge expired pending-approval candidates (the 60s
 // window between an "ask" and the user's accept/deny). Cheap, keeps
 // the in-process map from growing unbounded under abandoned prompts.

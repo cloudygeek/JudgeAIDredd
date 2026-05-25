@@ -545,6 +545,11 @@ function redactApproval(record: ApprovalRecord) {
   return {
     fingerprintHash: record.fingerprintHash,
     summary: record.summary,
+    // Structured shape so the dashboard can render Target + Credential
+    // as first-class columns. Safe to expose: contains only host +
+    // credential SOURCES (file path / cookie jar / basic user / value
+    // hash) — never raw secret bytes (same safety as `summary`).
+    fingerprintJson: record.fingerprintJson,
     tool: record.tool,
     ownerSub: record.ownerSub,
     ownerEmail: record.ownerEmail,

@@ -17,6 +17,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { fingerprintNetwork, CREDENTIAL_FP_VERSION } from "./credential-flow.js";
 
 export interface Fingerprint {
   tool: string;
@@ -48,6 +49,58 @@ export function hashFingerprint(fp: Fingerprint): string {
 
 export function fingerprintJson(fp: Fingerprint): string {
   return stableStringify({ tool: fp.tool, shape: fp.shape });
+}
+
+/** Legacy curl/file/MCP fingerprint shape (`computeFingerprint`). */
+export const LEGACY_FP_VERSION = 1;
+
+/** What the approval layer (pending creation, lookup, record) keys on. */
+export interface ApprovalFingerprint {
+  hash: string;
+  summary: string;
+  fingerprintJson: string;
+  version: number;
+  /** True when this is a `credential-flow` (principal, exact-host) pair.
+   *  The exact-pair IS the consent boundary, so a match skips the
+   *  intent-drift backstop (see evaluate.ts approvalCheck). */
+  isCredentialPair: boolean;
+}
+
+/** Version-aware approval fingerprint.
+ *
+ *  When credential-consent is enabled and the tool is a Bash command
+ *  that resolves to a network call, key on the `(credential-source,
+ *  exact-host)` pair from `credential-flow`. Otherwise fall back to the
+ *  legacy `computeFingerprint` shape (non-network Bash, Edit/Write,
+ *  WebFetch, MCP) — behaviour-identical to before the feature.
+ *
+ *  Returns null only when neither path can produce a fingerprint. */
+export function computeApprovalFingerprint(
+  tool: string,
+  input: Record<string, unknown>,
+  opts: { credentialConsent: boolean },
+): ApprovalFingerprint | null {
+  if (opts.credentialConsent && tool === "Bash") {
+    const nf = fingerprintNetwork(String(input.command ?? ""));
+    if (nf) {
+      return {
+        hash: nf.hash,
+        summary: nf.summary,
+        fingerprintJson: nf.fingerprintJson,
+        version: CREDENTIAL_FP_VERSION,
+        isCredentialPair: true,
+      };
+    }
+  }
+  const fp = computeFingerprint(tool, input);
+  if (!fp) return null;
+  return {
+    hash: hashFingerprint(fp),
+    summary: fp.summary,
+    fingerprintJson: fingerprintJson(fp),
+    version: LEGACY_FP_VERSION,
+    isCredentialPair: false,
+  };
 }
 
 // ---- Bash fingerprinter ---------------------------------------------------
