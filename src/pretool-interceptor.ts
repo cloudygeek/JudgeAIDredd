@@ -258,7 +258,7 @@ export class PreToolInterceptor {
     }
   }
 
-  async registerGoal(sessionId: string, task: string, images?: ImageBlock[]): Promise<void> {
+  async registerGoal(sessionId: string, task: string, images?: ImageBlock[], bedrockAuth?: import("./byot/types.js").BedrockAuth): Promise<void> {
     const s = this.getSession(sessionId);
     s.originalTask = task;
     s.intentImages = images?.length ? images : undefined;
@@ -266,7 +266,7 @@ export class PreToolInterceptor {
     // remember the boundary so recent-history for the judge is scoped to
     // just the current task.
     s.goalStartIndex = s.toolLog.length;
-    await s.driftDetector.registerGoal(task);
+    await s.driftDetector.registerGoal(task, bedrockAuth);
   }
 
   getCurrentGoal(sessionId: string): string {
