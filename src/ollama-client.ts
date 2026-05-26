@@ -92,13 +92,15 @@ export function isBedrockModel(model: string): boolean {
 
 export async function embedAny(
   texts: string | string[],
-  model: string
+  model: string,
+  auth?: import("./byot/types.js").BedrockAuth,
 ): Promise<number[][]> {
   if (isBedrockModel(model)) {
     const { bedrockEmbed } = await import("./bedrock-client.js");
     const arr = Array.isArray(texts) ? texts : [texts];
-    return bedrockEmbed(arr, model);
+    return bedrockEmbed(arr, model, undefined, auth);
   }
+  // Ollama path is local — BYOT does not apply.
   return embed(texts, model);
 }
 
