@@ -192,40 +192,83 @@ async function main() {
 
   const allResults: TestResult[] = [];
 
+  // RUNNER_CONCURRENCY > 1 fans out reps as a bounded worker pool. Default 1
+  // preserves the historical strict-sequential behaviour for cells that
+  // care about deterministic Bedrock TPS load. Each rep allocates its own
+  // workspace + logger + conversationHistory, so reps are independent;
+  // the only shared state is the cached Bedrock keep-alive client (now
+  // timeout-guarded) and the Bedrock account TPS quota — set this with
+  // the quota in mind. K=3 against opus-4-7 in eu-central-1 is the sweet
+  // spot for this fleet.
+  const concurrency = Math.max(
+    1,
+    parseInt(process.env.RUNNER_CONCURRENCY ?? "1", 10) || 1,
+  );
+
+  type RunSpec = {
+    scenario: (typeof scenarios)[number];
+    rep: number;
+    runIndex: number;
+  };
+  const tasks: RunSpec[] = [];
   for (const scenario of scenarios) {
     for (let rep = 0; rep < repetitions; rep++) {
-      console.log(
-        `\n>>> RUN ${allResults.length + 1}/${scenarios.length * repetitions}: ` +
-          `${scenario.id} rep ${rep + 1}/${repetitions} [${defence}]`
-      );
-
-      const logger = createLogger();
-
-      try {
-        const result = await executeScenario(scenario, {
-          model,
-          logger,
-        });
-        result.repetition = rep + 1;
-
-        // Drain in-flight PromptArmor screens before recording the
-        // result. The observer's screen calls are async; we wait
-        // for them to complete so the per-run telemetry is intact.
-        if (logger instanceof PromptArmorObserver) {
-          await logger.drain();
-          (result as TestResult & { promptarmorScreens?: unknown }).promptarmorScreens =
-            logger.getScreens();
-          (result as TestResult & { promptarmorStats?: unknown }).promptarmorStats =
-            logger.stats;
-        }
-
-        allResults.push(result);
-      } catch (err) {
-        console.error(
-          `ERROR in ${scenario.id} rep ${rep + 1}: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
+      tasks.push({ scenario, rep, runIndex: tasks.length });
     }
+  }
+
+  if (concurrency > 1) {
+    console.log(
+      `[runner] RUNNER_CONCURRENCY=${concurrency} — running reps in a bounded pool`,
+    );
+  }
+
+  async function runOne(t: RunSpec): Promise<void> {
+    console.log(
+      `\n>>> RUN ${t.runIndex + 1}/${tasks.length}: ` +
+        `${t.scenario.id} rep ${t.rep + 1}/${repetitions} [${defence}]`,
+    );
+
+    const logger = createLogger();
+
+    try {
+      const result = await executeScenario(t.scenario, {
+        model,
+        logger,
+      });
+      result.repetition = t.rep + 1;
+
+      // Drain in-flight PromptArmor screens before recording the
+      // result. The observer's screen calls are async; we wait
+      // for them to complete so the per-run telemetry is intact.
+      if (logger instanceof PromptArmorObserver) {
+        await logger.drain();
+        (result as TestResult & { promptarmorScreens?: unknown }).promptarmorScreens =
+          logger.getScreens();
+        (result as TestResult & { promptarmorStats?: unknown }).promptarmorStats =
+          logger.stats;
+      }
+
+      allResults.push(result);
+    } catch (err) {
+      console.error(
+        `ERROR in ${t.scenario.id} rep ${t.rep + 1}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  if (concurrency === 1) {
+    for (const t of tasks) await runOne(t);
+  } else {
+    let cursor = 0;
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (true) {
+        const i = cursor++;
+        if (i >= tasks.length) return;
+        await runOne(tasks[i]);
+      }
+    });
+    await Promise.all(workers);
   }
 
   // Write results
