@@ -640,10 +640,9 @@ console.log(
 export const DYNAMO_BYOT_TABLE_NAME =
   process.env.DYNAMO_BYOT_TABLE_NAME ?? "jaid-byot";
 export const BYOT_ENABLED = (process.env.DREDD_BYOT_ENABLED ?? "false") === "true";
-/** ARN/key-id of the SSE KMS key used to envelope the tokens. Reuses the
- *  stack's existing SSE key by default (set via terraform). */
-export const BYOT_KMS_KEY_ID =
-  process.env.BYOT_KMS_KEY_ID ?? process.env.SSE_KMS_KEY_ARN ?? "";
+/** ARN/key-id of the SSE KMS key used to envelope the tokens. Set directly
+ *  from var.sse_kms_key_arn in the task def (see terraform). */
+export const BYOT_KMS_KEY_ID = process.env.BYOT_KMS_KEY_ID ?? "";
 
 // Phase 6 rollout gate. When false (default), the hook can still upload
 // snapshots and the dashboard can still surface them, but the PreToolUse

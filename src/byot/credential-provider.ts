@@ -12,7 +12,7 @@ export interface CredentialProvider {
 
 /** Used when DREDD_BYOT_ENABLED=false: every call runs on platform creds. */
 export class DefaultCredentialProvider implements CredentialProvider {
-  async resolve(): Promise<BedrockAuth> {
+  async resolve(_ownerSub?: string | null): Promise<BedrockAuth> {
     return { kind: "default" };
   }
 }

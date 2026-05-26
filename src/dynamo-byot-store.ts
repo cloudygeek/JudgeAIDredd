@@ -47,7 +47,12 @@ export class DynamoByotStore implements ByotStore {
   constructor(opts: DynamoByotStoreOptions) {
     this.tableName = opts.tableName;
     this.doc = opts.client ??
-      DynamoDBDocumentClient.from(new DynamoDBClient({ region: opts.region }));
+      DynamoDBDocumentClient.from(new DynamoDBClient({ region: opts.region }), {
+        marshallOptions: {
+          removeUndefinedValues: true,
+          convertClassInstanceToMap: false,
+        },
+      });
   }
   async get(ownerSub: string): Promise<ByotConfigRecord | null> {
     const out = await this.doc.send(new GetCommand({

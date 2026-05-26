@@ -36,6 +36,7 @@ export class KmsByotCrypto implements ByotCrypto {
       Plaintext: new TextEncoder().encode(plaintext),
       EncryptionContext: { ownerSub: ctx.ownerSub },
     }));
+    if (!out.CiphertextBlob) throw new Error("KMS Encrypt returned empty CiphertextBlob");
     return Buffer.from(out.CiphertextBlob as Uint8Array).toString("base64");
   }
   async decrypt(ciphertext: string, ctx: EncryptionContext): Promise<string> {
@@ -43,6 +44,7 @@ export class KmsByotCrypto implements ByotCrypto {
       CiphertextBlob: Buffer.from(ciphertext, "base64"),
       EncryptionContext: { ownerSub: ctx.ownerSub },
     }));
+    if (!out.Plaintext) throw new Error("KMS Decrypt returned empty Plaintext");
     return new TextDecoder().decode(out.Plaintext as Uint8Array);
   }
 }
