@@ -631,6 +631,20 @@ console.log(
       : ""),
 );
 
+// ---------------------------------------------------------------------------
+// BYOT (bring-your-own-token) configuration. jaid-byot holds one
+// KMS-encrypted Bedrock bearer token per Clerk user. DREDD_BYOT_ENABLED
+// gates the hot-path resolver only — the dashboard write path + storage
+// work regardless so the feature can soak before enforcement.
+// ---------------------------------------------------------------------------
+export const DYNAMO_BYOT_TABLE_NAME =
+  process.env.DYNAMO_BYOT_TABLE_NAME ?? "jaid-byot";
+export const BYOT_ENABLED = (process.env.DREDD_BYOT_ENABLED ?? "false") === "true";
+/** ARN/key-id of the SSE KMS key used to envelope the tokens. Reuses the
+ *  stack's existing SSE key by default (set via terraform). */
+export const BYOT_KMS_KEY_ID =
+  process.env.BYOT_KMS_KEY_ID ?? process.env.SSE_KMS_KEY_ARN ?? "";
+
 // Phase 6 rollout gate. When false (default), the hook can still upload
 // snapshots and the dashboard can still surface them, but the PreToolUse
 // pipeline does NOT consult them — user-deny short-circuit and user-allow
