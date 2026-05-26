@@ -349,6 +349,12 @@ export class DynamoSessionStore implements SessionStore {
       lockedHijacked: m.lockedHijacked ?? false,
       ownerSub: m.ownerSub ?? null,
       ownerEmail: m.ownerEmail ?? null,
+      toolCallCount: m.aggToolCalls ?? 0,
+      deniedCount: m.aggDenied ?? 0,
+      fileWriteCount: m.aggFiles ?? 0,
+      lastClassification: m.lastClassification ?? null,
+      clientIp: m.clientIp ?? null,
+      userPermissions: m.userPermissions ?? null,
     }));
   }
 
