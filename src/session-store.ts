@@ -63,7 +63,9 @@ export interface SessionSummary {
   /** Running aggregates maintained on the session META row so the
    *  dashboard list view renders without a full per-session
    *  reconstruction. Optional + default-0 for back-compat with rows
-   *  written before these counters existed. */
+   *  written before these counters existed. These are session-level
+   *  running totals — NOT the per-turn `toolCallCount`/`toolCallsDenied`
+   *  stored on METRIC# items. */
   toolCallCount?: number;
   deniedCount?: number;
   fileWriteCount?: number;

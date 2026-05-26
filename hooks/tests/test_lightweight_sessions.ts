@@ -46,9 +46,6 @@ async function main() {
   ok("lastClassification mapped", s.lastClassification === "drifting");
   ok("clientIp mapped", s.clientIp === "1.2.3.4");
   ok("userPermissions mapped", (s.userPermissions?.allow ?? []).length === 1);
-  ok("missing aggregates default to 0 / null", (() => {
-    return true; // checked in a second store below
-  })());
 
   const store2 = new DynamoSessionStore({
     tableName: "jaid-sessions", region: "eu-west-1",
@@ -107,7 +104,7 @@ async function main() {
   const classUpd = fcm.sent.find((c: any) => c.constructor.name === "UpdateCommand"
     && c.input?.Key?.sk === "META" && /SET lastClassification/.test(c.input.UpdateExpression));
   ok("recordTurnMetrics SETs lastClassification on META", !!classUpd);
-  ok("lastClassification value is the derived class", !!classUpd && typeof classUpd.input.ExpressionAttributeValues[":c"] === "string");
+  ok("lastClassification value is the derived class (0.4 -> drifting)", !!classUpd && classUpd.input.ExpressionAttributeValues[":c"] === "drifting");
 
   // --- Task 6: InMemorySessionStore.listSessions derives aggregates ---
   const { InMemorySessionStore } = await import("../../src/session-tracker.js");

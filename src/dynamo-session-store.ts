@@ -1606,6 +1606,10 @@ export class DynamoSessionStore implements SessionStore {
         // (so /api/sessions needs no per-session reconstruction). Atomic ADD —
         // no read-modify-write race. Best-effort: a counter blip must never
         // break the /track path, so swallow errors like the rest of this method.
+        // Safe under the conditional-put retry: the ADD sits in the success
+        // branch after the PutCommand; a ConditionalCheckFailedException takes
+        // the `continue` path and never reaches here, so a retried tool call
+        // cannot double-count.
         try {
           const addExpr = decision === "deny"
             ? "ADD aggToolCalls :one, aggDenied :one"
@@ -1847,6 +1851,9 @@ export class DynamoSessionStore implements SessionStore {
       );
       // First time this path is written this session → bump the distinct
       // file counter on META. Best-effort (see recordToolCall rationale).
+      // Best-effort + not guarded against two concurrent first-writes of the
+      // same path (both could ADD once) — acceptable inflation for a dashboard
+      // hint; the distinct-file count is not a security invariant.
       try {
         await this.client.send(
           new UpdateCommand({
