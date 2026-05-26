@@ -114,6 +114,16 @@ import { DynamoUserPermissionsStore } from "./dynamo-user-permissions-store.js";
 import { pruneExpiredPendingApprovals } from "./pending-approvals.js";
 import { PreToolInterceptor } from "./pretool-interceptor.js";
 import type { PromptVariant } from "./intent-judge.js";
+import { InMemoryByotStore } from "./byot-store.js";
+import { DynamoByotStore } from "./dynamo-byot-store.js";
+import { KmsByotCrypto, FakeByotCrypto } from "./byot/byot-crypto.js";
+import {
+  DefaultCredentialProvider,
+  BearerCredentialProvider,
+  type CredentialProvider,
+} from "./byot/credential-provider.js";
+import type { ByotStore } from "./byot-store.js";
+import type { ByotCrypto } from "./byot/byot-crypto.js";
 
 export type TrustMode = "interactive" | "autonomous" | "learn";
 
@@ -643,6 +653,29 @@ export const BYOT_ENABLED = (process.env.DREDD_BYOT_ENABLED ?? "false") === "tru
 /** ARN/key-id of the SSE KMS key used to envelope the tokens. Set directly
  *  from var.sse_kms_key_arn in the task def (see terraform). */
 export const BYOT_KMS_KEY_ID = process.env.BYOT_KMS_KEY_ID ?? "";
+
+// ---------------------------------------------------------------------------
+// BYOT store + crypto + credential provider. The provider is the DEFAULT
+// (platform-only) no-op unless DREDD_BYOT_ENABLED is set, so flipping the
+// flag is the single switch that turns on hot-path resolution.
+// ---------------------------------------------------------------------------
+export const byotStore: ByotStore = STORE_BACKEND === "dynamo"
+  ? new DynamoByotStore({ tableName: DYNAMO_BYOT_TABLE_NAME, region: DYNAMO_REGION })
+  : new InMemoryByotStore();
+
+export const byotCrypto: ByotCrypto = BYOT_KMS_KEY_ID
+  ? new KmsByotCrypto({ keyId: BYOT_KMS_KEY_ID, region: DYNAMO_REGION })
+  : new FakeByotCrypto();
+
+export const credentialProvider: CredentialProvider = BYOT_ENABLED
+  ? new BearerCredentialProvider({ store: byotStore, crypto: byotCrypto })
+  : new DefaultCredentialProvider();
+
+console.log(
+  `  [BYOT]  ${BYOT_ENABLED ? "ENABLED" : "disabled"} ` +
+    `(store=${STORE_BACKEND}, table=${DYNAMO_BYOT_TABLE_NAME}, ` +
+    `kms=${BYOT_KMS_KEY_ID ? "configured" : "FAKE (dev)"})`,
+);
 
 // Phase 6 rollout gate. When false (default), the hook can still upload
 // snapshots and the dashboard can still surface them, but the PreToolUse

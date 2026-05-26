@@ -30,6 +30,8 @@ import {
   PATTERN_LEARNING_ENABLED,
   PATTERN_LEARNING_HARD,
   CREDENTIAL_CONSENT_ENABLED,
+  credentialProvider,
+  byotStore,
   type TrustMode,
 } from "../server-core.js";
 import {
@@ -52,6 +54,23 @@ import {
   CLASSIFIER_EVALUATE_WAIT_MS,
   DREDD_TAG,
 } from "./_shared.js";
+
+// =========================================================================
+// BYOT runtime-fallback recording (throttled, module-scope)
+// =========================================================================
+const BYOT_FALLBACK_THROTTLE_MS = 5 * 60 * 1000;
+const lastByotFallbackAt = new Map<string, number>();
+async function recordByotFallbackThrottled(ownerSub: string, reason: string): Promise<void> {
+  const now = Date.now();
+  const last = lastByotFallbackAt.get(ownerSub) ?? 0;
+  if (now - last < BYOT_FALLBACK_THROTTLE_MS) return;
+  lastByotFallbackAt.set(ownerSub, now);
+  try {
+    await byotStore.markRuntimeFallback(ownerSub, reason, new Date().toISOString());
+  } catch (err) {
+    console.warn(`[byot] markRuntimeFallback failed for ${ownerSub.substring(0, 8)}: ${(err as Error)?.message ?? err}`);
+  }
+}
 
 // =========================================================================
 // POST /evaluate — PreToolUse
@@ -386,6 +405,10 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     }
   }
 
+  // Resolve the session owner's BYOT credential (cached; {kind:"default"}
+  // when BYOT is off or the user has no token configured).
+  const bedrockAuth = await credentialProvider.resolve(ownerForApproval.ownerSub);
+
   const result = await interceptor.evaluate(
     session_id,
     tool_name,
@@ -399,7 +422,15 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     userPermissionsForEval,
     priorApprovalsForEval,
     PATTERN_LEARNING_HARD,
+    bedrockAuth,
   );
+
+  // Spec §7: surface BYOT runtime failures on the config record so the
+  // dashboard can warn the user. Throttled in-memory to once / 5 min per
+  // owner to avoid hammering Dynamo when a token stays broken.
+  if (result.byotFallback && ownerForApproval.ownerSub) {
+    void recordByotFallbackThrottled(ownerForApproval.ownerSub, result.byotFallback.reason);
+  }
 
   await tracker.recordToolCall(
     session_id,
