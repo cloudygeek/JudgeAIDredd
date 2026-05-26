@@ -366,6 +366,7 @@
       <div class="tab" onclick="switchTab('integrate')">Integrate</div>
       <div class="tab" onclick="switchTab('keys')">API Keys</div>
       <div class="tab" onclick="switchTab('approvals')">Approvals</div>
+      <div class="tab" onclick="switchTab('byot')">BYOT</div>
     </div>
 
     <div id="tab-overview" class="tab-content active">
@@ -715,6 +716,50 @@ chmod 600 ~/.claude/dredd/api-key</code></pre>
         <button class="refresh-btn" onclick="loadLogContent()">Reload</button>
       </div>
       <pre id="log-content" style="max-height:600px;overflow-y:auto;white-space:pre-wrap;word-break:break-all"><span class="empty">Select a log file to view</span></pre>
+    </div>
+
+    <div id="tab-byot" class="tab-content">
+      <div style="max-width:620px">
+        <h2 style="margin:0 0 4px">Bring Your Own Token (Bedrock)</h2>
+        <p class="muted" style="margin:0 0 20px;font-size:13px">
+          Supply your own Amazon Bedrock API key. When configured, the judge,
+          classifier, and embedding calls for your sessions run on your AWS
+          account. The token is validated against your selected region and
+          stored encrypted — it is never shown again after saving.
+        </p>
+
+        <!-- status area: filled by renderByot() -->
+        <div id="byot-status" style="margin-bottom:20px"></div>
+
+        <!-- entry form: always shown so user can replace token -->
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px">
+          <div style="font-weight:600;font-size:14px;margin-bottom:12px">Configure token</div>
+
+          <div style="margin-bottom:12px">
+            <label style="display:block;font-size:13px;color:var(--muted);margin-bottom:4px">Bedrock API key</label>
+            <input type="password" id="byot-token" autocomplete="off"
+                   placeholder="paste your Bedrock bearer token"
+                   style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;font-family:inherit">
+          </div>
+
+          <div style="margin-bottom:16px">
+            <label style="display:block;font-size:13px;color:var(--muted);margin-bottom:4px">AWS region</label>
+            <select id="byot-region"
+                    style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;font-family:inherit;width:100%">
+              <option value="eu-west-2">eu-west-2 (London)</option>
+              <option value="eu-west-1">eu-west-1 (Ireland)</option>
+              <option value="eu-central-1">eu-central-1 (Frankfurt)</option>
+              <option value="us-east-1">us-east-1 (N. Virginia)</option>
+              <option value="us-west-2">us-west-2 (Oregon)</option>
+            </select>
+          </div>
+
+          <div style="display:flex;gap:12px;align-items:center">
+            <button class="refresh-btn" id="byot-save" onclick="saveBYOT()" style="font-size:14px">Validate &amp; save</button>
+            <span id="byot-msg" style="font-size:13px;color:var(--muted)"></span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -2288,6 +2333,7 @@ chmod 600 ~/.claude/dredd/api-key</code></pre>
       if (tab === 'logs') loadLogs();
       if (tab === 'keys') loadKeys();
       if (tab === 'approvals') loadApprovals();
+      if (tab === 'byot') loadByot();
     }
 
     // ---- API keys tab -------------------------------------------------
@@ -2496,6 +2542,109 @@ chmod 600 ~/.claude/dredd/api-key</code></pre>
         await loadApprovals();
       } catch (err) {
         alert('Revoke failed: ' + err.message);
+      }
+    }
+
+    // ---- BYOT tab --------------------------------------------------------
+    async function loadByot() {
+      await renderByot();
+    }
+
+    async function renderByot() {
+      const statusEl = document.getElementById('byot-status');
+      const msgEl = document.getElementById('byot-msg');
+      if (msgEl) msgEl.textContent = '';
+      try {
+        const r = await dreddFetch(`${API}/api/byot`);
+        if (!r.ok) {
+          statusEl.innerHTML = `<div style="color:var(--red);font-size:13px">Failed to load BYOT status (HTTP ${r.status})</div>`;
+          return;
+        }
+        const s = await r.json();
+        if (!s.configured) {
+          statusEl.innerHTML = `<div style="font-size:13px;color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px">
+            No token configured — all Bedrock calls use the platform account.
+          </div>`;
+          return;
+        }
+        const lastValidated = s.lastValidatedAt ? new Date(s.lastValidatedAt).toLocaleString() : '—';
+        const fallbackBanner = (s.status === 'runtime-fallback')
+          ? `<div style="background:rgba(210,153,34,0.12);border:1px solid var(--amber);border-radius:6px;padding:12px;margin-bottom:12px;font-size:13px">
+              <span style="color:var(--amber);font-weight:600">Warning:</span>
+              Your token recently failed (${esc(s.lastFallbackReason || 'error')} at ${esc(s.lastFallbackAt ? new Date(s.lastFallbackAt).toLocaleString() : '?')}).
+              Calls fell back to the platform account. Re-validate or replace it.
+            </div>`
+          : '';
+        const statusColor = s.status === 'active' ? 'var(--green)'
+          : (s.status === 'validation-failed' || s.status === 'error') ? 'var(--red)'
+          : s.status === 'runtime-fallback' ? 'var(--amber)'
+          : 'var(--muted)';
+        statusEl.innerHTML = `
+          ${fallbackBanner}
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:12px">
+            <table style="margin:0">
+              <tr><td style="width:140px;color:var(--muted)">Provider</td><td>${esc(s.provider ?? '—')}</td></tr>
+              <tr><td style="color:var(--muted)">Region</td><td>${esc(s.region ?? '—')}</td></tr>
+              <tr><td style="color:var(--muted)">Token</td><td class="mono">••••${esc(s.last4 ?? '')}</td></tr>
+              <tr><td style="color:var(--muted)">Status</td><td style="color:${statusColor};font-weight:600">${esc(s.status ?? '—')}</td></tr>
+              <tr><td style="color:var(--muted)">Last validated</td><td class="mono muted">${esc(lastValidated)}</td></tr>
+            </table>
+          </div>
+          <button class="refresh-btn" id="byot-remove" style="font-size:13px;border:1px solid var(--red);color:var(--red)">Remove token</button>`;
+        document.getElementById('byot-remove').addEventListener('click', async () => {
+          if (!confirm('Remove your Bedrock token? All sessions will revert to the platform account.')) return;
+          try {
+            const dr = await dreddFetch(`${API}/api/byot`, { method: 'DELETE' });
+            if (!dr.ok) {
+              alert('Remove failed: HTTP ' + dr.status);
+              return;
+            }
+            await renderByot();
+          } catch (e) {
+            alert('Remove failed: ' + e.message);
+          }
+        });
+      } catch (e) {
+        statusEl.innerHTML = `<div style="color:var(--red);font-size:13px">Failed to load BYOT status: ${esc(e.message)}</div>`;
+      }
+    }
+
+    async function saveBYOT() {
+      const tokenEl = document.getElementById('byot-token');
+      const token = tokenEl.value.trim();
+      const region = document.getElementById('byot-region').value;
+      const msgEl = document.getElementById('byot-msg');
+      const btn = document.getElementById('byot-save');
+      if (!token) {
+        msgEl.style.color = 'var(--red)';
+        msgEl.textContent = 'Paste your Bedrock bearer token first.';
+        return;
+      }
+      btn.disabled = true;
+      msgEl.style.color = 'var(--muted)';
+      msgEl.textContent = 'Validating against your region…';
+      try {
+        const r = await dreddFetch(`${API}/api/byot`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, region }),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          const detail = (data.failures || []).map(f => `${esc(f.model)} (${esc(f.api)}): ${esc(f.error)}`).join('; ');
+          msgEl.style.color = 'var(--red)';
+          msgEl.textContent = (data.error || 'Validation failed') + (detail ? ' — ' + detail : '');
+        } else {
+          tokenEl.value = '';
+          msgEl.style.color = 'var(--green)';
+          msgEl.textContent = 'Saved.';
+          await renderByot();
+        }
+      } catch (e) {
+        msgEl.style.color = 'var(--red)';
+        msgEl.textContent = 'Request failed: ' + e.message;
+      } finally {
+        btn.disabled = false;
       }
     }
 
