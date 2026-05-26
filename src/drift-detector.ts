@@ -49,8 +49,8 @@ export class DriftDetector {
    * single entry (autonomous mode and the first interactive turn).
    * Caches the goal's embedding.
    */
-  async registerGoal(task: string): Promise<void> {
-    const embeddings = await embedAny(task, this.embeddingModel);
+  async registerGoal(task: string, auth?: import("./byot/types.js").BedrockAuth): Promise<void> {
+    const embeddings = await embedAny(task, this.embeddingModel, auth);
     this.goalEmbeddings = [embeddings[0]];
     this.turnSimilarities = [];
     this.previousSimilarity = 1.0;
@@ -109,13 +109,13 @@ export class DriftDetector {
    * advancing a queued sub-goal isn't flagged as drifted just because it
    * diverges from the original.
    */
-  async evaluate(turnSummary: string): Promise<DriftScore> {
+  async evaluate(turnSummary: string, auth?: import("./byot/types.js").BedrockAuth): Promise<DriftScore> {
     if (this.goalEmbeddings.length === 0) {
       throw new Error("Goal not registered. Call registerGoal() first.");
     }
 
     const start = Date.now();
-    const embeddings = await embedAny(turnSummary, this.embeddingModel);
+    const embeddings = await embedAny(turnSummary, this.embeddingModel, auth);
     const embedTimeMs = Date.now() - start;
 
     const turnEmbedding = embeddings[0];
