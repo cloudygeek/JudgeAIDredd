@@ -129,6 +129,12 @@ variable "user_permissions_table_name" {
   default     = "jaid-user-permissions"
 }
 
+variable "byot_table_name" {
+  description = "Name of the per-user BYOT Dynamo table — holds the KMS-encrypted Bedrock bearer token + region + runtime-fallback status, one row per Clerk user."
+  type        = string
+  default     = "jaid-byot"
+}
+
 variable "user_permissions_enforced" {
   description = "Phase 6 rollout flag. When true, the hook task gets DREDD_USER_PERMISSIONS_ENABLED=true, which switches on the user-deny short-circuit and user-allow annotation in the PreToolUse pipeline. When false, uploads + storage + dashboard surfacing still work but the pipeline ignores the lists. Default true — prod has been bake-tested; new deployments inherit enforcement."
   type        = bool
@@ -149,8 +155,8 @@ variable "pattern_learning_hard_enabled" {
 
 variable "byot_enabled" {
   description = "Hot-path BYOT toggle. When true, the hook's BearerCredentialProvider resolves per-user Bedrock tokens from jaid-byot on every /evaluate call. Keep false until the write path (dashboard token save + KMS encrypt) has soaked in production."
-  type        = string
-  default     = "false"
+  type        = bool
+  default     = false
 }
 
 variable "sse_kms_key_arn" {

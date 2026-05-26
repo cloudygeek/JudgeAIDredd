@@ -19,7 +19,7 @@
 // No GSI in v1 — all access is by ownerSub, which is the pk.
 // No TTL — rows are removed only by explicit user action (DELETE /api/byot).
 resource "aws_dynamodb_table" "jaid_byot" {
-  name                        = "jaid-byot"
+  name                        = var.byot_table_name
   billing_mode                = "PAY_PER_REQUEST"
   hash_key                    = "pk"
   range_key                   = "sk"
