@@ -1845,6 +1845,20 @@ export class DynamoSessionStore implements SessionStore {
           },
         }),
       );
+      // First time this path is written this session → bump the distinct
+      // file counter on META. Best-effort (see recordToolCall rationale).
+      try {
+        await this.client.send(
+          new UpdateCommand({
+            TableName: this.tableName,
+            Key: { pk: pk(sessionId), sk: "META" },
+            UpdateExpression: "ADD aggFiles :one",
+            ExpressionAttributeValues: { ":one": 1 },
+          }),
+        );
+      } catch (err) {
+        console.warn(`  [agg] file counter update failed for ${sessionId}: ${(err as Error)?.message ?? err}`);
+      }
     }
   }
 
