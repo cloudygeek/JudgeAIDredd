@@ -43,6 +43,32 @@ import {
   byotService,
 } from "./server-core.js";
 import type { ApprovalRecord } from "./approval-store.js";
+import type { SessionSummary } from "./session-store.js";
+
+/** Map a SessionSummary into the lightweight shape the dashboard session
+ *  list consumes — counts + last classification + badges, NO full
+ *  per-session reconstruction. The full shape is fetched on click via
+ *  /api/session-log/:id. Exported for unit testing. */
+export function sessionListEntry(s: SessionSummary): Record<string, unknown> {
+  return {
+    sessionId: s.sessionId,
+    originalTask: s.originalTask,
+    timestamp: s.startedAt,
+    startedAt: s.startedAt,
+    endedAt: s.endedAt ?? null,
+    summary: {
+      toolCalls: s.toolCallCount ?? 0,
+      denied: s.deniedCount ?? 0,
+      filesWritten: s.fileWriteCount ?? 0,
+      turns: s.currentTurn ?? 0,
+    },
+    turnMetrics: s.lastClassification ? [{ classification: s.lastClassification }] : [],
+    clientIp: s.clientIp ?? null,
+    userPermissions: s.userPermissions ?? null,
+    ownerSub: s.ownerSub ?? null,
+    ownerEmail: s.ownerEmail ?? null,
+  };
+}
 import { exportPolicies } from "./tool-policy.js";
 import { exportDomainPolicies } from "./domain-policy.js";
 import {
@@ -174,19 +200,7 @@ const server = createServer(async (req, res) => {
         : all.filter((s) => s.ownerSub === principal.userId);
       const selected = liveOnly ? visible.filter((s) => !s.endedAt) : visible;
 
-      const liveLogs: Record<string, unknown>[] = (await Promise.all(
-        selected.map(async (s): Promise<Record<string, unknown> | null> => {
-          const shape = await buildSessionLogShape(s.sessionId);
-          if (!shape) return null;
-          return {
-            ...shape,
-            startedAt: s.startedAt,
-            endedAt: s.endedAt ?? null,
-            ownerSub: s.ownerSub ?? null,
-            ownerEmail: s.ownerEmail ?? null,
-          };
-        }),
-      )).filter((x): x is Record<string, unknown> => x !== null);
+      const liveLogs: Record<string, unknown>[] = selected.map(sessionListEntry);
       const liveIds = new Set(liveLogs.map((s) => s.sessionId as string));
 
       // Disk fallback only meaningful in admin mode — non-admin users have

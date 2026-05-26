@@ -120,6 +120,23 @@ async function main() {
   ok("in-memory deniedCount = 1", ms?.deniedCount === 1);
   ok("in-memory fileWriteCount = 2 distinct", ms?.fileWriteCount === 2);
 
+  // --- Task 7: sessionListEntry maps a SessionSummary -> lightweight entry ---
+  const { sessionListEntry } = await import("../../src/server-dashboard.js");
+  const entry = sessionListEntry({
+    sessionId: "s9", startedAt: "t0", endedAt: null, originalTask: "fix bug",
+    currentTurn: 4, hijackStrikes: 0, lockedHijacked: false,
+    ownerSub: "u1", ownerEmail: "u@x",
+    toolCallCount: 5, deniedCount: 1, fileWriteCount: 3, lastClassification: "scope-creep",
+    clientIp: "9.9.9.9", userPermissions: { allow: ["Read"], deny: [], ask: [] },
+  });
+  ok("entry.summary.toolCalls", entry.summary.toolCalls === 5);
+  ok("entry.summary.denied", entry.summary.denied === 1);
+  ok("entry.summary.filesWritten", entry.summary.filesWritten === 3);
+  ok("entry.summary.turns = currentTurn", entry.summary.turns === 4);
+  ok("entry.turnMetrics carries last classification", entry.turnMetrics[0].classification === "scope-creep");
+  ok("entry.clientIp + userPermissions preserved", entry.clientIp === "9.9.9.9" && entry.userPermissions.allow.length === 1);
+  ok("entry has NO full toolCalls/filesWritten arrays", entry.toolCalls === undefined && entry.filesWritten === undefined);
+
   console.log(`\n${FAIL === 0 ? c.green + "ALL PASS" : c.red + FAIL + " FAILED"}${c.off} (${PASS}/${PASS + FAIL})`);
   process.exit(FAIL === 0 ? 0 : 1);
 }
