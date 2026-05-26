@@ -44,6 +44,16 @@ import {
 } from "./server-core.js";
 import type { ApprovalRecord } from "./approval-store.js";
 import type { SessionSummary } from "./session-store.js";
+import { exportPolicies } from "./tool-policy.js";
+import { exportDomainPolicies } from "./domain-policy.js";
+import {
+  requireClerkAuth,
+  tryVerifyClerk,
+  probeClerkConnectivity,
+  CLERK_PUBLISHABLE_KEY,
+} from "./clerk-auth.js";
+
+const HOOK_URL = process.env.DREDD_HOOK_URL ?? "";
 
 /** Map a SessionSummary into the lightweight shape the dashboard session
  *  list consumes — counts + last classification + badges, NO full
@@ -53,7 +63,7 @@ export function sessionListEntry(s: SessionSummary): Record<string, unknown> {
   return {
     sessionId: s.sessionId,
     originalTask: s.originalTask,
-    timestamp: s.startedAt,
+    timestamp: s.startedAt, // alias: the session-list row reads s.timestamp
     startedAt: s.startedAt,
     endedAt: s.endedAt ?? null,
     summary: {
@@ -69,16 +79,6 @@ export function sessionListEntry(s: SessionSummary): Record<string, unknown> {
     ownerEmail: s.ownerEmail ?? null,
   };
 }
-import { exportPolicies } from "./tool-policy.js";
-import { exportDomainPolicies } from "./domain-policy.js";
-import {
-  requireClerkAuth,
-  tryVerifyClerk,
-  probeClerkConnectivity,
-  CLERK_PUBLISHABLE_KEY,
-} from "./clerk-auth.js";
-
-const HOOK_URL = process.env.DREDD_HOOK_URL ?? "";
 
 // Short-TTL cache for GET /api/sessions. The dashboard UI polls this every
 // 5s, and the handler fans out one full buildSessionLogShape per live
