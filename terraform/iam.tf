@@ -154,6 +154,38 @@ data "aws_iam_policy_document" "hook_task" {
     ]
   }
 
+  // BYOT — hook reads the encrypted token row (GetItem on cache miss) and
+  // stamps runtime-fallback status back onto the row (UpdateItem). No
+  // PutItem/DeleteItem — those are dashboard-only operations.
+  statement {
+    sid    = "ByotTableReadWrite"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      aws_dynamodb_table.jaid_byot.arn,
+    ]
+  }
+
+  // KMS — direct Decrypt so the hook can unwrap the bearer token stored
+  // in jaid-byot. Not scoped via kms:ViaService (the app calls KMS
+  // directly via KmsByotCrypto, not through DynamoDB). Only Decrypt is
+  // needed on the hook — the dashboard handles Encrypt on token save.
+  dynamic "statement" {
+    for_each = var.sse_kms_key_arn != "" ? [1] : []
+    content {
+      sid    = "KmsDecryptByotToken"
+      effect = "Allow"
+      actions = [
+        "kms:Decrypt",
+        "kms:DescribeKey",
+      ]
+      resources = [var.sse_kms_key_arn]
+    }
+  }
+
   // Bedrock — judge model + embedding model. Scoped to inference
   // profiles + foundation models in any region (cross-region inference
   // profiles can route to multiple regions, so we don't pin to one).
@@ -288,6 +320,40 @@ data "aws_iam_policy_document" "dashboard_task" {
     resources = [
       aws_dynamodb_table.jaid_user_permissions.arn,
     ]
+  }
+
+  // BYOT — dashboard validates, saves, and revokes bearer tokens.
+  // GetItem reads back the stored record for GET /api/byot; PutItem
+  // writes a new (or updated) encrypted token; DeleteItem revokes.
+  // No UpdateItem — the hook owns the runtime-fallback status update.
+  statement {
+    sid    = "ByotTableReadWrite"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:DeleteItem",
+    ]
+    resources = [
+      aws_dynamodb_table.jaid_byot.arn,
+    ]
+  }
+
+  // KMS — direct Encrypt so the dashboard can wrap the bearer token
+  // before storing it in jaid-byot. DescribeKey is required by the
+  // AWS SDK to resolve key metadata before the Encrypt call.
+  // Not scoped via kms:ViaService — app calls KMS directly.
+  dynamic "statement" {
+    for_each = var.sse_kms_key_arn != "" ? [1] : []
+    content {
+      sid    = "KmsEncryptByotToken"
+      effect = "Allow"
+      actions = [
+        "kms:Encrypt",
+        "kms:DescribeKey",
+      ]
+      resources = [var.sse_kms_key_arn]
+    }
   }
 
   dynamic "statement" {

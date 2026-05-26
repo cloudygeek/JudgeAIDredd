@@ -147,6 +147,12 @@ variable "pattern_learning_hard_enabled" {
   default     = false
 }
 
+variable "byot_enabled" {
+  description = "Hot-path BYOT toggle. When true, the hook's BearerCredentialProvider resolves per-user Bedrock tokens from jaid-byot on every /evaluate call. Keep false until the write path (dashboard token save + KMS encrypt) has soaked in production."
+  type        = string
+  default     = "false"
+}
+
 variable "sse_kms_key_arn" {
   description = "Optional customer-managed KMS CMK for DynamoDB SSE. Empty string = use AWS-owned key."
   type        = string

@@ -31,6 +31,8 @@ resource "aws_ecs_task_definition" "dashboard" {
       { name = "DYNAMO_REGION", value = local.tables_region },
       { name = "DYNAMO_API_KEYS_TABLE_NAME", value = aws_dynamodb_table.jaid_api_keys.name },
       { name = "DYNAMO_USER_PERMISSIONS_TABLE_NAME", value = aws_dynamodb_table.jaid_user_permissions.name },
+      { name = "DYNAMO_BYOT_TABLE_NAME", value = aws_dynamodb_table.jaid_byot.name },
+      { name = "BYOT_KMS_KEY_ID", value = var.sse_kms_key_arn },
       { name = "DREDD_HOOK_URL", value = "https://${var.hook_host}" },
     ]
 
