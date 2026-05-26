@@ -19,14 +19,70 @@ import {
   ConverseCommand,
   InvokeModelCommand,
 } from "@aws-sdk/client-bedrock-runtime";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 
 const REGION =
   process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "eu-west-2";
 
+// 2026-05-26: bedt5 hung for 28h and bedt3 for 7h on a stalled
+// Converse call — the SDK keeps a keep-alive socket pool with no
+// default request/socket timeout, so a half-closed TCP socket
+// becomes an unbounded await on the next reuse. Cap every layer:
+//   - connectionTimeout: TCP connect must complete in 10s
+//   - socketTimeout: idle reads on an in-flight body fail in 60s
+//   - requestTimeout: total request can't exceed 5min
+//   - SEND_TIMEOUT_MS (below): outer AbortSignal that also covers
+//     the SDK's retry strategy (up to 3 attempts, otherwise 15min
+//     worst-case before the requestTimeout * retries adds up)
+const CONNECTION_TIMEOUT_MS = 10_000;
+const SOCKET_TIMEOUT_MS = 60_000;
+const REQUEST_TIMEOUT_MS = 300_000;
+export const SEND_TIMEOUT_MS = 360_000;
+
+function makeRequestHandler(): NodeHttpHandler {
+  return new NodeHttpHandler({
+    connectionTimeout: CONNECTION_TIMEOUT_MS,
+    socketTimeout: SOCKET_TIMEOUT_MS,
+    requestTimeout: REQUEST_TIMEOUT_MS,
+  });
+}
+
+function makeClient(region: string): BedrockRuntimeClient {
+  return new BedrockRuntimeClient({
+    region,
+    requestHandler: makeRequestHandler(),
+  });
+}
+
 let client: BedrockRuntimeClient | null = null;
 function getClient(): BedrockRuntimeClient {
-  if (!client) client = new BedrockRuntimeClient({ region: REGION });
+  if (!client) client = makeClient(REGION);
   return client;
+}
+
+/**
+ * Run an SDK send() with a hard outer timeout, recycling the cached
+ * shared client on failure so the next caller doesn't inherit a
+ * poisoned keep-alive pool.
+ */
+async function sendWithTimeout<T>(
+  c: BedrockRuntimeClient,
+  cmd: any,
+  isShared: boolean,
+): Promise<T> {
+  try {
+    return (await c.send(cmd, {
+      abortSignal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+    })) as T;
+  } catch (err) {
+    if (isShared) client = null;
+    try {
+      c.destroy();
+    } catch {
+      // ignore
+    }
+    throw err;
+  }
 }
 
 /**
@@ -48,7 +104,7 @@ export async function bedrockEmbed(
     accept: "application/json",
     body: new TextEncoder().encode(body),
   });
-  const resp = await getClient().send(cmd);
+  const resp = await sendWithTimeout<any>(getClient(), cmd, true);
   const decoded = JSON.parse(new TextDecoder().decode(resp.body));
   // Cohere v4 returns { embeddings: { float: number[][] } }; older
   // shape was { embeddings: number[][] }. Handle both.
@@ -79,10 +135,10 @@ export async function bedrockChat(
     messages: [{ role: "user", content: [{ text: userMessage }] }],
     inferenceConfig,
   });
-  const resp = await getClient().send(cmd);
+  const resp = await sendWithTimeout<any>(getClient(), cmd, true);
   const text =
     resp.output?.message?.content
-      ?.map((b) => ("text" in b ? b.text : ""))
+      ?.map((b: any) => ("text" in b ? b.text : ""))
       .join("") ?? "";
   return { content: text, durationMs: Date.now() - start };
 }
@@ -107,10 +163,8 @@ export async function bedrockConverse(args: {
   toolConfig?: any;
 }): Promise<any> {
   const targetRegion = args.region ?? REGION;
-  const c =
-    targetRegion === REGION
-      ? getClient()
-      : new BedrockRuntimeClient({ region: targetRegion });
+  const isShared = targetRegion === REGION;
+  const c = isShared ? getClient() : makeClient(targetRegion);
   const input: any = {
     modelId: args.modelId,
     messages: args.messages,
@@ -118,7 +172,11 @@ export async function bedrockConverse(args: {
   };
   if (args.system) input.system = args.system;
   if (args.toolConfig) input.toolConfig = args.toolConfig;
-  const resp = await c.send(new ConverseCommand(input));
+  const resp = await sendWithTimeout<any>(
+    c,
+    new ConverseCommand(input),
+    isShared,
+  );
   // The aws-cli version returns a JSON-wire shape; the SDK returns
   // similar but uses Buffer for image bytes etc. Strip Buffers to
   // strings so consumers that do `JSON.parse(execSync(...))` style
