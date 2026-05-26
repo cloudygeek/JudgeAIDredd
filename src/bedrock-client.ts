@@ -97,6 +97,27 @@ export function __clientForTest(region: string, auth?: BedrockAuth): BedrockRunt
   return clientFor(region, auth);
 }
 
+/** Errors that mean "this credential can't make this call" — retry on the
+ *  platform role. Throttling/unavailable included per the BYOT fail-soft
+ *  decision (keep the judge running on the platform if the user's account
+ *  is throttled). Anything else (e.g. a genuine ValidationException from a
+ *  malformed request) propagates unchanged. */
+const BYOT_FALLBACK_ERRORS = new Set([
+  "AccessDeniedException",
+  "UnauthorizedException",
+  "UnrecognizedClientException",
+  "ExpiredTokenException",
+  "InvalidSignatureException",
+  "ThrottlingException",
+  "ThrottledException",
+  "ServiceUnavailableException",
+  "ServiceQuotaExceededException",
+]);
+function isByotFallbackError(err: unknown): boolean {
+  const name = (err as { name?: string })?.name ?? "";
+  return BYOT_FALLBACK_ERRORS.has(name);
+}
+
 /** Optional tag identifying which call site is invoking Bedrock. Used
  *  by `bedrock-metrics.ts` to attribute per-caller cost and cache
  *  performance. Unknown values fall through to "unknown" so a forgotten
@@ -110,6 +131,7 @@ export async function bedrockChat(
   effort?: EffortLevel,
   images?: BedrockImageBlock[],
   caller: BedrockCaller = "unknown",
+  auth?: BedrockAuth,
 ): Promise<{
   content: string;
   thinking: string;
@@ -121,6 +143,9 @@ export async function bedrockChat(
   cacheWriteInputTokens?: number;
   hasThinkingBlock: boolean;
   estimatedThinkingTokens: number;
+  /** Set when a bearer call failed on an auth/throttle error and we
+   *  retried on the platform role. Undefined on the happy path. */
+  byotFallback?: { reason: string };
 }> {
   const start = Date.now();
   if (effort === "none") effort = undefined;
@@ -191,9 +216,25 @@ export async function bedrockChat(
   // Override via BEDROCK_REQUEST_TIMEOUT_MS for thinking-mode runs
   // that legitimately need more headroom.
   const timeoutMs = parseInt(process.env.BEDROCK_REQUEST_TIMEOUT_MS ?? "120000", 10);
-  const response = await clientFor(REGION).send(command, {
-    abortSignal: AbortSignal.timeout(timeoutMs),
-  });
+
+  // Per-attempt fresh abort signal (a reused timeout could be near-expired
+  // on the retry). Bearer auth → user's region; default → module REGION.
+  const sendWith = (a?: BedrockAuth) =>
+    clientFor(regionFor(a), a).send(command, { abortSignal: AbortSignal.timeout(timeoutMs) });
+
+  let response;
+  let byotFallback: { reason: string } | undefined;
+  try {
+    response = await sendWith(auth);
+  } catch (err) {
+    if (auth && auth.kind === "bearer" && !auth.noFallback && isByotFallbackError(err)) {
+      byotFallback = { reason: (err as { name?: string })?.name ?? "byot-error" };
+      console.warn(`  [bedrock] BYOT ${caller} call failed (${byotFallback.reason}); falling back to platform creds`);
+      response = await sendWith({ kind: "default" });
+    } else {
+      throw err;
+    }
+  }
 
   const blocks = (response.output?.message?.content ?? []) as any[];
   const content = blocks
@@ -262,6 +303,7 @@ export async function bedrockChat(
     cacheWriteInputTokens,
     hasThinkingBlock,
     estimatedThinkingTokens: thinking ? Math.ceil(thinking.length / 4) : 0,
+    byotFallback,
   };
 }
 
