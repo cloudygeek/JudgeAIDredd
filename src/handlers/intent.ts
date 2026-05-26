@@ -38,6 +38,7 @@ import {
   isConfirmationPrompt,
   NEW_TASK_DRIFT_MIN,
   CONFIG,
+  credentialProvider,
   type TrustMode,
 } from "../server-core.js";
 import type { ImageBlock } from "../session-store.js";
@@ -93,6 +94,12 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   if (identity.keyValid && identity.ownerSub) {
     await tracker.setSessionOwner(session_id, identity.ownerSub, identity.ownerEmail);
   }
+
+  // Resolve the session owner's BYOT credential so goal embeddings
+  // (drift-detector registerGoal) can bill the user's Bedrock account.
+  // Fails soft to {kind:"default"} when BYOT is off or no token is
+  // configured — behaviour unchanged from today in that case.
+  const bedrockAuth = await credentialProvider.resolve(identity.ownerSub);
 
   // Stamp the ALB-observed client IP onto the session (durable session↔IP
   // join, first-write-wins) and log it with the session prefix so the
@@ -252,7 +259,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   }
 
   if (result.isOriginal && !registeredSessions.has(session_id)) {
-    await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
+    await interceptor.registerGoal(session_id, contextualGoal, transcriptImages, bedrockAuth);
     registeredSessions.add(session_id);
   } else if (!result.isOriginal && !registeredSessions.has(session_id)) {
     // Continuation prompt landed on a container that doesn't have
@@ -279,7 +286,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
       const persisted = await tracker.loadSession(session_id);
       goalToRegister = persisted?.originalIntent?.prompt ?? contextualGoal;
     }
-    await interceptor.registerGoal(session_id, goalToRegister, transcriptImages);
+    await interceptor.registerGoal(session_id, goalToRegister, transcriptImages, bedrockAuth);
     registeredSessions.add(session_id);
     console.log(
       `  [${session_id.substring(0, 8)}] [REHYDRATE] continuation/redeploy — restored goal: "${goalToRegister.substring(0, 60)}..." (active=${persistedActive.length})`,
@@ -306,7 +313,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
       `(drift=${result.driftFromOriginal.toFixed(3)} > ${NEW_TASK_DRIFT_MIN}) — ` +
       `re-registering goal`
     );
-    await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
+    await interceptor.registerGoal(session_id, contextualGoal, transcriptImages, bedrockAuth);
     await tracker.replaceOriginalIntent(session_id, prompt);
   }
 
@@ -344,9 +351,9 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     ) {
       // Use the contextual form so the judge sees prior_assistant_response
       // when relevant — same as the previous behaviour.
-      await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
+      await interceptor.registerGoal(session_id, contextualGoal, transcriptImages, bedrockAuth);
     } else if (stackUpdate.kind === "confirmation" && priorAssistant) {
-      await interceptor.registerGoal(session_id, contextualGoal, transcriptImages);
+      await interceptor.registerGoal(session_id, contextualGoal, transcriptImages, bedrockAuth);
     }
     // queued / open-followup / continuation: don't reset the goal
     // boundary — those are *additions* to what the agent is allowed
