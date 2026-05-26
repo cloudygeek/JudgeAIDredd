@@ -84,6 +84,8 @@ The judge gets file-content context from `SessionTracker.getFileContextForJudge(
 
 Single bash script handling all hook events. Reads JSON from stdin, calls the right Dredd endpoint, prints JSON to stdout. **Fails open** if server is down (`permissionDecision: "ask"`). PostToolUse and Stop are fire-and-forget background curls so they don't block the agent. Install via `hooks/settings.json.example` — copy into `.claude/settings.json`.
 
+**Self-contained delivery:** the `dredd-hook.sh` served via the integration bundle and `GET /api/hook-script` is **baked** by `src/hook-bake.ts` — `dredd-managed-allow.sh` is inlined in place of the repo's `source` directive so the delivered file has no external dependency. The repo hook sources the sibling lib at dev time; the baked version is a single self-contained script.
+
 ## Container images
 
 The hook and dashboard run as two separate container images built from the same source tree. `DREDD_ROLE` (set by each image's entrypoint) selects which server boots. Designed to run on Fargate / ECS / any container runtime with an attached persistent volume for `$DATA_DIR` (`/data` by default — used for console logs and any disk fallback).
@@ -203,6 +205,9 @@ docker run -p 3000:3000 \
 | `CLERK_SECRET_KEY` | (unset) | **Dashboard role only.** Clerk secret used by `verifyToken` to validate session JWTs on every `/api/*` request. Without it the dashboard returns 503 on `/api/*` |
 | `CLERK_PUBLISHABLE_KEY` | (unset) | Clerk publishable key (`pk_test_…` / `pk_live_…`) injected into the dashboard HTML AND the hook container's landing page (`GET /`) so the browser can bootstrap `@clerk/clerk-js`. The hook page is gated on Clerk sign-in even though the hook's `/intent`, `/evaluate`, `/track`, etc. API endpoints remain on Bearer-API-key + CORS — the gate is presentation-only. `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is read as a fallback. If unset on a role, that role's HTML page stays gated with "auth not configured" |
 | `CLERK_JWT_PUBLIC_KEY` | (unset) | **Dashboard role only.** Static PEM (or JWK JSON) for Clerk's session-token signing key. When set, `verifyToken` skips the network JWKS fetch entirely — required when the container can't reach `api.clerk.com` / `*.clerk.dev` due to firewall rules. Get the JWKS from `https://<frontend-api>/.well-known/jwks.json`; paste either the JWK or its PEM export |
+| `DYNAMO_BYOT_TABLE_NAME` | `jaid-byot` | DynamoDB table for per-user BYOT Bedrock token configs (encrypted at the app layer by `ByotCrypto`) |
+| `DREDD_BYOT_ENABLED` | `false` | Hot-path resolver gate. When `true`, `/evaluate` resolves a per-user `BedrockAuth` and threads it to the judge, drift detector, and embedding calls. When `false`, all Bedrock calls use the platform task role. The dashboard write path + storage work regardless — flip to `true` once the write path has soaked |
+| `BYOT_KMS_KEY_ID` | (from `var.sse_kms_key_arn`) | ARN or key-ID of the KMS key used by `KmsByotCrypto` to envelope-encrypt user tokens. Reuses the stack's existing SSE KMS key by default (set via terraform). `FakeByotCrypto` is used when the store backend is `memory` and no key is configured |
 
 Session logs: see the **Session storage** note below — Dynamo-backed when `STORE_BACKEND=dynamo`, otherwise in-process memory. Console logs (`dredd-YYYY-MM-DD.log`) still live on disk in `$DATA_DIR/logs/` and are viewable via the dashboard (Logs tab).
 
@@ -426,6 +431,20 @@ Thresholds (constants in `pretool-interceptor.ts` for now; env-tunable later whe
 
 `InterceptionResult.patternTrust` carries `{ hard, matched, topSim, topSummary }`; the dashboard renders a `trust×N` chip on the live feed + Tool Calls table (Phase 8c). The session-detail JSON's `interceptorLog` includes the same field per call so historical analysis is straightforward.
 
+### 4. BYOT — per-user Bedrock token
+
+Lets a user supply their own Amazon Bedrock API key (+ region) so that all per-session Bedrock calls — judge, classifier, and drift embeddings — run on their AWS account. Scope is every Bedrock call in the hot path; the startup connectivity preflight remains on platform creds. Fail-soft: if a bearer call fails on an auth or throttle error, the pipeline retries on the platform task role and records the fallback on the BYOT record.
+
+**Storage:** `jaid-byot` DynamoDB table. One item per Clerk user: `pk = USER#<ownerSub>`, `sk = BYOT`. The token is KMS-encrypted at the application layer (`src/byot/byot-crypto.ts`; `KmsByotCrypto` in production, `FakeByotCrypto` for local `STORE_BACKEND=memory` without a KMS key); table SSE adds at-rest encryption on top. No TTL — config persists until the user removes it.
+
+**`CredentialProvider` seam** (`src/byot/credential-provider.ts`): `DefaultCredentialProvider` always returns `{kind:"default"}` (platform role); `BearerCredentialProvider` reads the `jaid-byot` row, decrypts the token, and caches the result in-process for 5 minutes. The seam is extensible — an `assume-role` variant can slot into `BedrockAuth` without call-site churn. Both providers fail-soft: a decrypt error or missing row returns `{kind:"default"}` and never throws.
+
+**Dashboard write path** (`POST /api/byot`): before storing, `ByotService.validateAndStore` runs a capability probe (`src/byot/capability-probe.ts`) against every distinct model the pipeline uses (judge + embedding). All must pass in the user's chosen region; partial failure returns the failing model list to the UI. `GET /api/byot` returns a non-sensitive `ByotConfigStatusView` (exposes `last4`, `status`, `region` — never the token or ciphertext). `DELETE /api/byot` removes the row.
+
+**Fallback telemetry:** a runtime auth failure writes `status="runtime-fallback"`, `lastFallbackAt`, `lastFallbackReason` directly onto the BYOT record (`ByotStore.markRuntimeFallback`). Surfaced by `GET /api/byot` and shown as a warning banner on the dashboard BYOT tab. The hook task role has `dynamodb:UpdateItem` on `jaid-byot` for this write.
+
+**Gating:** `DREDD_BYOT_ENABLED` gates only the hot-path resolver. The dashboard write path, `jaid-byot` storage, and `GET /api/byot` work regardless of the flag — store and soak before enabling the hot path.
+
 ### Test surface
 
 ```
@@ -439,6 +458,12 @@ hooks/tests/test_phase3_matcher.ts                  # pattern matcher           
 hooks/tests/test_phase4_pipeline.ts                 # interceptor integration                      (17, npx tsx)
 hooks/tests/test_phase8a_approval_embedding.ts      # ApprovalRecord.inputEmbedding round-trip      (8, npx tsx)
 hooks/tests/test_phase8b_pattern_trust.ts           # Stage 0.5 against stub /api/embed           (10, npx tsx)
+hooks/tests/test_byot_crypto.ts                     # FakeByotCrypto encrypt/decrypt + context      (3, npx tsx)
+hooks/tests/test_byot_store.ts                      # InMemoryByotStore + DynamoByotStore           (9, npx tsx)
+hooks/tests/test_byot_provider.ts                   # BearerCredentialProvider cache + fail-soft    (9, npx tsx)
+hooks/tests/test_byot_client.ts                     # per-credential Bedrock client cache keying    (4, npx tsx)
+hooks/tests/test_byot_probe.ts                      # capability probe against stub Bedrock         (varies, npx tsx)
+hooks/tests/test_byot_pipeline.ts                   # provider + service end-to-end round-trip      (5, npx tsx)
 ```
 
 All green at last full run. The bash suites are self-contained (mktemp sandboxes + python stub HTTP server); the `.ts` ones run via `npx tsx`.
@@ -466,3 +491,12 @@ All green at last full run. The bash suites are self-contained (mktemp sandboxes
 | `hooks/dredd-hook.sh` | Single drop-in CLI hook for all events |
 | `hooks/dredd-managed-allow.sh` | Sourced primitives + reconcile / cleanup / sweep functions for the Phase 7 managed-allow feature |
 | `hooks/dredd-cleanup.sh` | Standalone CLI for manual recovery of managed-allow state |
+| `src/byot/types.ts` | `BedrockAuth` union + `ByotConfigRecord` / `ByotConfigStatusView` types |
+| `src/byot/byot-crypto.ts` | `ByotCrypto` interface; `KmsByotCrypto` (production) + `FakeByotCrypto` (local/test) |
+| `src/byot/credential-provider.ts` | `CredentialProvider` seam; `DefaultCredentialProvider` (flag-off) + `BearerCredentialProvider` (decrypt + in-process cache) |
+| `src/byot/capability-probe.ts` | `probeRegionCapabilities` — validates a token against every pipeline model before storage |
+| `src/byot/byot-service.ts` | Write-path orchestration: validate → encrypt → store; `getStatus`; `remove`; delegates to store/crypto/probe |
+| `src/byot-store.ts` | `ByotStore` interface + `InMemoryByotStore` |
+| `src/dynamo-byot-store.ts` | `DynamoByotStore` against `jaid-byot` (pk=`USER#<ownerSub>`, sk=`BYOT`); `markRuntimeFallback` uses conditional `UpdateItem` |
+| `src/hook-bake.ts` | `buildBakedHook` — inlines `dredd-managed-allow.sh` + bakes `DREDD_URL`; used by both the integration bundle and `/api/hook-script` |
+| `terraform/jaid-byot.tf` | `jaid-byot` DynamoDB table (PAY_PER_REQUEST, SSE via `var.sse_kms_key_arn`, PITR, no TTL) |
