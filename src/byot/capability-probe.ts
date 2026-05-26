@@ -15,7 +15,11 @@ export async function aggregateProbe(steps: ProbeStep[]): Promise<ProbeResult> {
     try {
       await step.run();
     } catch (err) {
-      failures.push({ model: step.model, api: step.api, error: (err as { name?: string })?.name ?? (err as Error)?.message ?? "error" });
+      // Name-only: AWS SDK errors always set .name (AccessDeniedException,
+      // ValidationException, ...). The full message can embed partial
+      // ARN/account info that would surface in the 400 response — and the
+      // failure tuple already carries model+api for diagnosis.
+      failures.push({ model: step.model, api: step.api, error: (err as { name?: string })?.name ?? "probe-error" });
     }
   }
   return { ok: failures.length === 0, failures };

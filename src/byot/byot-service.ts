@@ -46,6 +46,9 @@ export class ByotService {
     if (!probe.ok) return { stored: false, probe };
 
     const now = new Date().toISOString();
+    // Read-modify-write (get → put) to preserve the original createdAt. Not
+    // atomic, but acceptable for a per-user config row: last-writer-wins and
+    // any createdAt skew between concurrent saves is inconsequential.
     const existing = await this.opts.store.get(ownerSub);
     const ciphertext = await this.opts.crypto.encrypt(token, { ownerSub });
     const record: ByotConfigRecord = {

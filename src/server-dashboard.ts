@@ -450,7 +450,16 @@ const server = createServer(async (req, res) => {
       }
 
       if (req.method === "POST") {
-        const body = JSON.parse(await readBody(req));
+        // Parse in an inner try so a malformed body NEVER reaches the
+        // outer catch's console.error — Node's JSON.parse messages embed
+        // a fragment of the raw body, which here could contain a pasted
+        // token. Return 400 without logging the body.
+        let body: any;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch {
+          return json(res, 400, { error: "Invalid JSON body" });
+        }
         const token = String(body.token ?? "").trim();
         const region = String(body.region ?? "").trim();
         if (!token) return json(res, 400, { error: "token is required" });
