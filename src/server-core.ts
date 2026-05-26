@@ -663,6 +663,8 @@ export const byotStore: ByotStore = STORE_BACKEND === "dynamo"
   ? new DynamoByotStore({ tableName: DYNAMO_BYOT_TABLE_NAME, region: DYNAMO_REGION })
   : new InMemoryByotStore();
 
+// KMS reuses DYNAMO_REGION on the assumption KMS + Dynamo are co-located;
+// a future cross-region KMS deploy would add a dedicated BYOT_KMS_REGION var.
 export const byotCrypto: ByotCrypto = BYOT_KMS_KEY_ID
   ? new KmsByotCrypto({ keyId: BYOT_KMS_KEY_ID, region: DYNAMO_REGION })
   : new FakeByotCrypto();

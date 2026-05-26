@@ -59,6 +59,9 @@ import {
 // BYOT runtime-fallback recording (throttled, module-scope)
 // =========================================================================
 const BYOT_FALLBACK_THROTTLE_MS = 5 * 60 * 1000;
+// Unbounded by design: one entry per ownerSub that ever fell back, bounded
+// by the number of distinct users with broken tokens — no eviction needed
+// at current scale.
 const lastByotFallbackAt = new Map<string, number>();
 async function recordByotFallbackThrottled(ownerSub: string, reason: string): Promise<void> {
   const now = Date.now();
@@ -115,6 +118,11 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   });
 
   if (!registeredSessions.has(session_id)) {
+    // Resolve the caller's BYOT credential for the rehydration/backfill
+    // goal embeds below so they bill the user's account too (the main
+    // /evaluate path resolves separately from ownerForApproval). Fails
+    // soft to {kind:"default"} when BYOT is off — byte-identical then.
+    const backfillAuth = await credentialProvider.resolve(identity.ownerSub);
     // Rehydrate from the SessionStore before falling back to transcript
     // backfill. registeredSessions is per-process in-memory, so any
     // container restart (or a fresh deployment) loses the Set even
@@ -142,7 +150,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       // interactive path will pull the full activeIntents list on
       // /evaluate via getActiveIntents below.
       const freshest = persistedActive[persistedActive.length - 1];
-      await interceptor.registerGoal(session_id, freshest.contextual);
+      await interceptor.registerGoal(session_id, freshest.contextual, undefined, backfillAuth);
       registeredSessions.add(session_id);
       console.log(
         `  [${session_id.substring(0, 8)}] [REHYDRATE] restored ${persistedActive.length} active intent(s); freshest: "${freshest.prompt.substring(0, 60)}..."`,
@@ -154,7 +162,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       // but flag that we're using a stale anchor so the operator can
       // see it in the logs.
       const contextual = persisted.originalIntent.prompt;
-      await interceptor.registerGoal(session_id, contextual);
+      await interceptor.registerGoal(session_id, contextual, undefined, backfillAuth);
       registeredSessions.add(session_id);
       const ageMin = Math.round((Date.now() - new Date(persisted.originalIntent.timestamp).getTime()) / 60000);
       console.log(
