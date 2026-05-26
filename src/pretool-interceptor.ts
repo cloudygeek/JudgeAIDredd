@@ -141,6 +141,9 @@ export interface InterceptionResult {
     /** Summary of the top-matching prior approval (for the dashboard). */
     topSummary: string;
   };
+  /** Set when a BYOT bearer call fell back to the platform role during
+   *  this evaluation (judge path). Drives the dashboard fallback banner. */
+  byotFallback?: { reason: string };
 }
 
 /**
@@ -330,6 +333,11 @@ export class PreToolInterceptor {
      *  unchanged. When true, ≥ HARD_MIN_COUNT high-sim matches return
      *  pattern-trust-allow before Stage 1. */
     patternTrustHard?: boolean,
+    /** Resolved Bedrock credential for this session's owner. Threaded to
+     *  the judge + drift + pattern-trust embed so the user's token (when
+     *  configured) bills their account. Undefined / {kind:"default"} =
+     *  platform role. */
+    bedrockAuth?: import("./byot/types.js").BedrockAuth,
   ): Promise<InterceptionResult> {
     const start = Date.now();
     const s = this.getSession(sessionId);
@@ -395,7 +403,7 @@ export class PreToolInterceptor {
       if (withEmbedding.length > 0) {
         try {
           const callText = JSON.stringify({ tool, input });
-          const callVecs = await embedAny(callText, this.config.embeddingModel);
+          const callVecs = await embedAny(callText, this.config.embeddingModel, bedrockAuth);
           const callVec = callVecs?.[0] ?? [];
           if (callVec.length > 0) {
             const sims = withEmbedding
@@ -584,7 +592,7 @@ export class PreToolInterceptor {
     }
 
     const toolDescription = this.describeToolCall(tool, input);
-    const drift = await s.driftDetector.evaluate(toolDescription);
+    const drift = await s.driftDetector.evaluate(toolDescription, bedrockAuth);
 
     if (drift.similarity >= this.config.reviewThreshold) {
       // High similarity to original task — allow
@@ -707,6 +715,7 @@ export class PreToolInterceptor {
       currentAction,
       s.intentImages,
       softContext.length > 0 ? softContext : undefined,
+      bedrockAuth,
     );
 
     // Only "hijacked" is denied. "consistent" and "drifting" are allowed.
@@ -731,6 +740,7 @@ export class PreToolInterceptor {
           topSummary: softContext[0].summary,
         },
       } : {}),
+      ...(judgeVerdict.byotFallback ? { byotFallback: judgeVerdict.byotFallback } : {}),
     };
     this.log(s, result, sessionId, userAllowMatch);
     return result;
