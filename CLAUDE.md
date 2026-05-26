@@ -261,6 +261,7 @@ When `STORE_BACKEND=dynamo`, the server uses a **DynamoDB-backed `SessionStore`*
 Per-session item shape:
 - `pk = SESSION#<session_id>`, `sk = META | TURN#<n> | TOOL#<turn>#<seq> | FILE#W#<pathHash> | FILE#R#<ts>#<seq> | ENV#<name> | METRIC#<n> | PIVOT#<ts>`
 - GSI1 (`gsi1pk = "SESSION"`, `gsi1sk = startedAt`) is set only on META for cheap dashboard listing
+- META also carries running list-aggregates — `aggToolCalls`, `aggDenied`, `aggFiles` (distinct paths), `lastClassification` — maintained by atomic `ADD`/`SET` folded into the `record*` writes (best-effort; never breaks `/track`). `listSessions` returns them so `GET /api/sessions` renders the dashboard list from one GSI query instead of fanning out `buildSessionLogShape` per session (that fan-out under the 5s UI poll caused the 2026-05-26 dashboard event-loop outage). The detail view (`/api/session-log/:id`) still reconstructs the full session on demand. Sessions predating this change show 0 counts in the list (full detail still correct on click).
 - TTL `ttl` (epoch seconds), 30d, refreshed on every write
 
 ### Checking `/data` persistence
