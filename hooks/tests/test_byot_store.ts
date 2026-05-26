@@ -29,6 +29,42 @@ async function main() {
   await store.delete("u1");
   ok("delete removes the row", (await store.get("u1")) === null);
 
+  // DynamoByotStore against an in-memory fake DynamoDBDocumentClient.
+  const { DynamoByotStore } = await import("../../src/dynamo-byot-store.js");
+  const fakeTable = new Map<string, any>();
+  const fakeClient = {
+    async send(cmd: any): Promise<any> {
+      const name = cmd.constructor.name;
+      const key = (k: any) => `${k.pk}|${k.sk}`;
+      if (name === "PutCommand") { fakeTable.set(key(cmd.input.Item), cmd.input.Item); return {}; }
+      if (name === "GetCommand") { return { Item: fakeTable.get(key(cmd.input.Key)) }; }
+      if (name === "DeleteCommand") { fakeTable.delete(key(cmd.input.Key)); return {}; }
+      if (name === "UpdateCommand") {
+        const item = fakeTable.get(key(cmd.input.Key));
+        if (item) {
+          item.status = cmd.input.ExpressionAttributeValues[":s"];
+          item.lastFallbackAt = cmd.input.ExpressionAttributeValues[":a"];
+          item.lastFallbackReason = cmd.input.ExpressionAttributeValues[":r"];
+          item.updatedAt = cmd.input.ExpressionAttributeValues[":a"];
+        }
+        return {};
+      }
+      throw new Error("unexpected command " + name);
+    },
+  } as any;
+  const dyn = new DynamoByotStore({ tableName: "jaid-byot", region: "eu-west-1", client: fakeClient });
+  await dyn.put({
+    ownerSub: "d1", provider: "bedrock-bearer", region: "eu-west-2",
+    ciphertext: "CT2", last4: "wxyz", status: "active",
+    createdAt: "t0", updatedAt: "t0", lastValidatedAt: "t0",
+  });
+  const dr = await dyn.get("d1");
+  ok("dynamo round-trips", dr?.ciphertext === "CT2" && dr?.last4 === "wxyz");
+  await dyn.markRuntimeFallback("d1", "ThrottlingException", "t9");
+  ok("dynamo markRuntimeFallback", (await dyn.get("d1"))?.status === "runtime-fallback");
+  await dyn.delete("d1");
+  ok("dynamo delete", (await dyn.get("d1")) === null);
+
   console.log(`\n${FAIL === 0 ? c.green + "ALL PASS" : c.red + FAIL + " FAILED"}${c.off} (${PASS}/${PASS + FAIL})`);
   process.exit(FAIL === 0 ? 0 : 1);
 }
