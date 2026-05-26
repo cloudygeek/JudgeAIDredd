@@ -95,6 +95,14 @@ export class InMemorySessionStore implements SessionStore {
         lockedHijacked: s.lockedHijacked,
         ownerSub: s.ownerSub,
         ownerEmail: s.ownerEmail,
+        toolCallCount: s.toolHistory.length,
+        deniedCount: s.toolHistory.filter((t) => t.decision === "deny").length,
+        fileWriteCount: s.filesWritten.size,
+        lastClassification: s.turnMetrics.length
+          ? s.turnMetrics[s.turnMetrics.length - 1].classification
+          : null,
+        clientIp: s.clientIp ?? null,
+        userPermissions: s.userPermissions ?? null,
       });
     }
     // Newest-first by startedAt
