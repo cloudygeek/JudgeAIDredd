@@ -15,17 +15,34 @@ bedt14 v0.1.445).
 
 ## Notes
 
-- **bedt5 pacing concern.** Initial pace was ~0.08 reps/min (29h ETA at the
-  start of the run); current rate has slowed to ~0.03 reps/min. ~33 min/rep
-  on average is consistent with intent-tracker calling Dredd `/evaluate` per
-  tool call across multi-turn opus-4-7 trajectories. By contrast, the same
-  T3.3+T3.4 scenario set on **promptarmor-obs** (bedt16) finished 180 reps
-  in 42 minutes — promptarmor only screens external content, while
-  intent-tracker invokes the LLM judge per tool call.
+- **bedt5 pacing is healthy, not concerning.** ~33 min/rep on opus-4-7
+  with intent-tracker is consistent with real multi-turn trajectories
+  plus per-tool-call Dredd `/evaluate`. Initial extrapolated ETA was
+  ~29h; the steadier ~80h ETA reflects warm-up convergence, not a
+  problem.
+- **CORRECTION re. bedt16's 42-min PromptArmor "finish".** That run is
+  **POISONED, not a result.** All 180/180 runs errored with
+  `API Error: 400 "thinking.type.enabled" is not supported for this
+  model` and produced **0 tool calls/run**. The `GES=100 / sd=0` is the
+  zero-tool-call artefact. Root cause: the bedt16 image predates the
+  executor.ts Converse port (`2c643cf7b`), so opus-4-7 hit the broken
+  agent-sdk thinking path. **A 40-minute walltime on this scenario set
+  is the poison signature, not a fast defence.** The valid `none`
+  baseline (`…225056Z`) ran ~5.5 h serial; a healthy promptarmor-obs
+  re-run is expected to take 6–10 h. See
+  `docs/rerun-checklist-opus-promptarmor-2026-05-26.md` for the
+  pre-launch image-fix gate, smoke gate, and validation queries.
 - **bedt14 nearly done.** 92% through the haiku T3 / C4-baseline cell;
   expected to land before tomorrow midday UTC.
 
 ## What's left after these two
 
-Per task #71 the Opus G3X T3.4 trio (none / intent-tracker / promptarmor-obs)
-will all be present once bedt5 lands. No other cells outstanding.
+- **bedt5 (intent-tracker)** — let finish; should be valid (image
+  v0.1.447 contains `2c643cf7b`).
+- **bedt14 (haiku C4-baseline)** — let finish; haiku has no thinking
+  bug.
+- **Opus T3.4 promptarmor-obs re-run** — required (task #134, was
+  marked completed; reverted to in_progress). Cannot run until the
+  image-fix gate in the re-run checklist passes. Until that re-run
+  lands valid, the PromptArmor-vs-intent-tracker comparison on Opus
+  T3 cannot go in the paper.
