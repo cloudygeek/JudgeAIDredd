@@ -19,6 +19,8 @@ import {
   InvokeModelCommand,
 } from "@aws-sdk/client-bedrock-runtime";
 import { recordBedrockCall } from "./bedrock-metrics.js";
+import { createHash } from "node:crypto";
+import type { BedrockAuth } from "./byot/types.js";
 
 const REGION = process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "eu-central-1";
 const MODEL_ID = process.env.BEDROCK_JUDGE_MODEL ?? "nvidia.nemotron-super-3-120b";
@@ -40,17 +42,59 @@ export interface BedrockImageBlock {
   mediaType: string;
 }
 
-// Module-level client per region. Most calls use the same region, so this
-// is effectively a singleton with a fallback for cross-region embeddings
-// (e.g. judge in eu-west-2, embeddings in eu-west-1).
+// Bounded per-credential client cache. Keyed by `${region}#${authFp}` so
+// the platform role and each distinct bearer token get their own client.
+// LRU-evicted (delete + reinsert on touch; drop oldest past the cap) so a
+// burst of distinct BYOT users can't grow the map without limit.
+const MAX_CLIENTS = 200;
 const clients = new Map<string, BedrockRuntimeClient>();
-function clientFor(region: string): BedrockRuntimeClient {
-  let c = clients.get(region);
-  if (!c) {
-    c = new BedrockRuntimeClient({ region });
-    clients.set(region, c);
+
+function authFingerprint(auth?: BedrockAuth): string {
+  if (!auth || auth.kind === "default") return "default";
+  // kind === "bearer"
+  return "bearer:" + createHash("sha256").update(auth.token).digest("hex").slice(0, 16);
+}
+
+/** Region a call should use: a bearer token is bound to its own region;
+ *  default creds use the module REGION. */
+function regionFor(auth?: BedrockAuth, fallback = REGION): string {
+  return auth && auth.kind === "bearer" ? auth.region : fallback;
+}
+
+function clientFor(region: string, auth?: BedrockAuth): BedrockRuntimeClient {
+  const key = `${region}#${authFingerprint(auth)}`;
+  const existing = clients.get(key);
+  if (existing) {
+    clients.delete(key); clients.set(key, existing); // LRU touch
+    return existing;
   }
-  return c;
+  let client: BedrockRuntimeClient;
+  if (auth && auth.kind === "bearer") {
+    // Per-client bearer auth. The bedrock-runtime auth scheme provider
+    // lists sigv4 BEFORE bearer for every operation, so setting `token`
+    // alone is not enough — platform IAM creds in the chain would win.
+    // authSchemePreference forces bearer for this client only. (The
+    // process-wide AWS_BEARER_TOKEN_BEDROCK env var is NOT multi-tenant
+    // safe, which is why this is per-client config.)
+    client = new BedrockRuntimeClient({
+      region,
+      token: { token: auth.token },
+      authSchemePreference: ["httpBearerAuth"],
+    });
+  } else {
+    client = new BedrockRuntimeClient({ region });
+  }
+  if (clients.size >= MAX_CLIENTS) {
+    const oldest = clients.keys().next().value;
+    if (oldest !== undefined) clients.delete(oldest);
+  }
+  clients.set(key, client);
+  return client;
+}
+
+/** Test-only accessor for the client cache keying. */
+export function __clientForTest(region: string, auth?: BedrockAuth): BedrockRuntimeClient {
+  return clientFor(region, auth);
 }
 
 /** Optional tag identifying which call site is invoking Bedrock. Used
