@@ -318,58 +318,58 @@ export async function bedrockChat(
 export async function bedrockEmbed(
   texts: string[],
   modelId: string,
-  region = REGION
+  region = REGION,
+  auth?: BedrockAuth,
 ): Promise<number[][]> {
-  // Strip cross-region inference profile prefixes (eu., us., global.) before dispatch
+  // Bearer token is bound to its own region; otherwise use the passed region.
+  const effRegion = auth && auth.kind === "bearer" ? auth.region : region;
   const bare = modelId.replace(/^(?:eu|us|global)\./, "");
-
-  if (bare.startsWith("cohere.embed")) {
-    return cohereEmbed(texts, modelId, region);
-  }
-  if (bare.startsWith("amazon.titan-embed")) {
-    return Promise.all(texts.map((t) => titanEmbed(t, modelId, region)));
-  }
-  if (bare.startsWith("twelvelabs.")) {
-    return Promise.all(texts.map((t) => marengoEmbed(t, modelId, region)));
-  }
+  if (bare.startsWith("cohere.embed")) return cohereEmbed(texts, modelId, effRegion, auth);
+  if (bare.startsWith("amazon.titan-embed")) return Promise.all(texts.map((t) => titanEmbed(t, modelId, effRegion, auth)));
+  if (bare.startsWith("twelvelabs.")) return Promise.all(texts.map((t) => marengoEmbed(t, modelId, effRegion, auth)));
   throw new Error(`Unknown Bedrock embedding model family: ${modelId}`);
 }
 
-async function invokeModel(modelId: string, body: object, region: string): Promise<object> {
+async function invokeModel(modelId: string, body: object, region: string, auth?: BedrockAuth): Promise<object> {
   const command = new InvokeModelCommand({
     modelId,
     body: new TextEncoder().encode(JSON.stringify(body)),
     contentType: "application/json",
     accept: "application/json",
   });
-  const response = await clientFor(region).send(command);
-  // SDK returns response.body as Uint8Array.
+  const sendWith = (a?: BedrockAuth) => clientFor(regionFor(a, region), a).send(command);
+  let response;
+  try {
+    response = await sendWith(auth);
+  } catch (err) {
+    if (auth && auth.kind === "bearer" && !auth.noFallback && isByotFallbackError(err)) {
+      console.warn(`  [bedrock] BYOT embed call failed (${(err as any)?.name}); falling back to platform creds`);
+      response = await sendWith({ kind: "default" });
+    } else {
+      throw err;
+    }
+  }
   const bytes = response.body as Uint8Array;
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 
-async function cohereEmbed(texts: string[], modelId: string, region: string): Promise<number[][]> {
-  const resp = (await invokeModel(modelId, { texts, input_type: "search_query" }, region)) as Record<string, unknown>;
-  // v3: { embeddings: number[][] }
-  // v4: { embeddings: { float: number[][] } }
+async function cohereEmbed(texts: string[], modelId: string, region: string, auth?: BedrockAuth): Promise<number[][]> {
+  const resp = (await invokeModel(modelId, { texts, input_type: "search_query" }, region, auth)) as Record<string, unknown>;
   const emb = resp.embeddings as number[][] | { float: number[][] };
   return Array.isArray(emb) ? emb : emb.float;
 }
 
-async function titanEmbed(text: string, modelId: string, region: string): Promise<number[]> {
-  const resp = (await invokeModel(modelId, { inputText: text }, region)) as { embedding: number[] };
+async function titanEmbed(text: string, modelId: string, region: string, auth?: BedrockAuth): Promise<number[]> {
+  const resp = (await invokeModel(modelId, { inputText: text }, region, auth)) as { embedding: number[] };
   return resp.embedding;
 }
 
-async function marengoEmbed(text: string, modelId: string, region: string): Promise<number[]> {
-  // Marengo 3.0: { inputType: "text", text: { text: "..." } }
-  // Marengo 2.7: { inputType: "text", inputText: "..." }
+async function marengoEmbed(text: string, modelId: string, region: string, auth?: BedrockAuth): Promise<number[]> {
   const bare = modelId.replace(/^(?:eu|us|global)\./, "");
   const body = bare.includes("marengo-embed-2-7")
     ? { inputType: "text", inputText: text }
     : { inputType: "text", text: { inputText: text } };
-
-  const resp = (await invokeModel(modelId, body, region)) as Record<string, unknown>;
+  const resp = (await invokeModel(modelId, body, region, auth)) as Record<string, unknown>;
   if (Array.isArray(resp.embedding)) return resp.embedding as number[];
   const data = resp.data as { embedding: number[] }[] | undefined;
   if (data?.[0]?.embedding) return data[0].embedding;
