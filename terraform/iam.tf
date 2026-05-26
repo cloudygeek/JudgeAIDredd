@@ -170,20 +170,18 @@ data "aws_iam_policy_document" "hook_task" {
   }
 
   // KMS — direct Decrypt so the hook can unwrap the bearer token stored
-  // in jaid-byot. Not scoped via kms:ViaService (the app calls KMS
-  // directly via KmsByotCrypto, not through DynamoDB). Only Decrypt is
+  // in jaid-byot. Scoped to the dedicated BYOT key (NOT var.sse_kms_key_arn
+  // / table SSE). Not scoped via kms:ViaService — the app calls KMS
+  // directly via KmsByotCrypto, not through DynamoDB. Only Decrypt is
   // needed on the hook — the dashboard handles Encrypt on token save.
-  dynamic "statement" {
-    for_each = var.sse_kms_key_arn != "" ? [1] : []
-    content {
-      sid    = "KmsDecryptByotToken"
-      effect = "Allow"
-      actions = [
-        "kms:Decrypt",
-        "kms:DescribeKey",
-      ]
-      resources = [var.sse_kms_key_arn]
-    }
+  statement {
+    sid    = "KmsDecryptByotToken"
+    effect = "Allow"
+    actions = [
+      "kms:Decrypt",
+      "kms:DescribeKey",
+    ]
+    resources = [aws_kms_key.byot.arn]
   }
 
   // Bedrock — judge model + embedding model. Scoped to inference
@@ -340,20 +338,18 @@ data "aws_iam_policy_document" "dashboard_task" {
   }
 
   // KMS — direct Encrypt so the dashboard can wrap the bearer token
-  // before storing it in jaid-byot. DescribeKey is required by the
-  // AWS SDK to resolve key metadata before the Encrypt call.
-  // Not scoped via kms:ViaService — app calls KMS directly.
-  dynamic "statement" {
-    for_each = var.sse_kms_key_arn != "" ? [1] : []
-    content {
-      sid    = "KmsEncryptByotToken"
-      effect = "Allow"
-      actions = [
-        "kms:Encrypt",
-        "kms:DescribeKey",
-      ]
-      resources = [var.sse_kms_key_arn]
-    }
+  // before storing it in jaid-byot. Scoped to the dedicated BYOT key (NOT
+  // var.sse_kms_key_arn / table SSE). DescribeKey lets the SDK resolve key
+  // metadata before Encrypt. Not scoped via kms:ViaService — app calls
+  // KMS directly.
+  statement {
+    sid    = "KmsEncryptByotToken"
+    effect = "Allow"
+    actions = [
+      "kms:Encrypt",
+      "kms:DescribeKey",
+    ]
+    resources = [aws_kms_key.byot.arn]
   }
 
   dynamic "statement" {

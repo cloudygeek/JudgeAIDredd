@@ -32,7 +32,7 @@ resource "aws_ecs_task_definition" "dashboard" {
       { name = "DYNAMO_API_KEYS_TABLE_NAME", value = aws_dynamodb_table.jaid_api_keys.name },
       { name = "DYNAMO_USER_PERMISSIONS_TABLE_NAME", value = aws_dynamodb_table.jaid_user_permissions.name },
       { name = "DYNAMO_BYOT_TABLE_NAME", value = var.byot_table_name },
-      { name = "BYOT_KMS_KEY_ID", value = var.sse_kms_key_arn },
+      { name = "BYOT_KMS_KEY_ID", value = aws_kms_key.byot.arn },
       { name = "DREDD_HOOK_URL", value = "https://${var.hook_host}" },
     ]
 
