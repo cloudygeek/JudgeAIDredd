@@ -9,7 +9,7 @@
  * ZIP headers (STORE method would also work; DEFLATE keeps the archive small).
  */
 import { deflateRawSync, crc32 } from "node:zlib";
-import { readFileSync } from "node:fs";
+import { buildBakedHook } from "./hook-bake.js";
 
 interface ZipEntry {
   name: string;
@@ -96,17 +96,6 @@ function buildZip(entries: ZipEntry[]): Buffer {
   eocd.writeUInt16LE(0, 20);
 
   return Buffer.concat([...chunks, cdBuf, eocd]);
-}
-
-/**
- * Patch the hook script so it defaults to the caller's judge URL instead of
- * localhost:3001. Users can still override with $DREDD_URL at runtime.
- */
-function bakeHookScript(script: string, dreddUrl: string): string {
-  return script.replace(
-    /DREDD_URL="\$\{DREDD_URL:-[^}]*\}"/,
-    `DREDD_URL="\${DREDD_URL:-${dreddUrl}}"`,
-  );
 }
 
 function renderSettings(dreddUrl: string): string {
@@ -488,9 +477,10 @@ the user explicitly asks.
  * /api/integration-bundle route.
  */
 export function buildIntegrationBundle(dreddUrl: string): Buffer {
-  const hookScriptPath = new URL("../hooks/dredd-hook.sh", import.meta.url);
-  const hookScript = readFileSync(hookScriptPath, "utf8");
-  const bakedHook = bakeHookScript(hookScript, dreddUrl);
+  // Self-contained, URL-baked hook (managed-allow lib inlined) — see
+  // hook-bake.ts. We do NOT ship dredd-managed-allow.sh as a separate
+  // bundle entry; inlining keeps the install a single file.
+  const bakedHook = buildBakedHook(dreddUrl);
 
   const entries: ZipEntry[] = [
     { name: "dredd-hook.sh", data: Buffer.from(bakedHook, "utf8"), mode: 0o755 },

@@ -62,9 +62,18 @@ DREDD_MODE="${DREDD_MODE:-}"
 DREDD_MANAGED_ALLOW_SCOPE="${DREDD_MANAGED_ALLOW_SCOPE:-conservative}"
 DREDD_MANAGED_ALLOW_RULES="${DREDD_MANAGED_ALLOW_RULES:-}"
 
-# Source the Phase 7a primitives. Path is sibling to this script.
+# Phase 7a primitives live in the sibling dredd-managed-allow.sh. In a
+# repo/dev checkout we source it. The integration-bundle / hook-script
+# baker REPLACES this whole BEGIN/END block with the lib inlined, so a
+# client install is a single self-contained file (the lib is not shipped
+# separately). Guarded with [ -f ] so a missing lib degrades gracefully —
+# the managed-allow call sites below are each `command -v`-guarded too, so
+# the hook still runs, it just skips managed-allow.
 # shellcheck disable=SC1091
-. "$(dirname "${BASH_SOURCE[0]:-$0}")/dredd-managed-allow.sh"
+# >>> DREDD_MANAGED_ALLOW_LIB (BEGIN) <<<
+_dredd_lib="$(dirname "${BASH_SOURCE[0]:-$0}")/dredd-managed-allow.sh"
+[ -f "$_dredd_lib" ] && . "$_dredd_lib"
+# >>> DREDD_MANAGED_ALLOW_LIB (END) <<<
 
 # Return the JSON array of rules for a given scope name. Conservative
 # is the only non-trivial scope in v1; "off" returns an empty array
@@ -511,8 +520,10 @@ case "$HOOK_EVENT" in
     # do anything else. Default stale window is 24h; tunable via
     # DREDD_MANAGED_SIDECAR_STALE_SECS for tests / fast cycles.
     DREDD_MANAGED_SIDECAR_STALE_SECS="${DREDD_MANAGED_SIDECAR_STALE_SECS:-86400}"
-    dredd_sweep_stale_sidecars "$DREDD_MANAGED_SIDECAR_STALE_SECS" \
-      >/dev/null 2>>"$DREDD_DEBUG_LOG" || true
+    if command -v dredd_sweep_stale_sidecars >/dev/null 2>&1; then
+      dredd_sweep_stale_sidecars "$DREDD_MANAGED_SIDECAR_STALE_SECS" \
+        >/dev/null 2>>"$DREDD_DEBUG_LOG" || true
+    fi
 
     # Build a structured backfill envelope. The server prefers this
     # over the raw JSONL transcript — ships ~5KB on a 50-prompt
@@ -679,7 +690,7 @@ case "$HOOK_EVENT" in
     # script gated us here), and only when both CWD and SESSION_ID are
     # known. Silent on missing fields and on jq/IO errors — the
     # managed-allow feature is advisory; failures don't block prompts.
-    if [ -n "$CWD" ] && [ -n "$SESSION_ID" ]; then
+    if [ -n "$CWD" ] && [ -n "$SESSION_ID" ] && command -v dredd_reconcile_managed_allow >/dev/null 2>&1; then
       DESIRED_RULES_JSON=$(_dredd_rules_for_scope "$DREDD_MANAGED_ALLOW_SCOPE")
       if [ -n "$DESIRED_RULES_JSON" ]; then
         dredd_reconcile_managed_allow "$CWD" "$SESSION_ID" \
@@ -846,7 +857,7 @@ case "$HOOK_EVENT" in
     # for any project this session was managing (typically just one). If
     # other sessions are still active on the same project, the rules
     # stay; only the sidecar for this session is removed. Best-effort.
-    if [ -n "$SESSION_ID" ]; then
+    if [ -n "$SESSION_ID" ] && command -v dredd_cleanup_session >/dev/null 2>&1; then
       dredd_cleanup_session "$SESSION_ID" \
         >/dev/null 2>>"${DREDD_DEBUG_LOG:-$HOME/.claude/dredd/hook-debug.log}" || true
     fi

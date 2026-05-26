@@ -397,19 +397,13 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
       if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
       const identity = await authenticateHookRequest(req, res);
       if (!identity) return; // 401 already sent
-      const { readFileSync } = await import("node:fs");
-      const hookScriptPath = new URL("../hooks/dredd-hook.sh", import.meta.url);
-      const raw = readFileSync(hookScriptPath, "utf8");
-      // Bake the caller-visible host into DREDD_URL so the downloaded
-      // script doesn't need post-install editing. Same rewrite the
-      // integration-bundle uses, kept local so this file doesn't have
-      // to import from integration-bundle (which lives in the dashboard
-      // image's code path).
+      // Bake the caller-visible host into DREDD_URL AND inline the
+      // managed-allow lib so the downloaded script is a single
+      // self-contained file. Shared with the integration bundle via
+      // hook-bake.ts (role-neutral, no dashboard-code import).
+      const { buildBakedHook } = await import("./hook-bake.js");
       const dreddUrl = `https://${req.headers["x-forwarded-host"] || req.headers.host || "localhost"}`;
-      const baked = raw.replace(
-        /DREDD_URL="\$\{DREDD_URL:-[^}]*\}"/,
-        `DREDD_URL="\${DREDD_URL:-${dreddUrl}}"`,
-      );
+      const baked = buildBakedHook(dreddUrl);
       res.writeHead(200, {
         "Content-Type": "text/plain; charset=utf-8",
         "Content-Disposition": 'attachment; filename="dredd-hook.sh"',
