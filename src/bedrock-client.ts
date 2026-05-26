@@ -113,7 +113,7 @@ const BYOT_FALLBACK_ERRORS = new Set([
   "ServiceUnavailableException",
   "ServiceQuotaExceededException",
 ]);
-function isByotFallbackError(err: unknown): boolean {
+export function isByotFallbackError(err: unknown): boolean {
   const name = (err as { name?: string })?.name ?? "";
   return BYOT_FALLBACK_ERRORS.has(name);
 }
@@ -321,12 +321,12 @@ export async function bedrockEmbed(
   region = REGION,
   auth?: BedrockAuth,
 ): Promise<number[][]> {
-  // Bearer token is bound to its own region; otherwise use the passed region.
-  const effRegion = auth && auth.kind === "bearer" ? auth.region : region;
+  // Region resolution lives in invokeModel/regionFor: a bearer token targets
+  // its own region, otherwise this `region`. Pass it straight through.
   const bare = modelId.replace(/^(?:eu|us|global)\./, "");
-  if (bare.startsWith("cohere.embed")) return cohereEmbed(texts, modelId, effRegion, auth);
-  if (bare.startsWith("amazon.titan-embed")) return Promise.all(texts.map((t) => titanEmbed(t, modelId, effRegion, auth)));
-  if (bare.startsWith("twelvelabs.")) return Promise.all(texts.map((t) => marengoEmbed(t, modelId, effRegion, auth)));
+  if (bare.startsWith("cohere.embed")) return cohereEmbed(texts, modelId, region, auth);
+  if (bare.startsWith("amazon.titan-embed")) return Promise.all(texts.map((t) => titanEmbed(t, modelId, region, auth)));
+  if (bare.startsWith("twelvelabs.")) return Promise.all(texts.map((t) => marengoEmbed(t, modelId, region, auth)));
   throw new Error(`Unknown Bedrock embedding model family: ${modelId}`);
 }
 
@@ -337,14 +337,17 @@ async function invokeModel(modelId: string, body: object, region: string, auth?:
     contentType: "application/json",
     accept: "application/json",
   });
-  const sendWith = (a?: BedrockAuth) => clientFor(regionFor(a, region), a).send(command);
+  const sendWith = (a?: BedrockAuth, regionOverride?: string) =>
+    clientFor(regionOverride ?? regionFor(a, region), a).send(command);
   let response;
   try {
     response = await sendWith(auth);
   } catch (err) {
     if (auth && auth.kind === "bearer" && !auth.noFallback && isByotFallbackError(err)) {
-      console.warn(`  [bedrock] BYOT embed call failed (${(err as any)?.name}); falling back to platform creds`);
-      response = await sendWith({ kind: "default" });
+      console.warn(`  [bedrock] BYOT embed call failed (${(err as { name?: string })?.name}); falling back to platform creds`);
+      // Fallback deliberately targets the module REGION — the platform role
+      // has Bedrock/embedding access there, not necessarily the bearer's region.
+      response = await sendWith({ kind: "default" }, REGION);
     } else {
       throw err;
     }

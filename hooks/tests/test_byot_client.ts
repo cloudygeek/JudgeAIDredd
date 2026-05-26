@@ -1,6 +1,6 @@
 // hooks/tests/test_byot_client.ts
 // Run: npx tsx hooks/tests/test_byot_client.ts
-import { __clientForTest } from "../../src/bedrock-client.js";
+import { __clientForTest, isByotFallbackError } from "../../src/bedrock-client.js";
 
 const c = { green: "\x1b[32m", red: "\x1b[31m", off: "\x1b[0m" };
 let PASS = 0, FAIL = 0;
@@ -21,6 +21,11 @@ async function main() {
 
   const b3 = __clientForTest("eu-west-2", { kind: "bearer", token: "tok-B", region: "eu-west-2" });
   ok("different token → different client", b3 !== b1);
+
+  // isByotFallbackError classifier.
+  ok("classified error name → fallback eligible", isByotFallbackError({ name: "AccessDeniedException" }) === true);
+  ok("unclassified error name → not eligible", isByotFallbackError({ name: "ValidationException" }) === false);
+  ok("plain Error → not eligible", isByotFallbackError(new Error("boom")) === false);
 
   console.log(`\n${FAIL === 0 ? c.green + "ALL PASS" : c.red + FAIL + " FAILED"}${c.off} (${PASS}/${PASS + FAIL})`);
   process.exit(FAIL === 0 ? 0 : 1);
