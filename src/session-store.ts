@@ -60,6 +60,21 @@ export interface SessionSummary {
   ownerSub?: string | null;
   /** Display convenience — same source as ownerSub. */
   ownerEmail?: string | null;
+  /** Running aggregates maintained on the session META row so the
+   *  dashboard list view renders without a full per-session
+   *  reconstruction. Optional + default-0 for back-compat with rows
+   *  written before these counters existed. */
+  toolCallCount?: number;
+  deniedCount?: number;
+  fileWriteCount?: number;
+  /** Classification of the most recent turn metric (on-task / scope-creep
+   *  / drifting / hijacked), or null if no turn metric yet. */
+  lastClassification?: string | null;
+  /** ALB-observed client IP, copied from META (list IP badge). */
+  clientIp?: string | null;
+  /** Per-(user,project) Claude Code permission lists copied to META
+   *  (list "U" badge). Shape: { allow, deny, ask } string arrays. */
+  userPermissions?: { allow?: string[]; deny?: string[]; ask?: string[] } | null;
 }
 
 export interface SessionStore {
