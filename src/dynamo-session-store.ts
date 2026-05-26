@@ -1998,6 +1998,21 @@ export class DynamoSessionStore implements SessionStore {
       }),
     );
 
+    // Mirror the latest classification onto META so the dashboard list
+    // can show the badge without reading the METRIC# items. Best-effort.
+    try {
+      await this.client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: { pk: pk(sessionId), sk: "META" },
+          UpdateExpression: "SET lastClassification = :c",
+          ExpressionAttributeValues: { ":c": classification },
+        }),
+      );
+    } catch (err) {
+      console.warn(`  [agg] classification update failed for ${sessionId}: ${(err as Error)?.message ?? err}`);
+    }
+
     const driftStr = driftFromOriginal !== null ? driftFromOriginal.toFixed(3) : "n/a";
     const deltaStr = driftFromPrevious !== null ? driftFromPrevious.toFixed(3) : "n/a";
     const classIcon =
