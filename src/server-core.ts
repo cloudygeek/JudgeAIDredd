@@ -124,6 +124,7 @@ import {
 } from "./byot/credential-provider.js";
 import type { ByotStore } from "./byot-store.js";
 import type { ByotCrypto } from "./byot/byot-crypto.js";
+import { ByotService } from "./byot/byot-service.js";
 
 export type TrustMode = "interactive" | "autonomous" | "learn";
 
@@ -678,6 +679,20 @@ console.log(
     `(store=${STORE_BACKEND}, table=${DYNAMO_BYOT_TABLE_NAME}, ` +
     `kms=${BYOT_KMS_KEY_ID ? "configured" : "FAKE (dev)"})`,
 );
+
+export const byotService = new ByotService({
+  store: byotStore,
+  crypto: byotCrypto,
+  models: { judgeModel: CONFIG.judgeModel, embeddingModel: CONFIG.embeddingModel },
+  onChange: (ownerSub) => {
+    // Single-process dev: keep the provider cache coherent. In prod the
+    // dashboard + hook are separate processes; the hook's 5-min cache TTL
+    // bounds staleness there.
+    if (credentialProvider instanceof BearerCredentialProvider) {
+      credentialProvider.invalidate(ownerSub);
+    }
+  },
+});
 
 // Phase 6 rollout gate. When false (default), the hook can still upload
 // snapshots and the dashboard can still surface them, but the PreToolUse

@@ -40,6 +40,7 @@ import {
   resolvePublicOrigin,
   buildSessionLogShape,
   flushLogs,
+  byotService,
 } from "./server-core.js";
 import type { ApprovalRecord } from "./approval-store.js";
 import { exportPolicies } from "./tool-policy.js";
@@ -434,6 +435,51 @@ const server = createServer(async (req, res) => {
       }
       const ok = await apiKeys.revokeKey(hashedKey, principal.userId);
       return json(res, 200, { revoked: ok });
+    }
+
+    // ---------------------------------------------------------------
+    // BYOT — per-user Bedrock token. GET status (never the token),
+    // POST validate-then-store, DELETE remove. ownerSub = Clerk userId.
+    // ---------------------------------------------------------------
+    if (url.pathname === "/api/byot") {
+      const principal = await requireClerkAuth(req, res);
+      if (!principal) return;
+
+      if (req.method === "GET") {
+        return json(res, 200, await byotService.getStatus(principal.userId));
+      }
+
+      if (req.method === "POST") {
+        const body = JSON.parse(await readBody(req));
+        const token = String(body.token ?? "").trim();
+        const region = String(body.region ?? "").trim();
+        if (!token) return json(res, 400, { error: "token is required" });
+        if (!/^[a-z]{2}-[a-z]+-\d$/.test(region)) {
+          return json(res, 400, { error: "valid AWS region is required (e.g. eu-west-2)" });
+        }
+        let result;
+        try {
+          result = await byotService.validateAndStore(principal.userId, token, region);
+        } catch (err) {
+          // An unexpected error during the probe (not a probe failure) —
+          // never echo the token back.
+          return json(res, 502, { error: `validation error: ${(err as Error)?.name ?? "unknown"}` });
+        }
+        if (!result.stored) {
+          return json(res, 400, {
+            error: "Token validation failed — the region cannot serve all required models.",
+            failures: result.probe.failures, // { model, api, error }[]
+          });
+        }
+        return json(res, 200, await byotService.getStatus(principal.userId));
+      }
+
+      if (req.method === "DELETE") {
+        await byotService.remove(principal.userId);
+        return json(res, 200, { configured: false });
+      }
+
+      return json(res, 405, { error: "Method not allowed" });
     }
 
     // ---------------------------------------------------------------
