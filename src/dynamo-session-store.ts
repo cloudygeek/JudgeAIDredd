@@ -1602,6 +1602,25 @@ export class DynamoSessionStore implements SessionStore {
             ConditionExpression: "attribute_not_exists(sk)",
           }),
         );
+        // Maintain session-level aggregates on META for the dashboard list
+        // (so /api/sessions needs no per-session reconstruction). Atomic ADD —
+        // no read-modify-write race. Best-effort: a counter blip must never
+        // break the /track path, so swallow errors like the rest of this method.
+        try {
+          const addExpr = decision === "deny"
+            ? "ADD aggToolCalls :one, aggDenied :one"
+            : "ADD aggToolCalls :one";
+          await this.client.send(
+            new UpdateCommand({
+              TableName: this.tableName,
+              Key: { pk: pk(sessionId), sk: "META" },
+              UpdateExpression: addExpr,
+              ExpressionAttributeValues: { ":one": 1 },
+            }),
+          );
+        } catch (err) {
+          console.warn(`  [agg] toolCall counter update failed for ${sessionId}: ${(err as Error)?.message ?? err}`);
+        }
         return;
       } catch (err) {
         if (err instanceof ConditionalCheckFailedException) {
