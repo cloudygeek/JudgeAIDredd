@@ -54,6 +54,18 @@ import {
 
 const HOOK_URL = process.env.DREDD_HOOK_URL ?? "";
 
+// Short-TTL cache for GET /api/sessions. The dashboard UI polls this every
+// 5s, and the handler fans out one full buildSessionLogShape per live
+// session (50× Dynamo reconstructions of large sessions). Without a cache,
+// each poll — and every open tab — re-runs that fan-out, which on a large
+// jaid-sessions table (~18k items) saturates the single-threaded event loop
+// and starves the ALB /health check (the 2026-05-26 dashboard outage).
+// Caching the assembled response collapses all polls/tabs within the window
+// into a single computation. Keyed by (scope, liveOnly) so admin/non-admin
+// and live/all views don't share entries.
+const SESSIONS_CACHE_TTL_MS = parseInt(process.env.DREDD_SESSIONS_CACHE_TTL_MS ?? "5000", 10);
+const sessionsCache = new Map<string, { at: number; body: unknown }>();
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
 
@@ -148,6 +160,14 @@ const server = createServer(async (req, res) => {
       const liveParam = url.searchParams.get("live");
       const liveOnly = liveParam !== "0";
 
+      // Serve from the short-TTL cache when warm — collapses the 5s poll
+      // (and every open tab) into one fan-out per window. See cache decl.
+      const cacheKey = `${principal.isAdmin ? "admin" : principal.userId}:${liveOnly ? "live" : "all"}`;
+      const cachedSessions = sessionsCache.get(cacheKey);
+      if (cachedSessions && Date.now() - cachedSessions.at < SESSIONS_CACHE_TTL_MS) {
+        return json(res, 200, cachedSessions.body);
+      }
+
       const all = await tracker.listSessions(50);
       const visible = principal.isAdmin
         ? all
@@ -192,7 +212,9 @@ const server = createServer(async (req, res) => {
         }
       }
 
-      return json(res, 200, [...liveLogs, ...diskLogs].slice(0, 50));
+      const body = [...liveLogs, ...diskLogs].slice(0, 50);
+      sessionsCache.set(cacheKey, { at: Date.now(), body });
+      return json(res, 200, body);
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/api/session-log/")) {
