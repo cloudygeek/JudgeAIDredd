@@ -85,7 +85,7 @@ async function main() {
   });
   const dar = await dyn.get("d2");
   ok("Dynamo round-trips admin-audit fields",
-    dar?.setByAdminEmail === "boss@x.io" && dar?.setByAdminAt === "t7");
+    dar?.setByAdminSub === "admin_2" && dar?.setByAdminEmail === "boss@x.io" && dar?.setByAdminAt === "t7");
 
   // --- legacy Dynamo row (no admin fields) reads as null ---
   await dyn.put({

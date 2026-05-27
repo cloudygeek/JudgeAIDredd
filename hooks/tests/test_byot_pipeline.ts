@@ -7,6 +7,7 @@ import { InMemoryByotStore } from "../../src/byot-store.js";
 import { FakeByotCrypto } from "../../src/byot/byot-crypto.js";
 import { BearerCredentialProvider, DefaultCredentialProvider } from "../../src/byot/credential-provider.js";
 import { ByotService } from "../../src/byot/byot-service.js";
+import type { ProbeResult } from "../../src/byot/capability-probe.js";
 
 const c = { green: "\x1b[32m", red: "\x1b[31m", off: "\x1b[0m" };
 let PASS = 0, FAIL = 0;
@@ -48,6 +49,35 @@ async function main() {
   await store.markRuntimeFallback("u1", "AccessDeniedException", "t5");
   const view2 = await svc.getStatus("u1");
   ok("status view reflects runtime fallback", view2.status === "runtime-fallback" && view2.lastFallbackReason === "AccessDeniedException");
+
+  // --- admin actor stamping (probe injected so no Bedrock call) ---
+  const okProbe = async (): Promise<ProbeResult> => ({ ok: true, failures: [] });
+  const svc2 = new ByotService({
+    store, crypto, models: { judgeModel: "j", embeddingModel: "e" },
+    probe: okProbe,
+  });
+
+  // Admin writes on behalf of u3 → fields stamped.
+  await svc2.validateAndStore("u3", "tok-aaaa", "eu-west-2",
+    { adminSub: "admin_9", adminEmail: "admin@x.io" });
+  const adminView = await svc2.getStatus("u3");
+  ok("admin write stamps setByAdmin* fields",
+    adminView.setByAdminSub === "admin_9" &&
+    adminView.setByAdminEmail === "admin@x.io" &&
+    typeof adminView.setByAdminAt === "string" && adminView.setByAdminAt.length > 0);
+
+  // User later writes their own token (no actor) → stamp cleared.
+  await svc2.validateAndStore("u3", "tok-bbbb", "eu-west-2");
+  const selfView = await svc2.getStatus("u3");
+  ok("self write clears setByAdmin* fields",
+    selfView.setByAdminSub === null &&
+    selfView.setByAdminEmail === null &&
+    selfView.setByAdminAt === null &&
+    selfView.last4 === "bbbb");
+
+  // Remove accepts an actor without throwing.
+  await svc2.remove("u3", { adminSub: "admin_9", adminEmail: "admin@x.io" });
+  ok("remove(actor) deletes the row", (await svc2.getStatus("u3")).configured === false);
 
   console.log(`\n${FAIL === 0 ? c.green + "ALL PASS" : c.red + FAIL + " FAILED"}${c.off} (${PASS}/${PASS + FAIL})`);
   process.exit(FAIL === 0 ? 0 : 1);

@@ -1,7 +1,7 @@
 // src/byot/byot-service.ts
 import type { ByotStore } from "../byot-store.js";
 import type { ByotCrypto } from "./byot-crypto.js";
-import type { ByotConfigRecord, ByotConfigStatusView } from "./types.js";
+import type { ByotActor, ByotConfigRecord, ByotConfigStatusView } from "./types.js";
 import { probeRegionCapabilities, type ProbeResult } from "./capability-probe.js";
 
 export interface ByotServiceOptions {
@@ -12,6 +12,9 @@ export interface ByotServiceOptions {
    *  the dashboard container and hook container are separate processes,
    *  so this only matters in a single-process/dev deployment). */
   onChange?: (ownerSub: string) => void;
+  /** Override the Bedrock capability probe — for tests. Defaults to the
+   *  real probeRegionCapabilities. */
+  probe?: typeof probeRegionCapabilities;
 }
 
 export class ByotService {
@@ -31,6 +34,9 @@ export class ByotService {
       lastValidatedAt: r.lastValidatedAt,
       lastFallbackAt: r.lastFallbackAt ?? null,
       lastFallbackReason: r.lastFallbackReason ?? null,
+      setByAdminSub: r.setByAdminSub ?? null,
+      setByAdminEmail: r.setByAdminEmail ?? null,
+      setByAdminAt: r.setByAdminAt ?? null,
     };
   }
 
@@ -41,8 +47,9 @@ export class ByotService {
     ownerSub: string,
     token: string,
     region: string,
+    actor?: ByotActor,
   ): Promise<{ stored: boolean; probe: ProbeResult }> {
-    const probe = await probeRegionCapabilities(token, region, this.opts.models);
+    const probe = await (this.opts.probe ?? probeRegionCapabilities)(token, region, this.opts.models);
     if (!probe.ok) return { stored: false, probe };
 
     const now = new Date().toISOString();
@@ -51,6 +58,9 @@ export class ByotService {
     // any createdAt skew between concurrent saves is inconsequential.
     const existing = await this.opts.store.get(ownerSub);
     const ciphertext = await this.opts.crypto.encrypt(token, { ownerSub });
+    const adminStamp = actor
+      ? { setByAdminSub: actor.adminSub, setByAdminEmail: actor.adminEmail, setByAdminAt: now }
+      : { setByAdminSub: null, setByAdminEmail: null, setByAdminAt: null };
     const record: ByotConfigRecord = {
       ownerSub,
       provider: "bedrock-bearer",
@@ -63,13 +73,17 @@ export class ByotService {
       lastValidatedAt: now,
       lastFallbackAt: null,
       lastFallbackReason: null,
+      ...adminStamp,
     };
     await this.opts.store.put(record);
     this.opts.onChange?.(ownerSub);
     return { stored: true, probe };
   }
 
-  async remove(ownerSub: string): Promise<void> {
+  async remove(ownerSub: string, actor?: ByotActor): Promise<void> {
+    if (actor) {
+      console.log(`[byot] admin ${actor.adminEmail ?? actor.adminSub} removed token for ${ownerSub}`);
+    }
     await this.opts.store.delete(ownerSub);
     this.opts.onChange?.(ownerSub);
   }
