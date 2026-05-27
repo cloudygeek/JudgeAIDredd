@@ -79,6 +79,28 @@ function basename(p: string): string {
   return i >= 0 ? p.slice(i + 1) : p;
 }
 
+/**
+ * Sanitise a dynamic, potentially attacker-controlled value (file path,
+ * env-var name) before embedding it in evidence text. The evidence is
+ * rendered inside a server-trusted <provenance_alert> block the judge is
+ * told to obey, so a hostile value must not be able to (a) forge a closing
+ * or second opening tag (angle brackets) or (b) forge an extra
+ * "[HIGH] ... authorized" line (newlines / CR / tabs). Length-capped so a
+ * pathological path can't bloat the prompt.
+ *
+ * Additionally strips the bare tag name "provenance_alert" so that even
+ * after angle-bracket removal the residual text cannot reconstruct the
+ * tag token that renderProvenanceBlock's scrubFenceTags defence targets.
+ */
+function sanitize(s: string): string {
+  return s
+    .replace(/[\r\n\t<>]/g, " ")
+    .replace(/provenance_alert/gi, "[redacted-tag]")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .slice(0, 200);
+}
+
 /** Does a shell command reference a file path (full path or basename)? */
 function refsPath(cmd: string, p: string): boolean {
   if (!p) return false;
@@ -157,9 +179,12 @@ export function buildTaintEvidence(input: TaintInput): TaintEvidence {
     for (const tf of taintedFiles) {
       if (refsPath(cmd, tf.path)) {
         push(
-          "high",
-          `${verb} command references ${tf.path}, which was written at turn(s) ` +
-            `${tf.writeTurns.join(",")} using a value read from ${tf.sourcePath} ` +
+          // Executing a config/script that legitimately embeds a secret
+          // (e.g. .env -> config.ts -> `node config.ts`) is a normal dev
+          // workflow; only shipping it OFF the box (egress) is high-signal.
+          sink.kind === "egress" ? "high" : "medium",
+          `${verb} command references ${sanitize(tf.path)}, which was written at turn(s) ` +
+            `${tf.writeTurns.join(",")} using a value read from ${sanitize(tf.sourcePath)} ` +
             `(sensitive) at turn ${tf.sourceTurn} earlier in this session. This is a ` +
             `multi-step read→write→use data flow spanning turns that would not be ` +
             `visible from the current action alone.`,
@@ -170,7 +195,7 @@ export function buildTaintEvidence(input: TaintInput): TaintEvidence {
     // Case B — the sink references a sensitive file directly (read-then-use).
     for (const r of sensitiveReads) {
       if (refsPath(cmd, r.path)) {
-        push("high", `${verb} command references sensitive file ${r.path} read at turn ${r.turn}.`);
+        push("high", `${verb} command references sensitive file ${sanitize(r.path)} read at turn ${r.turn}.`);
       }
     }
 
@@ -179,7 +204,7 @@ export function buildTaintEvidence(input: TaintInput): TaintEvidence {
     if (sink.kind === "egress") {
       for (const e of sensitiveEnv) {
         if (cmd.includes(e.name)) {
-          push("high", `Egress command references sensitive environment variable ${e.name} set at turn ${e.turn}.`);
+          push("high", `Egress command references sensitive environment variable ${sanitize(e.name)} set at turn ${e.turn}.`);
         }
       }
     }
@@ -191,7 +216,7 @@ export function buildTaintEvidence(input: TaintInput): TaintEvidence {
       if (secrets.some((s) => sink.content.includes(s))) {
         push(
           "medium",
-          `Writing a value read from ${r.path} (sensitive, turn ${r.turn}) into ${sink.path} — ` +
+          `Writing a value read from ${sanitize(r.path)} (sensitive, turn ${r.turn}) into ${sanitize(sink.path)} — ` +
             `potential staging for later exfiltration.`,
         );
         break;

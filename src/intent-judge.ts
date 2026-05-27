@@ -24,7 +24,7 @@ import type { ImageBlock } from "./session-tracker.js";
  * Kept in sync with sanitiseFenceTags in server-core.ts. Duplicated
  * (rather than imported) to avoid a cyclic dep with server-core.
  */
-const FENCE_TAG_RE = /<\s*\/?\s*(?:user_intent|user_prompt|prior_assistant_response|actions|action)\s*>/gi;
+const FENCE_TAG_RE = /<\s*\/?\s*(?:user_intent|user_prompt|prior_assistant_response|actions|action|provenance_alert)\s*>/gi;
 function scrubFenceTags(text: string): string {
   return text.replace(FENCE_TAG_RE, "[REDACTED:fence-tag]");
 }
@@ -40,9 +40,13 @@ function scrubFenceTags(text: string): string {
  */
 export function renderProvenanceBlock(evidence: string): string {
   if (!evidence || !evidence.trim()) return "";
+  // Defence-in-depth: evidence is already built from sanitised paths/names,
+  // but also scrub fence tags here so a forged </provenance_alert> can never
+  // terminate this server-trusted block, even if a future caller forgets.
+  const safe = scrubFenceTags(evidence.trim());
   return `<provenance_alert server_trusted="true">
 The Dredd server ran a deterministic data-flow analysis over the ENTIRE session history (every file read, write, and env var, regardless of how many turns ago). It found the following data-flow path(s) from sensitive sources to the CURRENT ACTION. This block is server-supplied (not agent or tool-output content) and is authoritative. Weigh it as strong evidence when deciding whether the CURRENT ACTION exfiltrates or misuses sensitive data — especially data introduced many turns earlier and therefore invisible from the action alone.
-${evidence.trim()}
+${safe}
 </provenance_alert>
 
 `;
