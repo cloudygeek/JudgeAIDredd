@@ -760,6 +760,45 @@ chmod 600 ~/.claude/dredd/api-key</code></pre>
           </div>
         </div>
       </div>
+
+        <div class="admin-only" style="max-width:620px;margin-top:32px;border-top:1px solid var(--border);padding-top:24px">
+          <h2 style="margin:0 0 4px">Admin — set a token for another user</h2>
+          <p class="muted" style="margin:0 0 16px;font-size:13px">
+            Select a user and configure their Bedrock token on their behalf.
+            The user is shown that an administrator set it.
+          </p>
+          <div style="margin-bottom:16px">
+            <label style="display:block;font-size:13px;color:var(--muted);margin-bottom:4px">User</label>
+            <select id="byot-admin-user" onchange="renderAdminByot()"
+                    style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;font-family:inherit;width:100%">
+              <option value="">— select a user —</option>
+            </select>
+          </div>
+          <div id="byot-admin-status" style="margin-bottom:16px"></div>
+          <div id="byot-admin-form" style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;display:none">
+            <div style="font-weight:600;font-size:14px;margin-bottom:12px">Configure token for selected user</div>
+            <div style="margin-bottom:12px">
+              <label style="display:block;font-size:13px;color:var(--muted);margin-bottom:4px">Bedrock API key</label>
+              <input type="password" id="byot-admin-token" autocomplete="off" placeholder="paste the user's Bedrock bearer token"
+                     style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;font-family:inherit">
+            </div>
+            <div style="margin-bottom:16px">
+              <label style="display:block;font-size:13px;color:var(--muted);margin-bottom:4px">AWS region</label>
+              <select id="byot-admin-region"
+                      style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;font-family:inherit;width:100%">
+                <option value="eu-west-2">eu-west-2 (London)</option>
+                <option value="eu-west-1">eu-west-1 (Ireland)</option>
+                <option value="eu-central-1">eu-central-1 (Frankfurt)</option>
+                <option value="us-east-1">us-east-1 (N. Virginia)</option>
+                <option value="us-west-2">us-west-2 (Oregon)</option>
+              </select>
+            </div>
+            <div style="display:flex;gap:12px;align-items:center">
+              <button class="refresh-btn" id="byot-admin-save" onclick="saveAdminByot()" style="font-size:14px">Validate &amp; save for user</button>
+              <span id="byot-admin-msg" style="font-size:13px;color:var(--muted)"></span>
+            </div>
+          </div>
+        </div>
     </div>
   </div>
 
@@ -2597,6 +2636,7 @@ chmod 600 ~/.claude/dredd/api-key</code></pre>
     // ---- BYOT tab --------------------------------------------------------
     async function loadByot() {
       await renderByot();
+      if (dreddPrincipal && dreddPrincipal.isAdmin) await loadByotUserList();
     }
 
     async function renderByot() {
@@ -2695,6 +2735,114 @@ chmod 600 ~/.claude/dredd/api-key</code></pre>
       } finally {
         btn.disabled = false;
       }
+    }
+
+    async function loadByotUserList() {
+      const sel = document.getElementById('byot-admin-user');
+      if (!sel) return;
+      try {
+        const r = await dreddFetch(`${API}/api/keys`);
+        if (!r.ok) return;
+        const keys = await r.json();
+        const seen = new Set();
+        const users = [];
+        for (const k of keys) {
+          if (!k.ownerSub || seen.has(k.ownerSub)) continue;
+          seen.add(k.ownerSub);
+          users.push({ ownerSub: k.ownerSub, email: k.ownerEmail || '' });
+        }
+        users.sort((a, b) => (a.email || a.ownerSub).localeCompare(b.email || b.ownerSub));
+        sel.innerHTML = '<option value="">— select a user —</option>' +
+          users.map(u => `<option value="${esc(u.ownerSub)}">${esc(u.email || '(no email)')} — ${esc(u.ownerSub.slice(0, 12))}…</option>`).join('');
+      } catch (e) { /* leave list as-is on error */ }
+    }
+
+    async function renderAdminByot() {
+      const sub = document.getElementById('byot-admin-user').value;
+      const statusEl = document.getElementById('byot-admin-status');
+      const formEl = document.getElementById('byot-admin-form');
+      const msgEl = document.getElementById('byot-admin-msg');
+      if (msgEl) msgEl.textContent = '';
+      if (!sub) { statusEl.innerHTML = ''; formEl.style.display = 'none'; return; }
+      formEl.style.display = 'block';
+      try {
+        const r = await dreddFetch(`${API}/api/byot?ownerSub=${encodeURIComponent(sub)}`);
+        if (!r.ok) {
+          statusEl.innerHTML = `<div style="color:var(--red);font-size:13px">Failed to load status (HTTP ${r.status})</div>`;
+          return;
+        }
+        const s = await r.json();
+        if (!s.configured) {
+          statusEl.innerHTML = `<div style="font-size:13px;color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px">This user has no token configured.</div>`;
+          return;
+        }
+        const managed = s.setByAdminEmail
+          ? `<tr><td style="color:var(--muted)">Managed by</td><td class="muted">${esc(s.setByAdminEmail)}${s.setByAdminAt ? ' on ' + esc(new Date(s.setByAdminAt).toLocaleString()) : ''}</td></tr>`
+          : '';
+        statusEl.innerHTML = `
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:12px">
+            <table style="margin:0">
+              <tr><td style="width:140px;color:var(--muted)">Region</td><td>${esc(s.region ?? '—')}</td></tr>
+              <tr><td style="color:var(--muted)">Token</td><td class="mono">••••${esc(s.last4 ?? '')}</td></tr>
+              <tr><td style="color:var(--muted)">Status</td><td>${esc(s.status ?? '—')}</td></tr>
+              ${managed}
+            </table>
+          </div>
+          <button class="refresh-btn" id="byot-admin-remove" style="font-size:13px;border:1px solid var(--red);color:var(--red)">Remove this user's token</button>`;
+        document.getElementById('byot-admin-remove').addEventListener('click', () => removeAdminByot(sub));
+      } catch (e) {
+        statusEl.innerHTML = `<div style="color:var(--red);font-size:13px">Failed: ${esc(e.message)}</div>`;
+      }
+    }
+
+    async function saveAdminByot() {
+      const sub = document.getElementById('byot-admin-user').value;
+      const tokenEl = document.getElementById('byot-admin-token');
+      const token = tokenEl.value.trim();
+      const region = document.getElementById('byot-admin-region').value;
+      const msgEl = document.getElementById('byot-admin-msg');
+      const btn = document.getElementById('byot-admin-save');
+      if (!sub) { msgEl.style.color = 'var(--red)'; msgEl.textContent = 'Select a user first.'; return; }
+      if (!token) { msgEl.style.color = 'var(--red)'; msgEl.textContent = "Paste the user's token first."; return; }
+      btn.disabled = true;
+      msgEl.style.color = 'var(--muted)';
+      msgEl.textContent = 'Validating against the region…';
+      try {
+        const r = await dreddFetch(`${API}/api/byot`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, region, ownerSub: sub }),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          const detail = (data.failures || []).map(f => `${esc(f.model)} (${esc(f.api)}): ${esc(f.error)}`).join('; ');
+          msgEl.style.color = 'var(--red)';
+          msgEl.textContent = (data.error || 'Validation failed') + (detail ? ' — ' + detail : '');
+        } else {
+          tokenEl.value = '';
+          msgEl.style.color = 'var(--green)';
+          msgEl.textContent = 'Saved for user.';
+          await renderAdminByot();
+        }
+      } catch (e) {
+        msgEl.style.color = 'var(--red)';
+        msgEl.textContent = 'Request failed: ' + e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function removeAdminByot(sub) {
+      if (!confirm("Remove this user's Bedrock token? Their sessions revert to the platform account.")) return;
+      try {
+        const r = await dreddFetch(`${API}/api/byot`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ownerSub: sub }),
+        });
+        if (!r.ok) { alert('Remove failed: HTTP ' + r.status); return; }
+        await renderAdminByot();
+      } catch (e) { alert('Remove failed: ' + e.message); }
     }
 
     async function loadLogs() {
