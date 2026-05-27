@@ -158,6 +158,11 @@ export interface ToolCallRecord {
   userPermissionMatch?: { kind: "allow" | "deny"; rule: string };
   /** Phase 8 — pattern-trust signal. */
   patternTrust?: { hard: boolean; matched: number; topSim: number; topSummary: string };
+  /** Provenance-taint signal — set when DREDD_PROVENANCE_TAINT_ENABLED is on
+   *  and buildTaintEvidence found ≥1 sensitive source→sink chain for this
+   *  call. matched = chain count; topSeverity/topSummary describe the
+   *  highest-severity chain. Absent when the flag is off or no chain. */
+  taint?: { matched: number; topSeverity: "high" | "medium"; topSummary: string };
 }
 
 export interface FileRecord {

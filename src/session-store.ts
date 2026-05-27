@@ -313,6 +313,7 @@ export interface SessionStore {
       judgeVerdict?: ToolCallRecord["judgeVerdict"];
       userPermissionMatch?: { kind: "allow" | "deny"; rule: string };
       patternTrust?: { hard: boolean; matched: number; topSim: number; topSummary: string };
+      taint?: { matched: number; topSeverity: "high" | "medium"; topSummary: string };
     },
   ): Promise<void>;
 

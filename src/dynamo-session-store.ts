@@ -456,6 +456,7 @@ export class DynamoSessionStore implements SessionStore {
       judgeVerdict: t.judgeVerdict ?? null,
       userPermissionMatch: t.userPermissionMatch,
       patternTrust: t.patternTrust,
+      taint: t.taint,
     }));
 
     const turnIntents: TurnIntent[] = turns.map((t) => ({
@@ -1541,6 +1542,7 @@ export class DynamoSessionStore implements SessionStore {
       judgeVerdict?: ToolCallRecord["judgeVerdict"];
       userPermissionMatch?: { kind: "allow" | "deny"; rule: string };
       patternTrust?: { hard: boolean; matched: number; topSim: number; topSummary: string };
+      taint?: { matched: number; topSeverity: "high" | "medium"; topSummary: string };
     },
   ): Promise<void> {
     const meta = await this.getMeta(sessionId);
@@ -1597,6 +1599,7 @@ export class DynamoSessionStore implements SessionStore {
               judgeVerdict: cappedJudge,
               userPermissionMatch: extras?.userPermissionMatch,
               patternTrust: extras?.patternTrust,
+              taint: extras?.taint,
               ttl: ttl(),
             },
             ConditionExpression: "attribute_not_exists(sk)",

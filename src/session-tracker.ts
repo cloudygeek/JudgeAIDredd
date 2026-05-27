@@ -426,6 +426,7 @@ export class InMemorySessionStore implements SessionStore {
       judgeVerdict?: ToolCallRecord["judgeVerdict"];
       userPermissionMatch?: { kind: "allow" | "deny"; rule: string };
       patternTrust?: { hard: boolean; matched: number; topSim: number; topSummary: string };
+      taint?: { matched: number; topSeverity: "high" | "medium"; topSummary: string };
     },
   ): Promise<void> {
     const session = this.getSession(sessionId);
@@ -442,6 +443,7 @@ export class InMemorySessionStore implements SessionStore {
       judgeVerdict: extras?.judgeVerdict ?? null,
       userPermissionMatch: extras?.userPermissionMatch,
       patternTrust: extras?.patternTrust,
+      taint: extras?.taint,
     });
   }
 

@@ -398,6 +398,9 @@ export type FeedEntry = {
    *  this decision. hard=true → short-circuit to pattern-trust-allow;
    *  hard=false → judge was given soft context but verdict unchanged. */
   patternTrust?: { hard: boolean; matched: number; topSim: number; topSummary: string };
+  /** Provenance-taint signal for this tool call (DREDD_PROVENANCE_TAINT_ENABLED).
+   *  matched = chain count; topSeverity/topSummary = highest-severity chain. */
+  taint?: { matched: number; topSeverity: "high" | "medium"; topSummary: string };
 };
 
 export const feed: FeedEntry[] = [];

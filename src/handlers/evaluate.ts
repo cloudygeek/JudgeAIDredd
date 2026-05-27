@@ -425,6 +425,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   // serves them from the warm in-container snapshot). Strictly fail-soft:
   // any error leaves taintEvidence undefined and the judge runs as today.
   let taintEvidence: string | undefined;
+  let taintMeta: { matched: number; topSeverity: "high" | "medium"; topSummary: string } | undefined;
   if (PROVENANCE_TAINT_ENABLED) {
     try {
       const [filesRead, filesWritten, envVars] = await Promise.all([
@@ -441,6 +442,11 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       });
       if (ev.chains.length > 0) {
         taintEvidence = ev.text;
+        taintMeta = {
+          matched: ev.chains.length,
+          topSeverity: ev.chains[0].severity,
+          topSummary: ev.chains[0].description.slice(0, 200),
+        };
         console.log(
           `  [${session_id.substring(0, 8)}] [TAINT] ${ev.chains.length} chain(s); ` +
             `top: ${ev.chains[0].description.substring(0, 120)}`,
@@ -490,6 +496,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       judgeVerdict: result.judgeVerdict,
       userPermissionMatch: result.userPermissionMatch,
       patternTrust: result.patternTrust,
+      taint: taintMeta,
     },
   );
 
@@ -525,6 +532,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     authStage: authStageForFeed(identity),
     userPermission: result.userPermissionMatch,
     patternTrust: result.patternTrust,
+    taint: taintMeta,
   });
 
   if (isLearn && !result.allowed) {
