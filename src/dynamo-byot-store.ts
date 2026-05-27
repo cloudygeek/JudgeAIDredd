@@ -38,6 +38,9 @@ function itemToRecord(item: Record<string, any>): ByotConfigRecord {
     lastValidatedAt: item.lastValidatedAt ?? null,
     lastFallbackAt: item.lastFallbackAt ?? null,
     lastFallbackReason: item.lastFallbackReason ?? null,
+    setByAdminSub: item.setByAdminSub ?? null,
+    setByAdminEmail: item.setByAdminEmail ?? null,
+    setByAdminAt: item.setByAdminAt ?? null,
   };
 }
 

@@ -40,6 +40,11 @@ export interface ByotConfigRecord {
   lastValidatedAt: string | null;
   lastFallbackAt?: string | null;
   lastFallbackReason?: string | null;
+  /** Set when an admin wrote this config on the user's behalf; null when
+   *  the user wrote it themselves (user reclaim clears the stamp). */
+  setByAdminSub?: string | null;
+  setByAdminEmail?: string | null;
+  setByAdminAt?: string | null;
 }
 
 /** Non-sensitive projection returned by the dashboard GET — never the token. */
@@ -54,4 +59,12 @@ export interface ByotConfigStatusView {
   lastValidatedAt?: string | null;
   lastFallbackAt?: string | null;
   lastFallbackReason?: string | null;
+  /** Set when an admin wrote this config on the user's behalf; null when
+   *  the user wrote it themselves (user reclaim clears the stamp). */
+  setByAdminSub?: string | null;
+  setByAdminEmail?: string | null;
+  setByAdminAt?: string | null;
 }
+
+/** Who an admin write was performed by. Absent ⇒ a self-write. */
+export type ByotActor = { adminSub: string; adminEmail: string | null };

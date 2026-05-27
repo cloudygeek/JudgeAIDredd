@@ -65,6 +65,38 @@ async function main() {
   await dyn.delete("d1");
   ok("dynamo delete", (await dyn.get("d1")) === null);
 
+  // --- admin-audit fields round-trip (InMemory) ---
+  await store.put({
+    ownerSub: "a1", provider: "bedrock-bearer", region: "eu-west-2",
+    ciphertext: "CT", last4: "abcd", status: "active",
+    createdAt: "t0", updatedAt: "t0", lastValidatedAt: "t0",
+    setByAdminSub: "admin_1", setByAdminEmail: "admin@x.io", setByAdminAt: "t0",
+  });
+  const ar = await store.get("a1");
+  ok("InMemory round-trips admin-audit fields",
+    ar?.setByAdminSub === "admin_1" && ar?.setByAdminEmail === "admin@x.io" && ar?.setByAdminAt === "t0");
+
+  // --- admin-audit fields round-trip (Dynamo) ---
+  await dyn.put({
+    ownerSub: "d2", provider: "bedrock-bearer", region: "eu-west-2",
+    ciphertext: "CT3", last4: "wxyz", status: "active",
+    createdAt: "t0", updatedAt: "t0", lastValidatedAt: "t0",
+    setByAdminSub: "admin_2", setByAdminEmail: "boss@x.io", setByAdminAt: "t7",
+  });
+  const dar = await dyn.get("d2");
+  ok("Dynamo round-trips admin-audit fields",
+    dar?.setByAdminEmail === "boss@x.io" && dar?.setByAdminAt === "t7");
+
+  // --- legacy Dynamo row (no admin fields) reads as null ---
+  await dyn.put({
+    ownerSub: "d3", provider: "bedrock-bearer", region: "eu-west-2",
+    ciphertext: "CT4", last4: "0000", status: "active",
+    createdAt: "t0", updatedAt: "t0", lastValidatedAt: "t0",
+  });
+  const dlegacy = await dyn.get("d3");
+  ok("Dynamo legacy row reads admin fields as null",
+    dlegacy?.setByAdminSub === null && dlegacy?.setByAdminEmail === null && dlegacy?.setByAdminAt === null);
+
   console.log(`\n${FAIL === 0 ? c.green + "ALL PASS" : c.red + FAIL + " FAILED"}${c.off} (${PASS}/${PASS + FAIL})`);
   process.exit(FAIL === 0 ? 0 : 1);
 }
