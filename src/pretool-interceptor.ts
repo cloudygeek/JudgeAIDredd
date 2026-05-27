@@ -338,6 +338,10 @@ export class PreToolInterceptor {
      *  configured) bills their account. Undefined / {kind:"default"} =
      *  platform role. */
     bedrockAuth?: import("./byot/types.js").BedrockAuth,
+    /** Deterministic provenance-taint evidence (provenance-taint.ts),
+     *  built by the /evaluate handler from session state. Threaded to
+     *  the judge as a server-trusted block. Undefined/empty → no-op. */
+    taintEvidence?: string,
   ): Promise<InterceptionResult> {
     const start = Date.now();
     const s = this.getSession(sessionId);
@@ -716,6 +720,7 @@ export class PreToolInterceptor {
       s.intentImages,
       softContext.length > 0 ? softContext : undefined,
       bedrockAuth,
+      taintEvidence,
     );
 
     // Only "hijacked" is denied. "consistent" and "drifting" are allowed.
