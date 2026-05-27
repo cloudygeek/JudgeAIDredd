@@ -21,6 +21,10 @@ async function main() {
   const d = resolveByotTarget({ isAdmin: true, selfSub: "admin", requestedSub: null });
   ok("admin with no target is self", d.targetOwner === "admin" && d.actingOnBehalf === false);
 
+  // Admin with requestedSub omitted entirely (undefined) → self.
+  const g = resolveByotTarget({ isAdmin: true, selfSub: "admin" });
+  ok("admin with omitted requestedSub is self", g.targetOwner === "admin" && g.actingOnBehalf === false);
+
   // Admin requesting their own sub → self (no stamp).
   const e = resolveByotTarget({ isAdmin: true, selfSub: "admin", requestedSub: "admin" });
   ok("admin targeting self is not on-behalf", e.targetOwner === "admin" && e.actingOnBehalf === false);

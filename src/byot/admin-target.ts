@@ -30,7 +30,9 @@ export function resolveByotTarget(o: ResolveByotTargetOpts): ResolvedByotTarget 
 
 /** True iff `ownerSub` has at least one API key — the "picker-only" guard
  *  so an admin can't seed a config for an arbitrary/typo'd sub. Uses the
- *  owner-indexed query (not the Scan path). */
+ *  owner-indexed query (not the Scan path).
+ *  Propagates if the store rejects — the caller (handler) is expected to
+ *  handle it. */
 export async function isKnownKeyOwner(
   apiKeys: Pick<ApiKeyStore, "listByOwner">,
   ownerSub: string,
