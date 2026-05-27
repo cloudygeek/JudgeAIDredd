@@ -84,7 +84,9 @@ function refsPath(cmd: string, p: string): boolean {
   if (!p) return false;
   if (cmd.includes(p)) return true;
   const base = basename(p);
-  return base.length > 2 && cmd.includes(base);
+  // Guard: very short basenames (<= 3 chars, e.g. "a.b") are too
+  // collision-prone to match by substring against shell words.
+  return base.length > 3 && cmd.includes(base);
 }
 
 /**
@@ -95,6 +97,10 @@ function refsPath(cmd: string, p: string): boolean {
 function extractSecretValues(content: string): string[] {
   const out: string[] = [];
   for (const line of content.split("\n")) {
+    // NOTE: inline comments (KEY=value # comment) are not stripped, so a
+    // value with a trailing comment won't match by containment. Same
+    // limitation as session-tracker.ts::checkContentFromReads — fix both
+    // together if addressed.
     const m = line.match(/^[A-Z_]+=(.+)$/);
     if (m) {
       const v = m[1].trim();
@@ -139,7 +145,7 @@ export function buildTaintEvidence(input: TaintInput): TaintEvidence {
 
   const chains: TaintChain[] = [];
   const push = (severity: "high" | "medium", description: string) => {
-    if (chains.length < MAX_CHAINS) chains.push({ severity, description });
+    chains.push({ severity, description });
   };
 
   if (sink.kind === "egress" || sink.kind === "exec") {
@@ -195,12 +201,15 @@ export function buildTaintEvidence(input: TaintInput): TaintEvidence {
 
   if (chains.length === 0) return { chains: [], text: "" };
 
-  // High severity first; stable within a severity (discovery order).
+  // High severity first; stable within a severity (discovery order). Sort
+  // BEFORE capping so a high-severity chain is never dropped in favour of a
+  // medium one regardless of the order cases pushed them.
   chains.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "high" ? -1 : 1));
+  const capped = chains.slice(0, MAX_CHAINS);
 
   const text =
     "PROVENANCE ALERT (deterministic data-flow analysis over the full session):\n" +
-    chains.map((ch, i) => `${i + 1}. [${ch.severity.toUpperCase()}] ${ch.description}`).join("\n");
+    capped.map((ch, i) => `${i + 1}. [${ch.severity.toUpperCase()}] ${ch.description}`).join("\n");
 
-  return { chains, text };
+  return { chains: capped, text };
 }

@@ -140,7 +140,21 @@ section("Chains are capped at 5");
     command += ` -T ${p}`;
   }
   const ev = buildTaintEvidence(input({ tool: "Bash", input: { command }, filesRead: reads, filesWritten: writes }));
-  ev.chains.length <= 5 ? pass(`capped at ${ev.chains.length} (<=5)`) : fail(`chains=${ev.chains.length}`);
+  ev.chains.length === 5 ? pass(`capped at exactly ${ev.chains.length}`) : fail(`chains=${ev.chains.length} (expected 5)`);
+}
+
+// ---------------------------------------------------------------------------
+section("Edit sink: secret value written into a file (medium)");
+{
+  const secret = "editSecret88888";
+  const ev = buildTaintEvidence(input({
+    tool: "Edit",
+    input: { file_path: "/proj/stage.ts", new_string: `const t = "${secret}";` },
+    filesRead: [read({ path: "/proj/.env", turn: 2, content: `TOKEN=${secret}` })],
+  }));
+  ev.chains.some((ch) => ch.severity === "medium" && /stage\.ts/.test(ch.description))
+    ? pass("Edit staging flagged medium")
+    : fail(`chains=${JSON.stringify(ev.chains)}`);
 }
 
 console.log(`\n  ${PASS} passed, ${FAIL} failed`);
