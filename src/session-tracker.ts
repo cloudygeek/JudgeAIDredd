@@ -630,6 +630,15 @@ export class InMemorySessionStore implements SessionStore {
   }
 
   /**
+   * Get all file reads recorded this session. Mirror of getWrittenFiles
+   * for the read side — used by provenance-taint analysis.
+   */
+  async getFilesRead(sessionId: string): Promise<FileReadRecord[]> {
+    const session = this.getSession(sessionId);
+    return session.filesRead;
+  }
+
+  /**
    * Get files that have been written multiple times (potential payload splitting).
    */
   async getMultiWriteFiles(sessionId: string): Promise<FileRecord[]> {

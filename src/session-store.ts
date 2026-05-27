@@ -334,6 +334,10 @@ export interface SessionStore {
   ): Promise<void>;
 
   getWrittenFiles(sessionId: string): Promise<FileRecord[]>;
+  /** All file reads recorded this session (path, turn, truncated content,
+   *  isSensitive). Mirrors getWrittenFiles; consumed by provenance-taint
+   *  analysis at /evaluate time. */
+  getFilesRead(sessionId: string): Promise<FileReadRecord[]>;
   getMultiWriteFiles(sessionId: string): Promise<FileRecord[]>;
   getCanaryFiles(sessionId: string): Promise<FileRecord[]>;
 

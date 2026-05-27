@@ -565,6 +565,11 @@ export class CachedSessionStore implements SessionStore {
     return Array.from(s.filesWritten.values());
   }
 
+  async getFilesRead(sessionId: string): Promise<FileReadRecord[]> {
+    const s = await this.getOrLoad(sessionId);
+    return s.filesRead;
+  }
+
   async getMultiWriteFiles(sessionId: string): Promise<FileRecord[]> {
     return (await this.getWrittenFiles(sessionId)).filter((f) => f.writeCount > 1);
   }

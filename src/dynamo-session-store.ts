@@ -1874,6 +1874,11 @@ export class DynamoSessionStore implements SessionStore {
     return Array.from(state.filesWritten.values());
   }
 
+  async getFilesRead(sessionId: string): Promise<FileReadRecord[]> {
+    const state = (await this.loadSession(sessionId)) ?? this.emptyState(sessionId);
+    return state.filesRead;
+  }
+
   async getMultiWriteFiles(sessionId: string): Promise<FileRecord[]> {
     return (await this.getWrittenFiles(sessionId)).filter((f) => f.writeCount > 1);
   }
