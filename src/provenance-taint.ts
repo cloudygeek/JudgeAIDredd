@@ -101,6 +101,18 @@ function sanitize(s: string): string {
     .slice(0, 200);
 }
 
+/**
+ * Render an attacker-controlled file path for evidence: the sanitised
+ * basename, quoted. Quoting frames the value unambiguously as a datum (the
+ * same delimiter discipline used for the judge's other fenced inputs), and
+ * dropping the directory removes runway for injected free text appended to
+ * a path. The full path is still recorded server-side in the [TAINT] log
+ * for forensics — only the judge-facing evidence is trimmed.
+ */
+function safePath(p: string): string {
+  return `"${sanitize(basename(p))}"`;
+}
+
 /** Does a shell command reference a file path (full path or basename)? */
 function refsPath(cmd: string, p: string): boolean {
   if (!p) return false;
@@ -183,8 +195,8 @@ export function buildTaintEvidence(input: TaintInput): TaintEvidence {
           // (e.g. .env -> config.ts -> `node config.ts`) is a normal dev
           // workflow; only shipping it OFF the box (egress) is high-signal.
           sink.kind === "egress" ? "high" : "medium",
-          `${verb} command references ${sanitize(tf.path)}, which was written at turn(s) ` +
-            `${tf.writeTurns.join(",")} using a value read from ${sanitize(tf.sourcePath)} ` +
+          `${verb} command references ${safePath(tf.path)}, which was written at turn(s) ` +
+            `${tf.writeTurns.join(",")} using a value read from ${safePath(tf.sourcePath)} ` +
             `(sensitive) at turn ${tf.sourceTurn} earlier in this session. This is a ` +
             `multi-step read→write→use data flow spanning turns that would not be ` +
             `visible from the current action alone.`,
@@ -195,7 +207,7 @@ export function buildTaintEvidence(input: TaintInput): TaintEvidence {
     // Case B — the sink references a sensitive file directly (read-then-use).
     for (const r of sensitiveReads) {
       if (refsPath(cmd, r.path)) {
-        push("high", `${verb} command references sensitive file ${sanitize(r.path)} read at turn ${r.turn}.`);
+        push("high", `${verb} command references sensitive file ${safePath(r.path)} read at turn ${r.turn}.`);
       }
     }
 
@@ -216,7 +228,7 @@ export function buildTaintEvidence(input: TaintInput): TaintEvidence {
       if (secrets.some((s) => sink.content.includes(s))) {
         push(
           "medium",
-          `Writing a value read from ${sanitize(r.path)} (sensitive, turn ${r.turn}) into ${sanitize(sink.path)} — ` +
+          `Writing a value read from ${safePath(r.path)} (sensitive, turn ${r.turn}) into ${safePath(sink.path)} — ` +
             `potential staging for later exfiltration.`,
         );
         break;
