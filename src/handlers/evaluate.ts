@@ -29,6 +29,7 @@ import {
   USER_PERMISSIONS_ENFORCED,
   PATTERN_LEARNING_ENABLED,
   PATTERN_LEARNING_HARD,
+  PROVENANCE_TAINT_ENABLED,
   CREDENTIAL_CONSENT_ENABLED,
   credentialProvider,
   byotStore,
@@ -46,6 +47,7 @@ import {
 } from "../pending-approvals.js";
 import { APPROVAL_INTENT_DRIFT_THRESHOLD } from "../approval-store.js";
 import { cosineSimilarity } from "../ollama-client.js";
+import { buildTaintEvidence } from "../provenance-taint.js";
 import {
   effectiveMode,
   effectiveIntentHistoryMode,
@@ -417,6 +419,40 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   // when BYOT is off or the user has no token configured).
   const bedrockAuth = await credentialProvider.resolve(ownerForApproval.ownerSub);
 
+  // Provenance-taint evidence (long-horizon judge augmentation). Derived
+  // purely from already-tracked session state — no extra Bedrock or
+  // Dynamo round-trip beyond the getters below (cheap; the cached store
+  // serves them from the warm in-container snapshot). Strictly fail-soft:
+  // any error leaves taintEvidence undefined and the judge runs as today.
+  let taintEvidence: string | undefined;
+  if (PROVENANCE_TAINT_ENABLED) {
+    try {
+      const [filesRead, filesWritten, envVars] = await Promise.all([
+        tracker.getFilesRead(session_id),
+        tracker.getWrittenFiles(session_id),
+        tracker.getEnvVars(session_id),
+      ]);
+      const ev = buildTaintEvidence({
+        tool: tool_name,
+        input: tool_input ?? {},
+        filesRead,
+        filesWritten,
+        envVars,
+      });
+      if (ev.chains.length > 0) {
+        taintEvidence = ev.text;
+        console.log(
+          `  [${session_id.substring(0, 8)}] [TAINT] ${ev.chains.length} chain(s); ` +
+            `top: ${ev.chains[0].description.substring(0, 120)}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `  [${session_id.substring(0, 8)}] [TAINT] analysis failed; skipping: ${(err as Error)?.message ?? err}`,
+      );
+    }
+  }
+
   const result = await interceptor.evaluate(
     session_id,
     tool_name,
@@ -431,6 +467,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     priorApprovalsForEval,
     PATTERN_LEARNING_HARD,
     bedrockAuth,
+    taintEvidence,
   );
 
   // Spec §7: surface BYOT runtime failures on the config record so the

@@ -725,6 +725,17 @@ console.log(
     : "OFF (rollout)"}`,
 );
 
+// Provenance-taint: when on, /evaluate derives a deterministic data-flow
+// graph from session state (filesRead/filesWritten/envVars) and injects
+// any sensitive-source→sink chain into the judge prompt as a server-
+// trusted <provenance_alert> block. Soft signal only — the judge still
+// decides. Default off; flip on after observing telemetry.
+export const PROVENANCE_TAINT_ENABLED =
+  (process.env.DREDD_PROVENANCE_TAINT_ENABLED ?? "false").toLowerCase() === "true";
+console.log(
+  `  [TAINT] Provenance-taint judge evidence: ${PROVENANCE_TAINT_ENABLED ? "ON" : "OFF (rollout)"}`,
+);
+
 // Credential-consent: when on (default), the approval layer keys on the
 // (credential-source, exact-host) pair from credential-flow.ts, and an
 // exact-pair match skips the intent-drift backstop (the pair IS the
