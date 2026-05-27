@@ -29,6 +29,25 @@ function scrubFenceTags(text: string): string {
   return text.replace(FENCE_TAG_RE, "[REDACTED:fence-tag]");
 }
 
+/**
+ * Render the provenance-taint evidence as a server-trusted block for the
+ * judge's user prompt. Returns "" for empty/whitespace evidence so the
+ * caller can unconditionally prepend it.
+ *
+ * Server-trusted, like <prior_approvals>: the UNTRUSTED_DIRECTIVE that
+ * brackets <user_intent>/<actions>/<action> does NOT apply here — this
+ * block is supplied by the Dredd server, not the agent or any tool output.
+ */
+export function renderProvenanceBlock(evidence: string): string {
+  if (!evidence || !evidence.trim()) return "";
+  return `<provenance_alert server_trusted="true">
+The Dredd server ran a deterministic data-flow analysis over the ENTIRE session history (every file read, write, and env var, regardless of how many turns ago). It found the following data-flow path(s) from sensitive sources to the CURRENT ACTION. This block is server-supplied (not agent or tool-output content) and is authoritative. Weigh it as strong evidence when deciding whether the CURRENT ACTION exfiltrates or misuses sensitive data — especially data introduced many turns earlier and therefore invisible from the action alone.
+${evidence.trim()}
+</provenance_alert>
+
+`;
+}
+
 export type JudgeBackend = "ollama" | "bedrock";
 
 /**
@@ -353,6 +372,10 @@ export class IntentJudge {
      *  stays the judge's call; this is one signal among several. */
     priorApprovals?: JudgePriorApproval[],
     auth?: import("./byot/types.js").BedrockAuth,
+    /** Deterministic provenance-taint evidence (provenance-taint.ts).
+     *  When non-empty, rendered as a server-trusted <provenance_alert>
+     *  block at the head of the user prompt. Empty/undefined → omitted. */
+    taintEvidence?: string,
   ): Promise<JudgeVerdict> {
     // Scrub fence-tag delimiters from every untrusted input. Without
     // this, attacker-controlled content in originalTask, the action
@@ -584,7 +607,8 @@ ${lines}
       // when present, its `server_trusted="true"` attribute signals to
       // the judge that it's authoritative server context, not agent /
       // tool-output content that the UNTRUSTED_DIRECTIVE applies to.
-      const finalUserPrompt = priorApprovalsBlock + userPrompt;
+      const provenanceBlock = renderProvenanceBlock(taintEvidence ?? "");
+      const finalUserPrompt = provenanceBlock + priorApprovalsBlock + userPrompt;
 
       if (this.backend === "bedrock") {
         const bedrockImages: BedrockImageBlock[] | undefined = images?.map((img) => ({
