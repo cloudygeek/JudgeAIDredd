@@ -548,13 +548,17 @@ const server = createServer(async (req, res) => {
 
       if (req.method === "DELETE") {
         // Self-serve DELETE sends no body; the admin panel sends { ownerSub }.
-        // Parse leniently — a missing/blank/garbage body means "self".
+        // Read the body OUTSIDE the lenient catch so an oversized body still
+        // surfaces as BodyTooLargeError → 413 via the outer handler. Only the
+        // JSON.parse is lenient: a missing/blank/garbage body means "self".
+        const raw = await readBody(req);
         let delBody: any = {};
-        try {
-          const raw = await readBody(req);
-          if (raw) delBody = JSON.parse(raw);
-        } catch {
-          /* lenient: treat as self */
+        if (raw.trim()) {
+          try {
+            delBody = JSON.parse(raw);
+          } catch {
+            /* lenient: treat as self */
+          }
         }
         const target = resolveByotTarget({
           isAdmin: principal.isAdmin,
