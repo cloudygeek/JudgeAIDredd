@@ -309,20 +309,87 @@ The deep-dive's verdict (PROTOTYPE) stands. Specifically:
 - Node expansion for read-only tools.
 - Replan on intent-stack pivot.
 
-## Recommended next steps
+## Feasibility check with full constraints
 
-1. ~~Run `compare_approaches` on Family 1 + Family 3~~ — done above.
-2. **Run `check_feasibility` against Dredd's actual constraints** — Paper
-   Lantern's verdict was `PROTOTYPE`, but the constraints I gave it were the
-   summarised spec, not the full implementation. A constrained re-check might
-   land at `GO` (or `RECONSIDER`).
-3. **Skeleton implementation in a branch** —
-   - `src/plan-store.ts` (DynamoDB CRUD)
+Paper Lantern `check_feasibility` was run with the actual deployment
+constraints (Sonnet 4.6, 3s p95 budget, jaid-sessions schema, intent-stack
+pivot semantics, phased rollout pattern, single-developer team).
+
+**Verdict: PROTOTYPE | Confidence: MEDIUM** — unchanged from the deep-dive.
+The full-constraints input did not unlock a GO promotion. Two reasons:
+
+1. **Latency is tight, not impossible.** Today's pipeline already spends
+   ~2.0 s on Bedrock judge calls. Adding a planner call (~1.4 s) on every
+   pivot leaves only ~600 ms headroom on the 3 s budget. Caching the plan
+   means the planner cost is paid once per task pivot rather than per turn,
+   but the FIRST tool call after a pivot bears the full cost. Concrete
+   measurement needed before scaling.
+2. **Planner accuracy unproven on Sonnet 4.6.** IPIGuard used a dedicated
+   planner LLM at temperature 0 and reported their numbers on that
+   configuration. Sonnet 4.6 may produce malformed or incomplete DAGs —
+   we'd hit a high hard-miss rate which inflates latency (fallback to
+   full Stage 3 judge for every miss).
+
+### Open questions that decide GO vs RECONSIDER
+
+- Real pivot frequency in production? Logs say session 654fa809 (this
+  session) emits a pivot every ~3-5 turns; need a broader sample.
+- Planner inaccuracy rate on Sonnet 4.6 at temperature 0 for our task
+  shape?
+- DynamoDB throttle behaviour on PLAN# bursts?
+
+### Validation experiment recommended by the literature
+
+Minimal prototype, measured on a synthetic task ("search web for price,
+then email summary"):
+- Generate a TDG with Sonnet 4.6 at temperature 0
+- Write + read from `jaid-sessions` (5–50 KB JSON)
+- Mock /evaluate with exact-match check
+- Run 100 random pivots
+- Success criteria: total latency ≤ 2,800 ms p95 AND correct exact-match
+  on ≥ 95% of test plans
+
+This is the gating experiment before committing to full Stage 0.7
+implementation.
+
+### Common failure modes flagged
+
+1. **Planner inaccuracy** — malformed DAGs → high hard-miss → judge
+   on every call → latency blow-up. Fix: tighten the planning prompt,
+   add a JSON-schema validator that rejects malformed output and falls
+   back to no-plan-this-session.
+2. **DynamoDB throttling** — bursts of plan writes hit provisioned
+   throughput. Fix: pay-per-request billing mode is already set on
+   `jaid-sessions` per the Terraform; verify under load.
+3. **Node-expansion mismatches** — read-only tools needing dynamic args
+   may not be allowed. Fix: explicit allow-list for Read/Glob/Grep/WebSearch.
+4. **Integration bugs** — mismatched SESSION#/PLAN# keys or TTL
+   misconfiguration. Fix: round-trip test in CI.
+5. **Cost creep** — pivots more frequent than expected → Bedrock
+   spend goes up. Bound: one planner call per pivot at ~$0.001, even
+   at 100 pivots/day = $3/month max.
+
+## Recommended next steps (final)
+
+1. ~~Run `compare_approaches` on Family 1 + Family 3~~ — done.
+2. ~~Run `check_feasibility` against Dredd's actual constraints~~ — done.
+   Verdict PROTOTYPE; latency the dominant risk.
+3. **Run the validation experiment first.** Don't build Stage 0.7 yet.
+   Build a standalone benchmark (`hooks/tests/bench_plan_generation.ts`)
+   that exercises the latency hypothesis on synthetic plans before
+   committing to the full pipeline integration. ~50 LOC + a bench
+   harness; ~$0.50 in Bedrock cost; clear go/no-go signal.
+4. **If validation passes**: skeleton implementation in a branch.
+   - `src/plan-store.ts` (DynamoDB CRUD for PLAN# rows)
    - `src/plan-generator.ts` (Bedrock call producing the DAG)
    - new Stage 0.7 in `pretool-interceptor.ts`
-   - `DREDD_PLAN_ENFORCEMENT_ENABLED` env flag, default false (same Phase
-     6/7/8 rollout pattern)
-4. **Benchmark on AgentDojo and InjecAgent** — both papers used those, so
+   - `DREDD_PLAN_ENFORCEMENT_ENABLED` env flag, default false
+5. **If validation fails**: re-check on Family 2 (causal attribution).
+   Trades the planner-accuracy risk for a shadow-replay cost (also one
+   extra Bedrock call per intercepted call, but with a clearer success
+   metric — does the same call appear when the suspicious observation
+   is masked? — than "did the planner produce a correct DAG?").
+6. **Benchmark on AgentDojo and InjecAgent** — both papers used those, so
    we get an apples-to-apples ASR/FPR comparison.
 
 ---
@@ -346,6 +413,7 @@ Paper Lantern verified the following arXiv references (primary-source verified).
 - [8] An et al. (2025). *IPIGuard: A Novel Tool Dependency Graph-Based Defense Against Indirect Prompt Injection in LLM Agents*. [arXiv:2508.15310](https://arxiv.org/abs/2508.15310).
 - [9] Wang et al. (2025). *AgentArmor: Enforcing Program Analysis on Agent Runtime Trace to Defend Against Prompt Injection*. [arXiv:2508.01249](https://arxiv.org/abs/2508.01249).
 - [12] Rosario et al. (2025). *Architecting Resilient LLM Agents: A Guide to Secure Plan-then-Execute Implementations*. [arXiv:2509.08646](https://arxiv.org/abs/2509.08646).
+- [13] Wei et al. (2025). *Beyond ReAct: A Planner-Centric Framework for Complex Tool-Augmented LLM Reasoning*. [arXiv:2511.10037](https://arxiv.org/abs/2511.10037).
 
 **Family 4 — Argument-level provenance:**
 - [10] Fan et al. (2026). *The Granularity Mismatch in Agent Security: Argument-Level Provenance Solves Enforcement and Isolates the LLM Reasoning Bottleneck*. [arXiv:2605.11039](https://arxiv.org/abs/2605.11039).
