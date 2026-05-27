@@ -194,6 +194,7 @@ docker run -p 3000:3000 \
 | `DREDD_USER_PERMISSIONS_ENABLED` | `false` | Phase 6 rollout flag — when `true`, the PreToolUse pipeline reads the session's user-permissions snapshot and enforces user-deny / annotates user-allow. When `false`, uploads + storage + dashboard surfacing still work but the pipeline ignores the lists. Flip to `true` once the upload path has soaked |
 | `DREDD_PATTERN_LEARNING_ENABLED` | `false` | Phase 8b umbrella flag. When `true`, `/evaluate` does one `listForScope` Query on `jaid-approvals` + one Bedrock embed per call, and folds matches with cosine ≥ 0.6 into the judge prompt as `<prior_approvals>` evidence of legitimate intent. Verdicts unchanged in soft-only mode |
 | `DREDD_PATTERN_LEARNING_HARD_ENABLED` | `false` | Phase 8b hard-mode flag. Only consulted when the umbrella is `true`. When `true`, ≥2 matches with cosine ≥ 0.85 short-circuit the pipeline to `stage=pattern-trust-allow` BEFORE Stage 1 policy — overrides Dredd's hard denies (`rm -rf`, dangerous combinations) by design. Flip only after observing soft-mode telemetry |
+| `DREDD_PROVENANCE_TAINT_ENABLED` | `false` | When `true`, `/evaluate` derives a deterministic data-flow graph from already-tracked session state (file reads, file writes, env vars) and injects any sensitive-source→sink chain — including multi-turn read→write→exec/egress chains that span many turns — into the judge prompt as a server-trusted `<provenance_alert>` block. Soft signal only: the judge still decides; no hard block. Fail-soft (analysis error → judge runs unchanged). No extra Bedrock/Dynamo calls. Default off; flip on after observing telemetry |
 | `DREDD_MANAGED_ALLOW_SCOPE` | `conservative` | **Hook-side env var.** Picks which patterns Dredd splices into the project's `.claude/settings.local.json` on every UserPromptSubmit so Claude Code stops re-prompting for tool calls Dredd already authorises. `conservative` = ~19 read-only / inspection patterns (Read, Glob, Grep, awk/sed/grep/ls/cat/head/tail/wc/echo/pwd/file/date/jq/find/rg/node --check). `off` = never splice anything |
 | `DREDD_MANAGED_ALLOW_RULES` | (unset) | **Hook-side env var.** Optional operator override — a raw JSON array that replaces the scope-driven defaults. e.g. `'["Bash(awk:*)","Read"]'` |
 | `DREDD_MANAGED_DIR` | `$HOME/.claude/dredd/managed` | **Hook-side env var.** Where Dredd writes per-(project, session) sidecars tracking which allow rules it has injected. Also holds `manage.log` for audit |
@@ -446,6 +447,14 @@ Lets a user supply their own Amazon Bedrock API key (+ region) so that all per-s
 
 **Gating:** `DREDD_BYOT_ENABLED` gates only the hot-path resolver. The dashboard write path, `jaid-byot` storage, and `GET /api/byot` work regardless of the flag — store and soak before enabling the hot path.
 
+### 5. Provenance taint — long-horizon judge evidence
+
+Augments the LLM judge with deterministic, explainable evidence of multi-turn data-flow chains. The motivating threat: a sensitive value read at turn 3, written into a file at turn 10, and exfiltrated/executed at turn 100. The judge runs in clean context (no history), embedding-drift is pairwise, and `checkDangerousCombination` only looks at adjacent calls — so none of them connect an early plant to a late sink. Provenance taint does, because it derives a graph over the durable artifacts Dredd already records, where turn-distance is irrelevant: the chain is either present in the data or it isn't.
+
+- **`src/provenance-taint.ts`** — pure `buildTaintEvidence(input)`. Sources = sensitive file reads + sensitive env vars; sinks = Bash egress/exec and Write/Edit; edges = KEY=VALUE secret containment (read→write hop) + path reference (write→sink hop). High severity = sensitive source reaches an egress/exec sink; medium = staging (secret written into a new file). Chains capped at 5.
+- **Wiring**: `/evaluate` (gated on `DREDD_PROVENANCE_TAINT_ENABLED`) builds the evidence from `getFilesRead` / `getWrittenFiles` / `getEnvVars` and threads it through `interceptor.evaluate` → `judge.evaluate`, where `renderProvenanceBlock` emits a server-trusted `<provenance_alert>` block at the head of the user prompt (same injection pattern as Phase 8b `<prior_approvals>`; system prompt stays static for cache stability).
+- **Soft-only by design**: no deterministic hard block ships in this phase — the evidence informs the judge, matching how every other Dredd feature soaked behind a flag before any enforcement.
+
 ### Test surface
 
 ```
@@ -465,6 +474,8 @@ hooks/tests/test_byot_provider.ts                   # BearerCredentialProvider c
 hooks/tests/test_byot_client.ts                     # per-credential Bedrock client cache keying    (4, npx tsx)
 hooks/tests/test_byot_probe.ts                      # capability probe against stub Bedrock         (varies, npx tsx)
 hooks/tests/test_byot_pipeline.ts                   # provider + service end-to-end round-trip      (5, npx tsx)
+hooks/tests/test_provenance_taint.ts                # buildTaintEvidence detection (incl. long-horizon)  (npx tsx)
+hooks/tests/test_provenance_pipeline.ts             # render block + interceptor→judge threading          (npx tsx)
 ```
 
 All green at last full run. The bash suites are self-contained (mktemp sandboxes + python stub HTTP server); the `.ts` ones run via `npx tsx`.
