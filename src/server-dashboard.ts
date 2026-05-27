@@ -52,6 +52,8 @@ import {
   probeClerkConnectivity,
   CLERK_PUBLISHABLE_KEY,
 } from "./clerk-auth.js";
+import { resolveByotTarget, isKnownKeyOwner } from "./byot/admin-target.js";
+import type { ByotActor } from "./byot/types.js";
 
 const HOOK_URL = process.env.DREDD_HOOK_URL ?? "";
 
@@ -481,8 +483,23 @@ const server = createServer(async (req, res) => {
       const principal = await requireClerkAuth(req, res);
       if (!principal) return;
 
+      // Build the on-behalf actor for write/delete when an admin targets
+      // someone else. requireClerkAuth already verified isAdmin.
+      const onBehalfActor = (target: { actingOnBehalf: boolean }): ByotActor | undefined =>
+        target.actingOnBehalf
+          ? { adminSub: principal.userId, adminEmail: principal.email || null }
+          : undefined;
+
       if (req.method === "GET") {
-        return json(res, 200, await byotService.getStatus(principal.userId));
+        const target = resolveByotTarget({
+          isAdmin: principal.isAdmin,
+          selfSub: principal.userId,
+          requestedSub: url.searchParams.get("ownerSub"),
+        });
+        if (target.actingOnBehalf && !(await isKnownKeyOwner(apiKeys, target.targetOwner))) {
+          return json(res, 404, { error: "Unknown user" });
+        }
+        return json(res, 200, await byotService.getStatus(target.targetOwner));
       }
 
       if (req.method === "POST") {
@@ -502,9 +519,19 @@ const server = createServer(async (req, res) => {
         if (!/^[a-z]{2}-[a-z]+-\d$/.test(region)) {
           return json(res, 400, { error: "valid AWS region is required (e.g. eu-west-2)" });
         }
+        const target = resolveByotTarget({
+          isAdmin: principal.isAdmin,
+          selfSub: principal.userId,
+          requestedSub: body.ownerSub,
+        });
+        if (target.actingOnBehalf && !(await isKnownKeyOwner(apiKeys, target.targetOwner))) {
+          return json(res, 404, { error: "Unknown user" });
+        }
         let result;
         try {
-          result = await byotService.validateAndStore(principal.userId, token, region);
+          result = await byotService.validateAndStore(
+            target.targetOwner, token, region, onBehalfActor(target),
+          );
         } catch (err) {
           // An unexpected error during the probe (not a probe failure) —
           // never echo the token back.
@@ -516,11 +543,28 @@ const server = createServer(async (req, res) => {
             failures: result.probe.failures, // { model, api, error }[]
           });
         }
-        return json(res, 200, await byotService.getStatus(principal.userId));
+        return json(res, 200, await byotService.getStatus(target.targetOwner));
       }
 
       if (req.method === "DELETE") {
-        await byotService.remove(principal.userId);
+        // Self-serve DELETE sends no body; the admin panel sends { ownerSub }.
+        // Parse leniently — a missing/blank/garbage body means "self".
+        let delBody: any = {};
+        try {
+          const raw = await readBody(req);
+          if (raw) delBody = JSON.parse(raw);
+        } catch {
+          /* lenient: treat as self */
+        }
+        const target = resolveByotTarget({
+          isAdmin: principal.isAdmin,
+          selfSub: principal.userId,
+          requestedSub: delBody.ownerSub,
+        });
+        if (target.actingOnBehalf && !(await isKnownKeyOwner(apiKeys, target.targetOwner))) {
+          return json(res, 404, { error: "Unknown user" });
+        }
+        await byotService.remove(target.targetOwner, onBehalfActor(target));
         return json(res, 200, { configured: false });
       }
 
