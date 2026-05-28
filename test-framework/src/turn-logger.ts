@@ -16,8 +16,18 @@ export class TurnLogger {
   private intentVerdicts: (IntentVerdict | null)[] = [];
   private originalTask: string = "";
 
-  /** Register the original task for later drift comparison */
-  registerGoal(task: string): void {
+  /** Register the original task for later drift comparison.
+   *
+   * Async for symmetry with subclasses that need to register an
+   * embedding (IntentTracker.registerGoal awaits the embed call).
+   * Callers MUST `await logger.registerGoal(...)` before driving the
+   * agent — otherwise an IntentTracker will throw
+   * "Goal not registered. Call registerGoal() first." on the first
+   * turn that arrives before the embedding lands. This was the cause
+   * of the 32+39 lost reps in the 2026-05-27 G2 Sonnet T4 judge cells
+   * under RUNNER_CONCURRENCY=2.
+   */
+  async registerGoal(task: string): Promise<void> {
     this.originalTask = task;
     console.log(`\n${"=".repeat(70)}`);
     console.log(`GOAL REGISTERED: ${task.substring(0, 100)}...`);

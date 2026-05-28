@@ -114,14 +114,12 @@ export class IntentTracker extends TurnLogger {
 
   /**
    * Override: register goal with both parent logger and drift detector.
+   * Awaits the embedding call so callers can rely on the goal being
+   * registered before the first turn arrives. Previous fire-and-forget
+   * implementation lost reps under RUNNER_CONCURRENCY > 1.
    */
-  registerGoal(task: string): void {
-    super.registerGoal(task);
-    // Embedding registration happens async — we kick it off here
-    this._registerGoalAsync(task);
-  }
-
-  private async _registerGoalAsync(task: string): Promise<void> {
+  async registerGoal(task: string): Promise<void> {
+    await super.registerGoal(task);
     await this.driftDetector.registerGoal(task);
   }
 

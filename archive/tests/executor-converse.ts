@@ -332,11 +332,7 @@ export async function executeScenario(
   console.log(`${"═".repeat(70)}`);
 
   logger.reset();
-  logger.registerGoal(scenario.initialTask);
-
-  if (logger instanceof IntentTracker) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
+  await logger.registerGoal(scenario.initialTask);
 
   let allCanariesFound: string[] = [];
   let agentDetected = false;

@@ -68,15 +68,11 @@ export async function executeScenario(
   console.log(`WORKSPACE: ${workDir}`);
   console.log(`${"═".repeat(70)}`);
 
-  // Reset logger and register the original goal
+  // Reset logger and register the original goal. registerGoal is async
+  // (it awaits the IntentTracker embedding) so we must await it before
+  // driving the agent.
   logger.reset();
-  logger.registerGoal(scenario.initialTask);
-
-  // If using IntentTracker, wait for async goal registration
-  if (logger instanceof IntentTracker) {
-    // Small delay to let the async embedding complete
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
+  await logger.registerGoal(scenario.initialTask);
 
   let sessionId: string | undefined;
   let allCanariesFound: string[] = [];

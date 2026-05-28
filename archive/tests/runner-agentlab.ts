@@ -1044,7 +1044,10 @@ async function runTrajectory(
       : new TurnLogger();
 
   logger.reset();
-  logger.registerGoal(scenario.initialTask);
+  if (logger instanceof IntentTracker) {
+    await logger.preflight();
+  }
+  await logger.registerGoal(scenario.initialTask);
 
   // Per-trajectory synthetic session id. Post-research-v1 the
   // interceptor is session-keyed (registerGoal/evaluate/getLog all
@@ -1053,11 +1056,6 @@ async function runTrajectory(
   // fine. The id includes scenario + model so log messages stay
   // distinguishable when many trajectories run in parallel.
   const sessionId = `alab-${scenario.id}-${model.replace(/[^a-z0-9]/gi, "-")}-${Date.now()}`;
-
-  if (logger instanceof IntentTracker) {
-    await logger.preflight();
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
 
   // PreToolUse interceptor — gates each tool call BEFORE execution.
   // Replaces post-turn IntentTracker blocking, which fires too late on

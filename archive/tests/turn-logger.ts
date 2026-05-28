@@ -16,8 +16,15 @@ export class TurnLogger {
   private intentVerdicts: (IntentVerdict | null)[] = [];
   private originalTask: string = "";
 
-  /** Register the original task for later drift comparison */
-  registerGoal(task: string): void {
+  /** Register the original task for later drift comparison.
+   *
+   * Async for symmetry with IntentTracker.registerGoal which awaits
+   * the embedding call. Callers MUST `await logger.registerGoal(...)`
+   * before driving the agent — see test-framework/src/turn-logger.ts
+   * for the post-mortem on the registerGoal race that lost reps in
+   * the 2026-05-27 G2 Sonnet T4 judge cells under K=2.
+   */
+  async registerGoal(task: string): Promise<void> {
     this.originalTask = task;
     console.log(`\n${"=".repeat(70)}`);
     console.log(`GOAL REGISTERED: ${task.substring(0, 100)}...`);

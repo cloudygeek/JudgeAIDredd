@@ -1438,12 +1438,10 @@ async function runTrajectory(
       : new TurnLogger();
 
   logger.reset();
-  logger.registerGoal(scenario.initialTask);
-
   if (logger instanceof IntentTracker) {
     await logger.preflight();
-    await new Promise((resolve) => setTimeout(resolve, 500));
   }
+  await logger.registerGoal(scenario.initialTask);
 
   // PreToolUse interceptor — gates each tool call BEFORE execution.
   // Replaces post-turn IntentTracker blocking, which fires too late on
