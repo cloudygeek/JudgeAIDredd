@@ -9,7 +9,29 @@
  * ZIP headers (STORE method would also work; DEFLATE keeps the archive small).
  */
 import { deflateRawSync, crc32 } from "node:zlib";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { buildBakedHook } from "./hook-bake.js";
+
+// Resolve skills/ relative to this module so it works in both dev
+// (running from repo root via `npx tsx`) and in the dashboard container
+// (where skills/ sits next to src/ under /app, COPYed in by
+// fargate/Dockerfile.dashboard-zip). Lazy — only invoked when the bundle
+// endpoint is hit, so the hook role never reads it.
+const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
+
+function readSkillEntrySafe(relPath: string): ZipEntry | null {
+  try {
+    const data = readFileSync(join(SKILLS_DIR, relPath));
+    return { name: `skills/${relPath}`, data, mode: 0o644 };
+  } catch (err) {
+    console.warn(
+      `[integration-bundle] skill missing or unreadable, omitting from bundle: ${relPath}: ${(err as Error)?.message ?? err}`,
+    );
+    return null;
+  }
+}
 
 interface ZipEntry {
   name: string;
@@ -214,6 +236,24 @@ You should see your session appear in the Live Feed the moment you send
 your first prompt. Note that \`${dreddUrl}/api/health\` answers without
 auth — useful for proving the server is reachable, but it won't catch a
 missing API key. Use \`/api/auth-check\` above for that.
+
+## 6. (Recommended) Install the working-with-the-judge skill
+
+This bundle includes a Claude Code skill that teaches your agent how to
+behave well in a Dredd-judged session: state intent specifically, declare
+credential reads up front, surface denies transparently to you (rather
+than silently pivoting), avoid retrying the same shape via a different
+tool (which burns the session-lock strike counter), and recognise
+\`[TAINT]\` log lines and \`<provenance_alert>\` blocks. Install it:
+
+\`\`\`bash
+mkdir -p ~/.claude/skills
+cp -r skills/working-with-dredd-judge ~/.claude/skills/
+\`\`\`
+
+It auto-activates when its trigger conditions match (presence of
+\`~/.claude/dredd/api-key\` or \`DREDD_URL\`, or any tool result whose
+\`permissionDecisionReason\` starts with \`Dredd:\`).
 
 ## Troubleshooting
 
@@ -488,6 +528,13 @@ export function buildIntegrationBundle(dreddUrl: string): Buffer {
     { name: "settings.json", data: Buffer.from(renderSettings(dreddUrl), "utf8"), mode: 0o644 },
     { name: "README.md", data: Buffer.from(renderReadme(dreddUrl), "utf8"), mode: 0o644 },
   ];
+
+  // Optional skill: teaches Claude how to navigate a Dredd-judged session
+  // (surface denies transparently, declare credential reads, avoid the
+  // strike counter, recognise [TAINT]/<provenance_alert>). Fail-soft so a
+  // missing file degrades the bundle to its previous shape, not an error.
+  const skill = readSkillEntrySafe("working-with-dredd-judge/SKILL.md");
+  if (skill) entries.push(skill);
 
   return buildZip(entries);
 }
