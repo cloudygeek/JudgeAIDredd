@@ -255,6 +255,32 @@ It auto-activates when its trigger conditions match (presence of
 \`~/.claude/dredd/api-key\` or \`DREDD_URL\`, or any tool result whose
 \`permissionDecisionReason\` starts with \`Dredd:\`).
 
+## Upgrading an existing install
+
+New hook versions ship from the same server. To pull the latest hook in
+place — **no settings changes needed** (your \`settings.json\` already points
+at the stable path \`~/.claude/dredd/dredd-hook.sh\`) — re-fetch it and
+restart Claude Code:
+
+\`\`\`bash
+curl -fsSL -H "Authorization: Bearer $(cat ~/.claude/dredd/api-key)" \\
+  ${dreddUrl}/api/hook-script -o ~/.claude/dredd/dredd-hook.sh
+chmod 755 ~/.claude/dredd/dredd-hook.sh
+\`\`\`
+
+This overwrites **only** \`~/.claude/dredd/dredd-hook.sh\` — your API key,
+\`settings.json\`, and any project config are untouched. The server bakes the
+current \`DREDD_URL\` and inlines every helper, so the result is a single
+self-contained script with nothing else to update. Restart any running
+Claude Code sessions to pick it up. The fetch is idempotent — safe to re-run
+any time, and it's how you'll apply every future hook update.
+
+Re-downloading the full bundle from the dashboard's **Integration** tab also
+upgrades the hook, and additionally refreshes \`settings.json.example\` and
+the \`working-with-dredd-judge\` skill (the in-place re-fetch above updates
+only the hook). Server-side improvements (judge, policy) need no client
+action — they land when the hook server is redeployed.
+
 ## Troubleshooting
 
 - **Dashboard shows no sessions but \`/api/health\` works** — the API key
