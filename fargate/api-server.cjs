@@ -57,6 +57,7 @@ const ENTRYPOINTS = {
   "mt-agentrisk": "/docker-entrypoint-mt-agentrisk.sh",
   "test-framework": "/docker-entrypoint-test-framework.sh",
   "agentlab": "/docker-entrypoint-agentlab.sh",
+  "mode4": "/docker-entrypoint-mode4.sh",
 };
 const DEFAULT_TEST = process.env.TEST_NUM || "7";
 const BUILD_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
@@ -190,6 +191,17 @@ function startRun(params) {
   if (params.maxTurns)   env.TEST25_MAX_TURNS    = String(params.maxTurns);
   if (params.backend)    env.TEST25_BACKEND      = String(params.backend);
   if (params.runId)      env.TEST25_RUN_ID       = String(params.runId);
+
+  // Mode 4 env vars (Paper14 §VII behavioural drift). Most callers will
+  // pass these through `params.env`; these convenience mappings mirror the
+  // entrypoint's env contract for the common knobs.
+  if (params.models)     env.AGENT_MODELS = String(params.models);
+  if (params.configs)    env.CONFIGS      = String(params.configs);
+  if (params.floodTurns) env.FLOOD_TURNS  = String(params.floodTurns);
+  if (params.reps)       env.REPETITIONS  = String(params.reps);
+  if (params.rcThreshold) env.RC_THRESHOLD = String(params.rcThreshold);
+  if (params.concurrency) env.RUNNER_CONCURRENCY = String(params.concurrency);
+  if (params.runId)      env.RUN_ID       = String(params.runId);
 
   // Generic env passthrough (test 12 / AgentDojo uses this)
   if (params.env && typeof params.env === "object") {

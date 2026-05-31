@@ -55,6 +55,8 @@ cp "$PROJECT_ROOT/fargate/docker-entrypoint-test-framework.sh" \
    "$STAGING/docker-entrypoint-test-framework.sh"
 cp "$PROJECT_ROOT/fargate/docker-entrypoint-agentlab.sh" \
    "$STAGING/docker-entrypoint-agentlab.sh"
+cp "$PROJECT_ROOT/fargate/docker-entrypoint-mode4.sh" \
+   "$STAGING/docker-entrypoint-mode4.sh"
 cp "$PROJECT_ROOT/fargate/tests/docker-entrypoint-test22.sh" \
    "$STAGING/docker-entrypoint-test22.sh"
 cp "$PROJECT_ROOT/fargate/api-server.cjs" "$STAGING/server.js"
@@ -125,7 +127,11 @@ rm -rf "$STAGING"
 echo "[build] verifying flat layout..."
 for f in Dockerfile server.js docker-entrypoint-test-framework.sh \
          docker-entrypoint-agentlab.sh docker-entrypoint-test22.sh \
+         docker-entrypoint-mode4.sh \
          test-framework/src/runner-agentlab.ts \
+         test-framework/src/runner-mode4.ts \
+         test-framework/scenarios/mode4-behavioural-drift.ts \
+         test-framework/workspace-template/.env.test \
          package.json test-framework/package.json \
          test-framework/src/runner.ts \
          test-framework/src/executor.ts \
