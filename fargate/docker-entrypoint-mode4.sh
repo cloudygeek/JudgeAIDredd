@@ -52,6 +52,14 @@ RC_THRESHOLD="${RC_THRESHOLD:-0.8}"
 # expands to TWO runs (bound=yes / bound=no).
 CLI_REPETITIONS="${CLI_REPETITIONS:-3}"
 CLI_TURN_TIMEOUT_MS="${CLI_TURN_TIMEOUT_MS:-180000}"
+# BACKEND selects the harness for NON-Claude models. Default empty = Claude
+# path (CONFIGS=C1 via the claude CLI, C4 via the Agent SDK). Set to
+# "converse" (qwen3-* via Bedrock Converse) or "openai" (gpt-4o-* via OpenAI)
+# to run the multimodel runner instead — CONFIGS is ignored in that mode
+# (these models have no built-in-hook C1 vs SDK C4 distinction; the cell is
+# "raw model + tools", analogous to C4). Uses CLI_REPETITIONS (wall-clock
+# bound, serial). openai needs OPENAI_API_KEY; converse needs AGENT_REGION.
+BACKEND="${BACKEND:-}"
 LOGDIR="${TEST_FRAMEWORK_LOGDIR:-/app/runs}"
 
 mkdir -p "$LOGDIR"
@@ -75,6 +83,7 @@ log "─── Paper14 Mode 4 — Behavioural Drift ─────────�
 log "RUN_ID=$RUN_ID"
 log "AWS_REGION=$AWS_REGION  CLAUDE_CODE_USE_BEDROCK=${CLAUDE_CODE_USE_BEDROCK:-0}"
 log "AGENT_MODELS=$AGENT_MODELS"
+log "BACKEND=${BACKEND:-(claude path)}"
 log "CONFIGS=$CONFIGS"
 log "FLOOD_TURNS=$FLOOD_TURNS"
 log "REPETITIONS=$REPETITIONS (SDK)  CLI_REPETITIONS=$CLI_REPETITIONS (C1)  RC_THRESHOLD=$RC_THRESHOLD"
@@ -117,13 +126,19 @@ IFS=',' read -ra CONFIGS_ARR <<< "$CONFIGS"
 IFS=',' read -ra FLOOD_ARR <<< "$FLOOD_TURNS"
 
 cell=0
-# C1 expands to 2 runs (bound=yes/no); every other config is 1 run.
-config_runs=0
-for c in "${CONFIGS_ARR[@]}"; do
-  if [[ "$c" == "C1" ]]; then config_runs=$(( config_runs + 2 )); else config_runs=$(( config_runs + 1 )); fi
-done
-total_cells=$(( ${#MODELS_ARR[@]} * config_runs * ${#FLOOD_ARR[@]} ))
-log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × [${CONFIGS}] configs × ${#FLOOD_ARR[@]} flood lengths; C1=CLI yes+no @ reps=$CLI_REPETITIONS, others=SDK @ reps=$REPETITIONS)"
+if [[ -n "$BACKEND" ]]; then
+  # Multimodel: configs ignored, 1 run per model × flood.
+  total_cells=$(( ${#MODELS_ARR[@]} * ${#FLOOD_ARR[@]} ))
+  log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × ${#FLOOD_ARR[@]} flood lengths; backend=$BACKEND @ reps=$CLI_REPETITIONS; CONFIGS ignored)"
+else
+  # Claude path: C1 expands to 2 runs (bound=yes/no); every other config is 1 run.
+  config_runs=0
+  for c in "${CONFIGS_ARR[@]}"; do
+    if [[ "$c" == "C1" ]]; then config_runs=$(( config_runs + 2 )); else config_runs=$(( config_runs + 1 )); fi
+  done
+  total_cells=$(( ${#MODELS_ARR[@]} * config_runs * ${#FLOOD_ARR[@]} ))
+  log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × [${CONFIGS}] configs × ${#FLOOD_ARR[@]} flood lengths; C1=CLI yes+no @ reps=$CLI_REPETITIONS, others=SDK @ reps=$REPETITIONS)"
+fi
 
 # Degenerate-result guard. After a cell completes, scan its result JSON for the
 # throttle / executor-failure signature we debugged: a rep where the model
@@ -247,6 +262,24 @@ invoke_runner() {
 
 run_cell() {
   local model_token="$1" config="$2" flood="$3"
+
+  # ── Multimodel path: non-Claude backend (converse/openai). CONFIGS ignored.
+  if [[ -n "$BACKEND" ]]; then
+    cell=$((cell + 1))
+    local safe_id="${model_token//\//_}-${BACKEND}-${flood}t"
+    local out_json="$LOGDIR/mode4-${safe_id}-${RUN_ID}.json"
+    local label="[${cell}/${total_cells}] model=$model_token backend=$BACKEND flood=${flood}t reps=$CLI_REPETITIONS"
+    invoke_runner "$label" "$safe_id" "$flood" "$CLI_REPETITIONS" \
+      src/runner-mode4-multimodel.ts \
+      --backend "$BACKEND" \
+      --model "$model_token" \
+      --flood-turns "$flood" \
+      --repetitions "$CLI_REPETITIONS" \
+      --rc-threshold "$RC_THRESHOLD" \
+      --output "$out_json"
+    return 0
+  fi
+
   local model_id; model_id=$(resolve_model "$model_token")
 
   if [[ "$config" == "C1" ]]; then
@@ -290,13 +323,22 @@ run_cell() {
   fi
 }
 
-for model in "${MODELS_ARR[@]}"; do
-  for config in "${CONFIGS_ARR[@]}"; do
+if [[ -n "$BACKEND" ]]; then
+  # Multimodel: no config dimension (CONFIGS ignored).
+  for model in "${MODELS_ARR[@]}"; do
     for flood in "${FLOOD_ARR[@]}"; do
-      run_cell "$model" "$config" "$flood"
+      run_cell "$model" "ignored" "$flood"
     done
   done
-done
+else
+  for model in "${MODELS_ARR[@]}"; do
+    for config in "${CONFIGS_ARR[@]}"; do
+      for flood in "${FLOOD_ARR[@]}"; do
+        run_cell "$model" "$config" "$flood"
+      done
+    done
+  done
+fi
 
 log "─── Summary ─────────────────────────────────────────────────────"
 cat "$SUMMARY_LOG" 2>/dev/null || true
