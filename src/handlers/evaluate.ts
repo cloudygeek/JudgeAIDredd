@@ -102,6 +102,11 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       ? body.tool_use_id
       : null;
   const { agent_reasoning, transcript_path } = body;
+  // Live working directory of this PreToolUse call (forwarded by the hook).
+  // Threaded into the policy so relative `rm` targets resolve against where
+  // the command actually runs; falls back to the stored projectRoot.
+  const cwdForEval: string | null =
+    typeof body.cwd === "string" && body.cwd.length > 0 ? body.cwd : null;
   const transcriptContent: string | undefined = body.transcript_content;
   const transcriptSummary: unknown = body.transcript_summary;
   const mode: TrustMode = effectiveMode(session_id, body.mode);
@@ -187,7 +192,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
 
     if (!registeredSessions.has(session_id)) {
       const projectRoot = await tracker.getProjectRoot(session_id);
-      const policyOnly = (await import("../tool-policy.js")).evaluateToolPolicy(tool_name, tool_input ?? {}, projectRoot);
+      const policyOnly = (await import("../tool-policy.js")).evaluateToolPolicy(tool_name, tool_input ?? {}, projectRoot, cwdForEval);
       const noGoalDetail = transcriptContent
         ? "backfill from transcript content failed"
         : transcript_path
@@ -474,6 +479,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     PATTERN_LEARNING_HARD,
     bedrockAuth,
     taintEvidence,
+    cwdForEval,
   );
 
   // Spec §7: surface BYOT runtime failures on the config record so the

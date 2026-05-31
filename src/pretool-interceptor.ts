@@ -342,6 +342,10 @@ export class PreToolInterceptor {
      *  built by the /evaluate handler from session state. Threaded to
      *  the judge as a server-trusted block. Undefined/empty → no-op. */
     taintEvidence?: string,
+    /** Live working directory of this tool call (PreToolUse `cwd`), forwarded
+     *  by the hook. Threaded to the policy so relative `rm` targets resolve
+     *  against where the command runs. Undefined/null → projectRoot fallback. */
+    cwd?: string | null,
   ): Promise<InterceptionResult> {
     const start = Date.now();
     const s = this.getSession(sessionId);
@@ -477,7 +481,7 @@ export class PreToolInterceptor {
     }
 
     // --- Stage 1: Policy engine ---
-    const policyResult = evaluateToolPolicy(tool, input, projectRoot);
+    const policyResult = evaluateToolPolicy(tool, input, projectRoot, cwd);
 
     if (policyResult.decision === "allow") {
       const result: InterceptionResult = {

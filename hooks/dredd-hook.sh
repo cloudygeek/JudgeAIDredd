@@ -709,6 +709,10 @@ case "$HOOK_EVENT" in
     # it through unchanged.
     TOOL_USE_ID=$(echo "$INPUT" | jq -r '.tool_use_id // empty')
     TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
+    # Live working directory of this tool call. Claude Code includes `cwd` in
+    # every hook payload; forwarding it lets the server resolve relative `rm`
+    # targets against where the command runs (in-project vs system path).
+    CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 
     # Extract the last assistant message from the transcript for context
     AGENT_REASONING=""
@@ -745,6 +749,7 @@ case "$HOOK_EVENT" in
         --arg ar "$AGENT_REASONING" \
         --arg tp "$TRANSCRIPT_PATH" \
         --arg mode "$DREDD_MODE" \
+        --arg cwd "$CWD" \
         --slurpfile sum "$EVAL_SUMMARY_FILE" \
         '{
           session_id: $sid,
@@ -754,6 +759,7 @@ case "$HOOK_EVENT" in
           agent_reasoning: $ar,
           transcript_path: (if $tp == "" then null else $tp end),
           transcript_summary: ($sum | first),
+          cwd: (if $cwd == "" then null else $cwd end),
           mode: (if $mode == "" then null else $mode end)
         }' >"$EVAL_REQ_FILE"
     else
@@ -765,6 +771,7 @@ case "$HOOK_EVENT" in
         --arg ar "$AGENT_REASONING" \
         --arg tp "$TRANSCRIPT_PATH" \
         --arg mode "$DREDD_MODE" \
+        --arg cwd "$CWD" \
         '{
           session_id: $sid,
           tool_name: $tn,
@@ -772,6 +779,7 @@ case "$HOOK_EVENT" in
           tool_use_id: (if $tuid == "" then null else $tuid end),
           agent_reasoning: $ar,
           transcript_path: (if $tp == "" then null else $tp end),
+          cwd: (if $cwd == "" then null else $cwd end),
           mode: (if $mode == "" then null else $mode end)
         }' >"$EVAL_REQ_FILE"
     fi

@@ -147,6 +147,18 @@ export const ALLOWED_BASH_PATTERNS: PatternRule[] = [
   // No-ops / control-flow helpers.
   { pattern: /^sleep\s/, reason: "Delay (no I/O)" },
   { pattern: /^(true|false)(\s|$)/, reason: "No-op" },
+
+  // --- 2026-05-31: AWS identity introspection (read-only) ---
+  // `aws sts get-caller-identity` returns {UserId, Account, Arn} and reads NO
+  // secret material — it's the AWS `whoami` / canonical "am I authenticated?"
+  // check, and was the single biggest judge-deny false positive (20 of 117
+  // denies in one week touched it). `aws configure list-profiles` only lists
+  // profile names. Optional leading AWS_* env assignments (`AWS_REGION=`,
+  // `AWS_PROFILE=`) are tolerated; any other aws verb, a non-AWS env prefix,
+  // or a risky co-command falls through to review/deny (chained parts are
+  // evaluated independently, so this never rescues an unsafe chain).
+  { pattern: /^(?:AWS_[A-Z_]+=\S+\s+)*aws\s+sts\s+get-caller-identity(\s|$)/, reason: "AWS identity introspection (read-only; returns account/ARN, no secrets)" },
+  { pattern: /^(?:AWS_[A-Z_]+=\S+\s+)*aws\s+configure\s+list-profiles(\s|$)/, reason: "List AWS profile names (read-only)" },
 ];
 
 // =========================================================================

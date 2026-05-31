@@ -217,9 +217,23 @@ function sanitizeForMatching(command: string): string {
     "$1$2 vcs-removal",
   );
 
-  if (!isGitSubcommand(vcsNeutralised, ["commit", "tag"])) return vcsNeutralised;
+  // Benign redirections are NOT file writes and must not trip the "file write
+  // via redirection" review rule (nor hide behind it): fd-duplications
+  // (`2>&1`, `>&2`, `1>&2`, `2>&-`) and `/dev/null` sinks (`>/dev/null`,
+  // `2>/dev/null`, `&>/dev/null`). Strip them before the deny/review/allow
+  // scan. Real file writes (`> out.json`, `>> log`) and non-null device
+  // writes (`> /dev/sda`) are deliberately left intact. The /dev/null match
+  // is boundary-anchored so `>/dev/null/../etc/passwd` is NOT treated as a
+  // sink (the trailing path survives and still routes to review).
+  const redirectsStripped = vcsNeutralised
+    .replace(/(?:^|\s)\d*[<>]&\d*-?(?=\s|$)/g, " ")
+    .replace(/(?:^|\s)(?:&|\d*)?>>?\s*\/dev\/null(?=\s|$)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  let s = vcsNeutralised;
+  if (!isGitSubcommand(redirectsStripped, ["commit", "tag"])) return redirectsStripped;
+
+  let s = redirectsStripped;
   // -m "..." / -m '...' — quoted message arg.
   s = s.replace(/\s-m\s+"(?:[^"\\]|\\.)*"/g, ' -m "<msg>"');
   s = s.replace(/\s-m\s+'(?:[^'\\]|\\.)*'/g, " -m '<msg>'");
@@ -356,102 +370,120 @@ function hasTopLevelChain(command: string): boolean {
 }
 
 /**
- * Narrow carve-out for `rm` / `rmdir` with destructive flags: the command
- * is allowed when every path target sits under /tmp/ (or the literal path
- * is /tmp itself is NOT allowed — that would wipe the whole tmpdir).
- * Returns false for anything that isn't an rm invocation so callers can
- * safely use it as a guard.
+ * Join a relative path onto a base dir (pure string op — no filesystem
+ * access). Callers reject `..` before calling, so no normalisation needed.
  */
-function isRmLimitedToTmp(command: string): boolean {
-  const trimmed = command.trim();
-  // Match: rm [flags...] <targets...>   (no leading tokens before rm)
-  const m = /^rm(?:\s+-[a-zA-Z]+|\s+--[a-zA-Z-]+(?:=\S+)?)*\s+(.+)$/.exec(trimmed);
-  if (!m) return false;
+function joinPath(base: string, target: string): string {
+  return `${base.replace(/\/+$/, "")}/${target.replace(/^\.\//, "")}`;
+}
 
-  // Tokenise the target list. We intentionally don't handle quoted paths
-  // with embedded spaces — those hit the normal deny path. Glob chars in
-  // the target disqualify (rm -rf /tmp/foo/* is fine because /tmp/foo/*
-  // still starts with /tmp/; but rm -rf /* or $HOME/* is not).
-  const tail = m[1].trim();
-  const targets = tail.split(/\s+/).filter(t => !t.startsWith("-"));
-  if (targets.length === 0) return false;
+type RmLoc = "tmp" | "inproject" | "bounded" | "outside";
 
-  for (const t of targets) {
-    // Reject shell metacharacters that could expand outside /tmp.
-    if (/[$`(){}]/.test(t)) return false;
-    // Strip surrounding quotes if any.
-    const unquoted = t.replace(/^['"]/, "").replace(/['"]$/, "");
-    // Must be an absolute path under /tmp/ (not bare /tmp).
-    if (!/^\/tmp\/\S/.test(unquoted)) return false;
-    // Block exact /tmp or attempts to escape via /tmp/../...
-    if (unquoted === "/tmp" || unquoted === "/tmp/") return false;
-    if (unquoted.includes("/..")) return false;
+/**
+ * Where does a single rm target live, relative to /tmp and the project
+ * sandbox? `base` resolves relative targets (the live cwd, else the
+ * first-prompt projectRoot); `sandbox` is the project-root boundary. Both may
+ * be null when the directory context is unknown — a relative target then
+ * grades as "bounded" (location unknown but blast radius bounded for a
+ * non-recursive delete).
+ */
+function classifyRmTarget(target: string, base: string | null, sandbox: string | null): RmLoc {
+  const underTmp = (p: string) => /^\/tmp\/\S/.test(p);
+  const sb = sandbox ? sandbox.replace(/\/+$/, "") : null;
+  // Strict subpath only — equality means the target IS the project root
+  // (`rm -rf <projectRoot>` wipes the whole project), which is NOT in-sandbox.
+  const underSandbox = (p: string) => sb !== null && p.startsWith(sb + "/");
+
+  if (target.startsWith("/")) {
+    if (underTmp(target)) return "tmp";
+    if (underSandbox(target)) return "inproject";
+    return "outside";
   }
-  return true;
+  if (base === null) return "bounded";
+  const resolved = joinPath(base, target);
+  if (underTmp(resolved)) return "tmp";
+  if (underSandbox(resolved)) return "inproject";
+  return "outside";
 }
 
 /**
- * Narrow carve-out for non-recursive `rm -f <literal-path>`. Idempotent
- * "delete if present" is the canonical cleanup pattern in build scripts
- * (e.g. `rm -f some-artifact.zip` before rebuilding) and on its own is
- * not what the `rm -f` deny rule was added to stop. The deny rule still
- * catches `rm -rf`, `rm -fr`, and any force-delete with a wildcard,
- * variable, tilde, or path traversal in the target.
+ * Unified destructive-`rm`/`rmdir` carve-out. Returns the policy decision when
+ * the delete is provably safe ("allow") or softenable ("review"), or null when
+ * no carve-out applies (the deny list then handles it).
  *
- * Rules:
- *   - Must be exactly `rm` with flags that include `f`/`force` but NOT
- *     `r`/`R`/`recursive`/`--dir`/`-d` (no recursion, no directories).
- *   - Exactly one target. Multiple targets fall through — if you want
- *     to delete many things, say so explicitly and go through review.
- *   - Target must be a literal path: no `*`, `?`, `[`, `$`, backtick,
- *     `~`, `..`, no trailing `/`, no shell metacharacters.
- *   - Target must NOT be absolute (e.g. /etc/...) unless under /tmp/;
- *     the existing `isRmLimitedToTmp` already covers the /tmp case.
+ *   - rm -f (non-recursive): every target a safe relative file / under /tmp /
+ *     in-project → "allow". Bounded blast radius — only the named files go.
+ *   - rm -rf (recursive): every target under /tmp → "allow" (scratch dir);
+ *     every target in-project (≥1 in-project, none of unknown location) →
+ *     "review" so the judge / user adjudicates in-project cleanup (`.venv`,
+ *     `__pycache__`) rather than a hard block.
+ *   - any target out-of-sandbox, a `$var`/glob/`~`/`..`, the project root
+ *     itself, or a recursive delete of an unresolvable relative path → null
+ *     (deny stands).
+ *
+ * With base === null && sandbox === null this reproduces the legacy behaviour
+ * (allow /tmp targets + non-recursive literal-file deletes; everything else
+ * recursive falls through to deny).
  */
-function isRmForceSingleLiteralFile(command: string): boolean {
-  const trimmed = command.trim();
-  // Split into the rm call and its tokens.
-  const m = /^rm((?:\s+-[a-zA-Z]+|\s+--[a-zA-Z-]+(?:=\S+)?)*)\s+(\S+)\s*$/.exec(trimmed);
-  if (!m) return false;
+function classifyRmCarveout(
+  command: string,
+  base: string | null,
+  sandbox: string | null,
+): "allow" | "review" | null {
+  const m = /^(rm|rmdir)((?:\s+-[a-zA-Z]+|\s+--[a-zA-Z-]+(?:=\S+)?)*)\s+(.+)$/.exec(command.trim());
+  if (!m) return null;
 
-  const flagBlock = m[1];
-  const target = m[2];
-
-  // Tokenise the flag block so short-flag clusters (-rf) and long flags
-  // (--force) are checked independently; otherwise the `r` at the end of
-  // "--force" falsely triggers the recursive check.
-  const tokens = flagBlock.trim().split(/\s+/).filter(Boolean);
   let hasForce = false;
   let hasRecursive = false;
-  let hasDir = false;
-  for (const tok of tokens) {
+  for (const tok of m[2].trim().split(/\s+/).filter(Boolean)) {
     if (tok.startsWith("--")) {
       if (tok === "--force") hasForce = true;
       else if (tok === "--recursive") hasRecursive = true;
-      else if (tok === "--dir") hasDir = true;
+      else if (tok === "--dir") hasRecursive = true;
     } else if (tok.startsWith("-")) {
-      // Short-flag cluster like "-rf": inspect each letter.
       for (const ch of tok.slice(1)) {
         if (ch === "f") hasForce = true;
-        else if (ch === "r" || ch === "R") hasRecursive = true;
-        else if (ch === "d") hasDir = true;
+        else if (ch === "r" || ch === "R" || ch === "d") hasRecursive = true;
       }
     }
   }
-  if (!hasForce || hasRecursive || hasDir) return false;
+  if (m[1] === "rmdir") hasRecursive = true;
+  // Only destructive (force/recursive) rm is on the deny list; leave the rest.
+  if (!hasForce && !hasRecursive) return null;
 
-  // Reject dangerous patterns in the target.
-  if (/[*?\[\]$`(){}~]/.test(target)) return false;      // globs, vars, subshells, home
-  if (target.includes("..")) return false;                // path traversal
-  if (target.endsWith("/")) return false;                 // directory-looking
-  if (target === "." || target === "..") return false;
+  const targets = m[3].trim().split(/\s+/).filter((t) => !t.startsWith("-"));
+  if (targets.length === 0) return null;
 
-  // Absolute paths: only allowed under /tmp/ via the other carve-out.
-  // Everything else in absolute-path land (e.g. /etc/passwd) falls through
-  // to the deny list.
-  if (target.startsWith("/") && !/^\/tmp\/\S/.test(target)) return false;
+  const locs: RmLoc[] = [];
+  for (const raw of targets) {
+    const t = raw.replace(/^['"]/, "").replace(/['"]$/, "");
+    if (t === "" || t === "." || t === "..") return null;
+    if (/[*?\[\]$`(){}~]/.test(t)) return null;   // glob / var / subshell / home
+    if (t.includes("..")) return null;            // path traversal
+    const loc = classifyRmTarget(t, base, sandbox);
+    if (loc === "outside") return null;           // out-of-sandbox → deny stands
+    locs.push(loc);
+  }
 
-  return true;
+  if (!hasRecursive) return "allow";              // non-recursive: bounded delete
+  if (locs.every((l) => l === "tmp")) return "allow";   // recursive scratch
+  if (locs.some((l) => l === "bounded")) return null;   // recursive + unknown loc → deny
+  return "review";                                       // recursive in-project → adjudicate
+}
+
+/**
+ * Resolve a `cd <arg>` target against the running base dir (pure string op).
+ * Returns null when the destination can't be statically determined — a `$var`,
+ * glob, `~`, `..`, or a relative `cd` with no known base. Lets the chained
+ * evaluator track the effective directory across `cd && rm` so rm targets
+ * resolve against where the rm actually runs.
+ */
+function resolveCdTarget(arg: string, base: string | null): string | null {
+  const a = arg.replace(/^['"]/, "").replace(/['"]$/, "");
+  if (/[*?$`~]/.test(a) || a.includes("..")) return null;
+  if (a.startsWith("/")) return a.replace(/\/+$/, "");
+  if (base === null) return null;
+  return joinPath(base, a);
 }
 
 /**
@@ -464,7 +496,10 @@ interface SingleBashResult {
   command: string;
 }
 
-function evaluateSingleBashCommand(command: string): SingleBashResult {
+function evaluateSingleBashCommand(
+  command: string,
+  pathCtx?: { base: string | null; sandbox: string | null },
+): SingleBashResult {
   // Commit-message substitution check runs FIRST so an unsafe `$()` in a
   // commit message denies even when the rest of the sanitised form would
   // otherwise pass. The allow-list is narrow; extend SAFE_COMMIT_SUBSTITUTIONS
@@ -472,20 +507,16 @@ function evaluateSingleBashCommand(command: string): SingleBashResult {
   const commitSub = checkCommitMessageSubstitutions(command);
   if (commitSub) return commitSub;
 
-  // Narrow carve-outs: allow destructive delete when every target is under
-  // /tmp/, or when the command is a non-recursive `rm -f <literal-file>`.
-  // Build-scratch workflows (zip staging, artifact cleanup) need these; the
-  // path / shape checks stop them becoming a general bypass.
-  if (isRmLimitedToTmp(command)) {
-    return { decision: "allow", reason: "rm under /tmp/", matchedRule: "ALLOW:Bash:rm-tmp", command };
+  // Unified rm/rmdir carve-out: allow bounded / in-sandbox / tmp deletes,
+  // review recursive in-project deletes (judge/user adjudicates), else fall
+  // through to the deny list. Build-scratch workflows (zip staging, artifact
+  // cleanup) need these; the path / shape checks stop them becoming a bypass.
+  const rm = classifyRmCarveout(command, pathCtx?.base ?? null, pathCtx?.sandbox ?? null);
+  if (rm === "allow") {
+    return { decision: "allow", reason: "rm carve-out: bounded / in-sandbox / tmp target", matchedRule: "ALLOW:Bash:rm-carveout", command };
   }
-  if (isRmForceSingleLiteralFile(command)) {
-    return {
-      decision: "allow",
-      reason: "rm -f of a single literal file (non-recursive)",
-      matchedRule: "ALLOW:Bash:rm-f-literal",
-      command,
-    };
+  if (rm === "review") {
+    return { decision: "review", reason: "Recursive rm inside the project sandbox — judge/user adjudicates", matchedRule: "REVIEW:Bash:rm-in-sandbox", command };
   }
 
   // Match rules against the sanitized command (commit-message bodies
@@ -623,36 +654,38 @@ function extractRedirectTarget(command: string): string | null {
 export function evaluateToolPolicy(
   tool: string,
   input: Record<string, unknown>,
-  projectRoot?: string | null
+  projectRoot?: string | null,
+  /** Live working directory of THIS tool call, forwarded by the hook on
+   *  PreToolUse. Used to resolve relative `rm` targets so an in-project
+   *  delete can be told apart from a system-path delete. Falls back to
+   *  projectRoot; null when neither is known (legacy behaviour). */
+  cwd?: string | null,
 ): PolicyResult {
   // --- Built-in tool: Bash ---
   if (tool === "Bash") {
     const command = String(input.command ?? "").trim();
 
-    // Narrow carve-outs before the deny-list sweep:
-    //   1. rm -rf is OK if every target is under /tmp/.
-    //   2. rm -f <literal-file> (non-recursive, single target) is a common
-    //      idempotent cleanup and is safe without recursion.
-    // Unchained only; chained commands fall through to per-part evaluation
-    // which applies the same carve-outs. `hasTopLevelChain` uses the
-    // heredoc/quote-aware splitter so chain operators inside quoted strings
-    // or heredoc bodies don't fool us into taking the chained path.
+    // Directory context for rm path-resolution: relative targets resolve
+    // against the live cwd (else the first-prompt projectRoot); the project
+    // root is the in-sandbox boundary. Both null → legacy behaviour.
+    const base = (cwd ?? projectRoot) ?? null;
+    const sandbox = (projectRoot ?? cwd) ?? null;
+
+    // Narrow rm/rmdir carve-out before the deny-list sweep (unchained path).
+    // Chained commands fall through to per-part evaluation, which applies the
+    // same carve-out per segment (with cd-tracking for the resolution base).
+    // `hasTopLevelChain` uses the heredoc/quote-aware splitter so chain
+    // operators inside quoted strings or heredoc bodies don't fool us into
+    // taking the chained path.
     const unchained = !hasTopLevelChain(command);
-    if (unchained && isRmLimitedToTmp(command)) {
-      return {
-        decision: "allow",
-        tool,
-        reason: "rm under /tmp/",
-        matchedRule: "ALLOW:Bash:rm-tmp",
-      };
-    }
-    if (unchained && isRmForceSingleLiteralFile(command)) {
-      return {
-        decision: "allow",
-        tool,
-        reason: "rm -f of a single literal file (non-recursive)",
-        matchedRule: "ALLOW:Bash:rm-f-literal",
-      };
+    if (unchained) {
+      const rm = classifyRmCarveout(command, base, sandbox);
+      if (rm === "allow") {
+        return { decision: "allow", tool, reason: "rm carve-out: bounded / in-sandbox / tmp target", matchedRule: "ALLOW:Bash:rm-carveout" };
+      }
+      if (rm === "review") {
+        return { decision: "review", tool, reason: "Recursive rm inside the project sandbox — judge/user adjudicates", matchedRule: "REVIEW:Bash:rm-in-sandbox" };
+      }
     }
 
     // Commit-message substitution gate (unchained path). For chained
@@ -665,32 +698,6 @@ export function evaluateToolPolicy(
           tool,
           reason: commitSub.reason,
           matchedRule: commitSub.matchedRule,
-        };
-      }
-    }
-
-    // Carve-out checks come first in the unchained path so that narrow
-    // exceptions (rm -rf /tmp/..., rm -f literal-file) can short-circuit
-    // before the deny list sees the raw `rm -rf` substring. Otherwise
-    // `rm -rf /tmp/foo` matches the destructive-rm deny rule and never
-    // reaches isRmLimitedToTmp. The chained path doesn't have this issue
-    // because evaluateSingleBashCommand runs the carve-outs first per
-    // segment.
-    if (unchained) {
-      if (isRmLimitedToTmp(command)) {
-        return {
-          decision: "allow",
-          tool,
-          reason: "rm under /tmp/",
-          matchedRule: "ALLOW:Bash:rm-tmp",
-        };
-      }
-      if (isRmForceSingleLiteralFile(command)) {
-        return {
-          decision: "allow",
-          tool,
-          reason: "rm -f of a single literal file (non-recursive)",
-          matchedRule: "ALLOW:Bash:rm-f-literal",
         };
       }
     }
@@ -735,7 +742,18 @@ export function evaluateToolPolicy(
       const parts = splitChainedSafely(command);
 
       if (parts.length > 1) {
-        const partResults = parts.map((part) => evaluateSingleBashCommand(part));
+        // Track the effective cwd across the chain so an rm target resolves
+        // against where it actually runs: `cd /tmp && rm -rf x` evaluates the
+        // rm with base=/tmp, `cd /etc && rm -f y` with base=/etc (→ outside →
+        // deny). Each part is evaluated with the base in effect BEFORE it, then
+        // a `cd` part advances the base for subsequent parts.
+        let runningBase = base;
+        const partResults = parts.map((part) => {
+          const res = evaluateSingleBashCommand(part, { base: runningBase, sandbox });
+          const cd = /^\s*cd\s+(\S+)\s*$/.exec(part);
+          if (cd) runningBase = resolveCdTarget(cd[1], runningBase);
+          return res;
+        });
 
         // If ANY part is denied → deny the whole chain
         const denied = partResults.find((r) => r.decision === "deny");
@@ -781,7 +799,7 @@ export function evaluateToolPolicy(
     }
 
     // Single command evaluation
-    const singleResult = evaluateSingleBashCommand(command);
+    const singleResult = evaluateSingleBashCommand(command, { base, sandbox });
     return {
       decision: singleResult.decision,
       tool,
