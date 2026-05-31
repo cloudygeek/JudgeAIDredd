@@ -130,6 +130,7 @@ for f in Dockerfile server.js docker-entrypoint-test-framework.sh \
          docker-entrypoint-mode4.sh \
          test-framework/src/runner-agentlab.ts \
          test-framework/src/runner-mode4.ts \
+         test-framework/src/runner-mode4-cli.ts \
          test-framework/scenarios/mode4-behavioural-drift.ts \
          test-framework/workspace-template/.env.test \
          package.json test-framework/package.json \

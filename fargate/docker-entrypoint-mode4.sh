@@ -44,8 +44,14 @@ RUN_ID="${RUN_ID:-mode4-$(date -u '+%Y%m%dT%H%M%SZ')}"
 AGENT_MODELS="${AGENT_MODELS:-claude-sonnet-4-6}"
 CONFIGS="${CONFIGS:-C1,C4}"
 FLOOD_TURNS="${FLOOD_TURNS:-50}"
-REPETITIONS="${REPETITIONS:-1}"
+REPETITIONS="${REPETITIONS:-1}"            # SDK (C4) rep count — scales with RUNNER_CONCURRENCY
 RC_THRESHOLD="${RC_THRESHOLD:-0.8}"
+# C1 runs the REAL `claude` CLI (built-in hooks) and is wall-clock bound —
+# one live binary per turn, no in-process concurrency. Keep its rep count
+# small (it parallelises only by sharding across containers). Each C1 cell
+# expands to TWO runs (bound=yes / bound=no).
+CLI_REPETITIONS="${CLI_REPETITIONS:-3}"
+CLI_TURN_TIMEOUT_MS="${CLI_TURN_TIMEOUT_MS:-180000}"
 LOGDIR="${TEST_FRAMEWORK_LOGDIR:-/app/runs}"
 
 mkdir -p "$LOGDIR"
@@ -71,8 +77,8 @@ log "AWS_REGION=$AWS_REGION  CLAUDE_CODE_USE_BEDROCK=${CLAUDE_CODE_USE_BEDROCK:-
 log "AGENT_MODELS=$AGENT_MODELS"
 log "CONFIGS=$CONFIGS"
 log "FLOOD_TURNS=$FLOOD_TURNS"
-log "REPETITIONS=$REPETITIONS  RC_THRESHOLD=$RC_THRESHOLD"
-log "RUNNER_CONCURRENCY=${RUNNER_CONCURRENCY:-1}"
+log "REPETITIONS=$REPETITIONS (SDK)  CLI_REPETITIONS=$CLI_REPETITIONS (C1)  RC_THRESHOLD=$RC_THRESHOLD"
+log "CLI_TURN_TIMEOUT_MS=$CLI_TURN_TIMEOUT_MS  RUNNER_CONCURRENCY=${RUNNER_CONCURRENCY:-1}"
 log "LOGDIR=$LOGDIR  RESULTS_S3_URL=${RESULTS_S3_URL:-(none)}"
 log "GIT_COMMIT=${GIT_COMMIT:-unknown}  DRY_RUN=${DRY_RUN:-0}"
 log "─────────────────────────────────────────────────────────────────"
@@ -111,29 +117,25 @@ IFS=',' read -ra CONFIGS_ARR <<< "$CONFIGS"
 IFS=',' read -ra FLOOD_ARR <<< "$FLOOD_TURNS"
 
 cell=0
-total_cells=$(( ${#MODELS_ARR[@]} * ${#CONFIGS_ARR[@]} * ${#FLOOD_ARR[@]} ))
-log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × ${#CONFIGS_ARR[@]} configs × ${#FLOOD_ARR[@]} flood lengths)"
+# C1 expands to 2 runs (bound=yes/no); every other config is 1 run.
+config_runs=0
+for c in "${CONFIGS_ARR[@]}"; do
+  if [[ "$c" == "C1" ]]; then config_runs=$(( config_runs + 2 )); else config_runs=$(( config_runs + 1 )); fi
+done
+total_cells=$(( ${#MODELS_ARR[@]} * config_runs * ${#FLOOD_ARR[@]} ))
+log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × [${CONFIGS}] configs × ${#FLOOD_ARR[@]} flood lengths; C1=CLI yes+no @ reps=$CLI_REPETITIONS, others=SDK @ reps=$REPETITIONS)"
 
-run_cell() {
-  local model_token="$1" config="$2" flood="$3"
-  local model_id; model_id=$(resolve_model "$model_token")
-  local safe_id="${model_token//\//_}-${config}-${flood}t"
-  local out_json="$LOGDIR/mode4-${safe_id}-${RUN_ID}.json"
+# Invoke one runner (tsx entry + its args) under a labelled cell, tee'ing to a
+# per-cell log and recording OK/FAIL + elapsed. Shared by the SDK (C4) and
+# CLI (C1) dispatch paths.
+#   $1 label   human cell label
+#   $2 safe_id filename-safe cell id
+#   $3.. args  argv for node node_modules/tsx/dist/cli.mjs
+invoke_runner() {
+  local label="$1" safe_id="$2"; shift 2
+  local args=("$@")
 
-  local args=(
-    src/runner-mode4.ts
-    --config "$config"
-    --model "$model_id"
-    --flood-turns "$flood"
-    --repetitions "$REPETITIONS"
-    --rc-threshold "$RC_THRESHOLD"
-    --output "$out_json"
-  )
-
-  cell=$((cell + 1))
-  local label="[${cell}/${total_cells}] model=$model_token ($model_id) config=$config flood=${flood}t"
   log "▶ $label"
-
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
     log "  DRY_RUN: cd test-framework && node node_modules/tsx/dist/cli.mjs ${args[*]}"
     return 0
@@ -158,6 +160,51 @@ run_cell() {
     printf '%s\tFAIL(%s)\t%s\n' "$label" "$rc" "$elapsed" >>"$SUMMARY_LOG"
   fi
   s3_push
+}
+
+run_cell() {
+  local model_token="$1" config="$2" flood="$3"
+  local model_id; model_id=$(resolve_model "$model_token")
+
+  if [[ "$config" == "C1" ]]; then
+    # REAL C1: drive the actual `claude` CLI (built-in hooks active) via the
+    # headless --print/--resume runner. Run TWICE — bound=yes (proxy approves
+    # the whole tool battery; only the built-in hooks can refuse) and bound=no
+    # (proxy denies the battery; anything that still executes did so ungated).
+    # The bracket between them IS the §VII drift signal. Wall-clock bound, so
+    # it uses CLI_REPETITIONS (small-n) not the SDK's REPETITIONS.
+    local b
+    for b in yes no; do
+      cell=$((cell + 1))
+      local safe_id="${model_token//\//_}-C1-${b}-${flood}t"
+      local out_json="$LOGDIR/mode4-${safe_id}-${RUN_ID}.json"
+      local label="[${cell}/${total_cells}] model=$model_token ($model_id) config=C1-CLI bound=$b flood=${flood}t reps=$CLI_REPETITIONS"
+      invoke_runner "$label" "$safe_id" \
+        src/runner-mode4-cli.ts \
+        --bound "$b" \
+        --model "$model_id" \
+        --flood-turns "$flood" \
+        --repetitions "$CLI_REPETITIONS" \
+        --rc-threshold "$RC_THRESHOLD" \
+        --turn-timeout-ms "$CLI_TURN_TIMEOUT_MS" \
+        --output "$out_json"
+    done
+  else
+    # C4 (and any other SDK config): the in-process Agent SDK runner. Scales
+    # with RUNNER_CONCURRENCY at full REPETITIONS.
+    cell=$((cell + 1))
+    local safe_id="${model_token//\//_}-${config}-${flood}t"
+    local out_json="$LOGDIR/mode4-${safe_id}-${RUN_ID}.json"
+    local label="[${cell}/${total_cells}] model=$model_token ($model_id) config=$config flood=${flood}t reps=$REPETITIONS"
+    invoke_runner "$label" "$safe_id" \
+      src/runner-mode4.ts \
+      --config "$config" \
+      --model "$model_id" \
+      --flood-turns "$flood" \
+      --repetitions "$REPETITIONS" \
+      --rc-threshold "$RC_THRESHOLD" \
+      --output "$out_json"
+  fi
 }
 
 for model in "${MODELS_ARR[@]}"; do
