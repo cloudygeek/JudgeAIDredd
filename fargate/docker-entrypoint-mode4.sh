@@ -125,15 +125,97 @@ done
 total_cells=$(( ${#MODELS_ARR[@]} * config_runs * ${#FLOOD_ARR[@]} ))
 log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × [${CONFIGS}] configs × ${#FLOOD_ARR[@]} flood lengths; C1=CLI yes+no @ reps=$CLI_REPETITIONS, others=SDK @ reps=$REPETITIONS)"
 
+# Degenerate-result guard. After a cell completes, scan its result JSON for the
+# throttle / executor-failure signature we debugged: a rep where the model
+# never ran (every turn errored → text-level baselineRefusalRate==0 AND
+# gesRetest==100) while NOTHING actually executed (gesExec==0 — exec-level
+# stays clean because there were no real tool calls). The wall-clock floor is
+# the corroborating signal: a real flood=N rep cannot finish in < ~3s/turn, so
+# an implausibly fast cell is flagged even if the metrics look plausible.
+#
+# Non-destructive: it WARNS (⚠ line + SUSPECT tag in the summary). It never
+# edits or discards results — a human decides whether to re-run. Best-effort:
+# if python3 is missing or the JSON won't parse, it logs and returns cleanly so
+# the guard can never break a run.
+#   $1 out_json  result file to scan
+#   $2 flood     flood-turn count for this cell
+#   $3 reps      repetition count for this cell
+#   $4 elapsed   measured wall-clock seconds for the cell
+#   $5 label     human cell label (for the warning line)
+guard_degenerate() {
+  local out_json="$1" flood="$2" reps="$3" elapsed="$4" label="$5"
+  [[ -f "$out_json" ]] || return 0
+  command -v python3 >/dev/null 2>&1 || { log "  guard: python3 absent — skipped"; return 0; }
+
+  # Per-rep turn count ≈ 4 baseline + flood + #(S_a probes ≤ flood) + 4 retest
+  # + 4 ladder. Approximate S_a probes as up to 4. Floor at 3s/turn.
+  local verdict
+  verdict=$(python3 - "$out_json" "$flood" "$reps" "$elapsed" <<'PY'
+import json, sys
+path, flood, reps, elapsed = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+try:
+    rows = json.load(open(path))
+except Exception as e:
+    print(f"PARSE_FAIL {e}"); sys.exit(0)
+if not isinstance(rows, list) or not rows:
+    print("EMPTY"); sys.exit(0)
+
+suspect_reps = []
+for r in rows:
+    base_rr = r.get("baselineRefusalRate")
+    ges_txt = r.get("gesRetest")
+    ges_exec = r.get("gesExec", 0)  # absent on SDK runner → treat as 0
+    # Executor-failure signature: text says "everything leaked / nothing
+    # refused" but nothing materially executed.
+    if base_rr == 0 and ges_txt == 100 and (ges_exec in (0, None)):
+        suspect_reps.append(r.get("repetition"))
+
+# Wall-clock floor: estimated turns across all reps.
+est_turns = max(1, reps * (4 + flood + min(4, flood) + 4 + 4))
+sec_per_turn = elapsed / est_turns
+too_fast = sec_per_turn < 3.0
+
+flags = []
+if suspect_reps:
+    flags.append(f"executor-failure reps={suspect_reps} (baseRR=0 & GES_text=100 & GES_exec=0)")
+if too_fast:
+    flags.append(f"implausibly fast {sec_per_turn:.1f}s/turn (<3s floor, ~{est_turns} turns in {elapsed}s)")
+
+if flags:
+    print("SUSPECT " + " | ".join(flags))
+else:
+    print("OK")
+PY
+)
+  case "$verdict" in
+    SUSPECT*)
+      log "  ⚠ DEGENERATE-GUARD: ${verdict#SUSPECT } — likely Bedrock throttle / executor failure. Results NOT trustworthy; re-run this cell."
+      printf '%s\tSUSPECT\t%s\n' "$label" "${verdict#SUSPECT }" >>"$SUMMARY_LOG"
+      ;;
+    PARSE_FAIL*|EMPTY)
+      log "  guard: ${verdict} — could not evaluate (left as-is)"
+      ;;
+    *) : ;;  # OK — silent
+  esac
+}
+
 # Invoke one runner (tsx entry + its args) under a labelled cell, tee'ing to a
 # per-cell log and recording OK/FAIL + elapsed. Shared by the SDK (C4) and
-# CLI (C1) dispatch paths.
+# CLI (C1) dispatch paths. Runs the degenerate-guard on the cell's output JSON.
 #   $1 label   human cell label
 #   $2 safe_id filename-safe cell id
-#   $3.. args  argv for node node_modules/tsx/dist/cli.mjs
+#   $3 flood   flood-turn count (for the guard's wall-clock floor)
+#   $4 reps    repetition count (for the guard's wall-clock floor)
+#   $5.. args  argv for node node_modules/tsx/dist/cli.mjs (incl. --output)
 invoke_runner() {
-  local label="$1" safe_id="$2"; shift 2
+  local label="$1" safe_id="$2" flood="$3" reps="$4"; shift 4
   local args=("$@")
+
+  # Pull the --output path back out of the args so the guard can scan it.
+  local out_json="" i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == "--output" ]]; then out_json="${args[$((i + 1))]}"; break; fi
+  done
 
   log "▶ $label"
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -152,6 +234,7 @@ invoke_runner() {
     local elapsed=$(( $(date +%s) - start_ts ))
     log "  ✓ $label (${elapsed}s) → $cell_log"
     printf '%s\tOK\t%s\n' "$label" "$elapsed" >>"$SUMMARY_LOG"
+    [[ -n "$out_json" ]] && guard_degenerate "$out_json" "$flood" "$reps" "$elapsed" "$label"
   else
     local rc=$?
     set +o pipefail
@@ -179,7 +262,7 @@ run_cell() {
       local safe_id="${model_token//\//_}-C1-${b}-${flood}t"
       local out_json="$LOGDIR/mode4-${safe_id}-${RUN_ID}.json"
       local label="[${cell}/${total_cells}] model=$model_token ($model_id) config=C1-CLI bound=$b flood=${flood}t reps=$CLI_REPETITIONS"
-      invoke_runner "$label" "$safe_id" \
+      invoke_runner "$label" "$safe_id" "$flood" "$CLI_REPETITIONS" \
         src/runner-mode4-cli.ts \
         --bound "$b" \
         --model "$model_id" \
@@ -196,7 +279,7 @@ run_cell() {
     local safe_id="${model_token//\//_}-${config}-${flood}t"
     local out_json="$LOGDIR/mode4-${safe_id}-${RUN_ID}.json"
     local label="[${cell}/${total_cells}] model=$model_token ($model_id) config=$config flood=${flood}t reps=$REPETITIONS"
-    invoke_runner "$label" "$safe_id" \
+    invoke_runner "$label" "$safe_id" "$flood" "$REPETITIONS" \
       src/runner-mode4.ts \
       --config "$config" \
       --model "$model_id" \
