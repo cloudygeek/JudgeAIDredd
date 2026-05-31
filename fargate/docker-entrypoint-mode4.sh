@@ -77,6 +77,35 @@ log "LOGDIR=$LOGDIR  RESULTS_S3_URL=${RESULTS_S3_URL:-(none)}"
 log "GIT_COMMIT=${GIT_COMMIT:-unknown}  DRY_RUN=${DRY_RUN:-0}"
 log "─────────────────────────────────────────────────────────────────"
 
+# Map AGENT_MODELS tokens to the model ids the Claude Agent SDK accepts.
+# With CLAUDE_CODE_USE_BEDROCK=1 the SDK needs the Bedrock inference-profile
+# id (e.g. eu.anthropic.claude-sonnet-4-6); a bare alias like
+# "claude-sonnet-4-6" is NOT a valid Bedrock id and makes every agent turn
+# error instantly (manifests as baseRR=0 / GES=100 / a 50-turn flood that
+# "completes" in ~75s). Mirrors resolve_model() in
+# docker-entrypoint-test-framework.sh. An id already containing a "." is
+# assumed to be a fully-qualified Bedrock/inference-profile id and passed
+# through verbatim.
+resolve_model() {
+  local token="$1"
+  if [[ "$token" == *.* ]]; then echo "$token"; return; fi
+  if [[ "${CLAUDE_CODE_USE_BEDROCK:-0}" == "1" ]]; then
+    case "$token" in
+      sonnet|sonnet-4-6|claude-sonnet-4-6) echo "eu.anthropic.claude-sonnet-4-6" ;;
+      opus-4-7|opus|claude-opus-4-7)       echo "eu.anthropic.claude-opus-4-7" ;;
+      haiku-4-5|haiku|claude-haiku-4-5)    echo "eu.anthropic.claude-haiku-4-5-20251001-v1:0" ;;
+      *) echo "$token" ;;  # pass through verbatim
+    esac
+  else
+    case "$token" in
+      sonnet|sonnet-4-6) echo "claude-sonnet-4-6" ;;
+      opus-4-7|opus)     echo "claude-opus-4-7" ;;
+      haiku-4-5|haiku)   echo "claude-haiku-4-5-20251001" ;;
+      *) echo "$token" ;;
+    esac
+  fi
+}
+
 IFS=',' read -ra MODELS_ARR <<< "$AGENT_MODELS"
 IFS=',' read -ra CONFIGS_ARR <<< "$CONFIGS"
 IFS=',' read -ra FLOOD_ARR <<< "$FLOOD_TURNS"
@@ -86,14 +115,15 @@ total_cells=$(( ${#MODELS_ARR[@]} * ${#CONFIGS_ARR[@]} * ${#FLOOD_ARR[@]} ))
 log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × ${#CONFIGS_ARR[@]} configs × ${#FLOOD_ARR[@]} flood lengths)"
 
 run_cell() {
-  local model="$1" config="$2" flood="$3"
-  local safe_id="${model//\//_}-${config}-${flood}t"
+  local model_token="$1" config="$2" flood="$3"
+  local model_id; model_id=$(resolve_model "$model_token")
+  local safe_id="${model_token//\//_}-${config}-${flood}t"
   local out_json="$LOGDIR/mode4-${safe_id}-${RUN_ID}.json"
 
   local args=(
     src/runner-mode4.ts
     --config "$config"
-    --model "$model"
+    --model "$model_id"
     --flood-turns "$flood"
     --repetitions "$REPETITIONS"
     --rc-threshold "$RC_THRESHOLD"
@@ -101,7 +131,7 @@ run_cell() {
   )
 
   cell=$((cell + 1))
-  local label="[${cell}/${total_cells}] model=$model config=$config flood=${flood}t"
+  local label="[${cell}/${total_cells}] model=$model_token ($model_id) config=$config flood=${flood}t"
   log "▶ $label"
 
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
