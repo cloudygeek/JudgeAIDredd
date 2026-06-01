@@ -60,6 +60,18 @@ CLI_TURN_TIMEOUT_MS="${CLI_TURN_TIMEOUT_MS:-180000}"
 # "raw model + tools", analogous to C4). Uses CLI_REPETITIONS (wall-clock
 # bound, serial). openai needs OPENAI_API_KEY; converse needs AGENT_REGION.
 BACKEND="${BACKEND:-}"
+# Reasoning/thinking effort. Empty = model default; otherwise low|medium|high|max.
+# Passed through to all three runners as --effort. SDK + CLI honour it via
+# Anthropic's adaptive thinking; multimodel-Converse uses additionalModelRequest
+# Fields where the model supports it; OpenAI ignores. For an opus regression
+# sweep, set EFFORTS=low,medium,high,max and the entrypoint will iterate.
+EFFORT="${EFFORT:-}"
+EFFORTS="${EFFORTS:-}"
+# C1 CLI bounds. Default both (yes+no) — the original §VII bracket. Set to
+# "yes" or "no" alone to halve wall-clock when the bracket is known to be flat
+# (proven for sonnet/haiku at flood=50: bounds converge because toolsAttempted=0
+# means there's nothing to gate). Values: yes | no | yes,no
+CLI_BOUNDS="${CLI_BOUNDS:-yes,no}"
 LOGDIR="${TEST_FRAMEWORK_LOGDIR:-/app/runs}"
 
 mkdir -p "$LOGDIR"
@@ -108,6 +120,7 @@ resolve_model() {
     case "$token" in
       sonnet|sonnet-4-6|claude-sonnet-4-6) echo "eu.anthropic.claude-sonnet-4-6" ;;
       opus-4-7|opus|claude-opus-4-7)       echo "eu.anthropic.claude-opus-4-7" ;;
+      opus-4-8|opus48|claude-opus-4-8)     echo "eu.anthropic.claude-opus-4-8" ;;
       haiku-4-5|haiku|claude-haiku-4-5)    echo "eu.anthropic.claude-haiku-4-5-20251001-v1:0" ;;
       *) echo "$token" ;;  # pass through verbatim
     esac
@@ -115,10 +128,25 @@ resolve_model() {
     case "$token" in
       sonnet|sonnet-4-6) echo "claude-sonnet-4-6" ;;
       opus-4-7|opus)     echo "claude-opus-4-7" ;;
+      opus-4-8)          echo "claude-opus-4-8" ;;
       haiku-4-5|haiku)   echo "claude-haiku-4-5-20251001" ;;
       *) echo "$token" ;;
     esac
   fi
+}
+
+# Pin AWS_REGION to a region where the requested model lives. opus-4-8 (and the
+# qwen3-* families) only have inference profiles in eu-central-1; the rest of
+# the Claude family is multi-region. Caller can override AWS_REGION explicitly;
+# otherwise we steer based on the first model token. eu-central-1 is also where
+# sonnet-4-6 and haiku-4-5 are available, so it's a safe default for any opus
+# regression that mixes Claude models in one matrix.
+region_for_models() {
+  local first_token; first_token="${MODELS_ARR[0]}"
+  case "$first_token" in
+    opus-4-8|opus48|claude-opus-4-8) echo "eu-central-1" ;;
+    *) echo "${AWS_REGION:-eu-west-2}" ;;
+  esac
 }
 
 IFS=',' read -ra MODELS_ARR <<< "$AGENT_MODELS"
@@ -126,18 +154,30 @@ IFS=',' read -ra CONFIGS_ARR <<< "$CONFIGS"
 IFS=',' read -ra FLOOD_ARR <<< "$FLOOD_TURNS"
 
 cell=0
-if [[ -n "$BACKEND" ]]; then
-  # Multimodel: configs ignored, 1 run per model × flood.
-  total_cells=$(( ${#MODELS_ARR[@]} * ${#FLOOD_ARR[@]} ))
-  log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × ${#FLOOD_ARR[@]} flood lengths; backend=$BACKEND @ reps=$CLI_REPETITIONS; CONFIGS ignored)"
+# Effort iteration count (1 if neither EFFORTS nor EFFORT is set).
+if [[ -n "$EFFORTS" ]]; then
+  IFS=',' read -ra _eff_count_arr <<< "$EFFORTS"
+  effort_count=${#_eff_count_arr[@]}
+elif [[ -n "$EFFORT" ]]; then
+  effort_count=1
 else
-  # Claude path: C1 expands to 2 runs (bound=yes/no); every other config is 1 run.
+  effort_count=1
+fi
+if [[ -n "$BACKEND" ]]; then
+  # Multimodel: configs ignored, 1 run per model × flood × effort.
+  total_cells=$(( ${#MODELS_ARR[@]} * ${#FLOOD_ARR[@]} * effort_count ))
+  log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × ${#FLOOD_ARR[@]} flood lengths × ${effort_count} effort levels; backend=$BACKEND @ reps=$CLI_REPETITIONS; CONFIGS ignored)"
+else
+  # Claude path: C1 expands to N runs by CLI_BOUNDS (default 2 = yes+no);
+  # every other config is 1 run.
+  IFS=',' read -ra _bc_arr <<< "$CLI_BOUNDS"
+  c1_runs=${#_bc_arr[@]}
   config_runs=0
   for c in "${CONFIGS_ARR[@]}"; do
-    if [[ "$c" == "C1" ]]; then config_runs=$(( config_runs + 2 )); else config_runs=$(( config_runs + 1 )); fi
+    if [[ "$c" == "C1" ]]; then config_runs=$(( config_runs + c1_runs )); else config_runs=$(( config_runs + 1 )); fi
   done
-  total_cells=$(( ${#MODELS_ARR[@]} * config_runs * ${#FLOOD_ARR[@]} ))
-  log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × [${CONFIGS}] configs × ${#FLOOD_ARR[@]} flood lengths; C1=CLI yes+no @ reps=$CLI_REPETITIONS, others=SDK @ reps=$REPETITIONS)"
+  total_cells=$(( ${#MODELS_ARR[@]} * config_runs * ${#FLOOD_ARR[@]} * effort_count ))
+  log "Cell plan: $total_cells cells (${#MODELS_ARR[@]} models × [${CONFIGS}] configs × ${#FLOOD_ARR[@]} flood lengths × ${effort_count} effort levels; C1=CLI yes+no @ reps=$CLI_REPETITIONS, others=SDK @ reps=$REPETITIONS)"
 fi
 
 # Degenerate-result guard. After a cell completes, scan its result JSON for the
@@ -261,14 +301,22 @@ invoke_runner() {
 }
 
 run_cell() {
-  local model_token="$1" config="$2" flood="$3"
+  local model_token="$1" config="$2" flood="$3" effort="$4"
+
+  # Effort suffix in safe_id / label only when set (keeps existing filenames
+  # unchanged when nobody specifies an effort).
+  local effort_tag=""
+  [[ -n "$effort" ]] && effort_tag="-eff${effort}"
+  # Empty effort = pass NO --effort flag (lets runner / model use default).
+  local effort_args=()
+  [[ -n "$effort" ]] && effort_args=(--effort "$effort")
 
   # ── Multimodel path: non-Claude backend (converse/openai). CONFIGS ignored.
   if [[ -n "$BACKEND" ]]; then
     cell=$((cell + 1))
-    local safe_id="${model_token//\//_}-${BACKEND}-${flood}t"
+    local safe_id="${model_token//\//_}-${BACKEND}-${flood}t${effort_tag}"
     local out_json="$LOGDIR/mode4-${safe_id}-${RUN_ID}.json"
-    local label="[${cell}/${total_cells}] model=$model_token backend=$BACKEND flood=${flood}t reps=$CLI_REPETITIONS"
+    local label="[${cell}/${total_cells}] model=$model_token backend=$BACKEND flood=${flood}t reps=$CLI_REPETITIONS effort=${effort:-default}"
     invoke_runner "$label" "$safe_id" "$flood" "$CLI_REPETITIONS" \
       src/runner-mode4-multimodel.ts \
       --backend "$BACKEND" \
@@ -276,6 +324,7 @@ run_cell() {
       --flood-turns "$flood" \
       --repetitions "$CLI_REPETITIONS" \
       --rc-threshold "$RC_THRESHOLD" \
+      "${effort_args[@]}" \
       --output "$out_json"
     return 0
   fi
@@ -290,11 +339,12 @@ run_cell() {
     # The bracket between them IS the §VII drift signal. Wall-clock bound, so
     # it uses CLI_REPETITIONS (small-n) not the SDK's REPETITIONS.
     local b
-    for b in yes no; do
+    IFS=',' read -ra _bounds_arr <<< "$CLI_BOUNDS"
+    for b in "${_bounds_arr[@]}"; do
       cell=$((cell + 1))
-      local safe_id="${model_token//\//_}-C1-${b}-${flood}t"
+      local safe_id="${model_token//\//_}-C1-${b}-${flood}t${effort_tag}"
       local out_json="$LOGDIR/mode4-${safe_id}-${RUN_ID}.json"
-      local label="[${cell}/${total_cells}] model=$model_token ($model_id) config=C1-CLI bound=$b flood=${flood}t reps=$CLI_REPETITIONS"
+      local label="[${cell}/${total_cells}] model=$model_token ($model_id) config=C1-CLI bound=$b flood=${flood}t reps=$CLI_REPETITIONS effort=${effort:-default}"
       invoke_runner "$label" "$safe_id" "$flood" "$CLI_REPETITIONS" \
         src/runner-mode4-cli.ts \
         --bound "$b" \
@@ -303,15 +353,16 @@ run_cell() {
         --repetitions "$CLI_REPETITIONS" \
         --rc-threshold "$RC_THRESHOLD" \
         --turn-timeout-ms "$CLI_TURN_TIMEOUT_MS" \
+        "${effort_args[@]}" \
         --output "$out_json"
     done
   else
     # C4 (and any other SDK config): the in-process Agent SDK runner. Scales
     # with RUNNER_CONCURRENCY at full REPETITIONS.
     cell=$((cell + 1))
-    local safe_id="${model_token//\//_}-${config}-${flood}t"
+    local safe_id="${model_token//\//_}-${config}-${flood}t${effort_tag}"
     local out_json="$LOGDIR/mode4-${safe_id}-${RUN_ID}.json"
-    local label="[${cell}/${total_cells}] model=$model_token ($model_id) config=$config flood=${flood}t reps=$REPETITIONS"
+    local label="[${cell}/${total_cells}] model=$model_token ($model_id) config=$config flood=${flood}t reps=$REPETITIONS effort=${effort:-default}"
     invoke_runner "$label" "$safe_id" "$flood" "$REPETITIONS" \
       src/runner-mode4.ts \
       --config "$config" \
@@ -319,22 +370,37 @@ run_cell() {
       --flood-turns "$flood" \
       --repetitions "$REPETITIONS" \
       --rc-threshold "$RC_THRESHOLD" \
+      "${effort_args[@]}" \
       --output "$out_json"
   fi
 }
+
+# Effort dimension. EFFORTS=low,medium,high,max iterates; EFFORT=high pins one
+# value; both empty means a single cell at model default (and no --effort flag).
+if [[ -n "$EFFORTS" ]]; then
+  IFS=',' read -ra EFFORTS_ARR <<< "$EFFORTS"
+elif [[ -n "$EFFORT" ]]; then
+  EFFORTS_ARR=("$EFFORT")
+else
+  EFFORTS_ARR=("")
+fi
 
 if [[ -n "$BACKEND" ]]; then
   # Multimodel: no config dimension (CONFIGS ignored).
   for model in "${MODELS_ARR[@]}"; do
     for flood in "${FLOOD_ARR[@]}"; do
-      run_cell "$model" "ignored" "$flood"
+      for eff in "${EFFORTS_ARR[@]}"; do
+        run_cell "$model" "ignored" "$flood" "$eff"
+      done
     done
   done
 else
   for model in "${MODELS_ARR[@]}"; do
     for config in "${CONFIGS_ARR[@]}"; do
       for flood in "${FLOOD_ARR[@]}"; do
-        run_cell "$model" "$config" "$flood"
+        for eff in "${EFFORTS_ARR[@]}"; do
+          run_cell "$model" "$config" "$flood" "$eff"
+        done
       done
     done
   done

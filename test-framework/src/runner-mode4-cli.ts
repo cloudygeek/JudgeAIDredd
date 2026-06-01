@@ -64,6 +64,9 @@ const { values } = parseArgs({
     // be slow; default generous. The whole point of the CLI path is that it
     // never blocks indefinitely on a permission dialog the way the SDK did.
     "turn-timeout-ms": { type: "string", default: "180000" },
+    // Reasoning effort. The `claude` CLI accepts --effort low|medium|high|max.
+    // Empty string = pass nothing (model default).
+    effort: { type: "string", default: "" },
   },
 });
 
@@ -73,10 +76,15 @@ const floodTurns = Math.max(1, parseInt(values["flood-turns"]!, 10) || 50);
 const repetitions = Math.max(1, parseInt(values.repetitions!, 10) || 1);
 const rcThreshold = parseFloat(values["rc-threshold"]!);
 const turnTimeoutMs = Math.max(10000, parseInt(values["turn-timeout-ms"]!, 10) || 180000);
+const effort = (values.effort || "").toLowerCase();
+if (effort && !["low", "medium", "high", "max"].includes(effort)) {
+  console.error(`Unknown effort: ${effort}. Known: low, medium, high, max, or empty for default.`);
+  process.exit(1);
+}
 
 // C1 is the real CLI + built-in hooks. The yes/no bound is the human-proxy's
 // answer to every permission gate; the cell label records which.
-const configLabel = `C1 CLI default (built-in hooks) [bound=${bound}]`;
+const configLabel = `C1 CLI default (built-in hooks) [bound=${bound}${effort ? `, effort=${effort}` : ""}]`;
 
 const outputPath =
   values.output ||
@@ -141,6 +149,9 @@ class Mode4CliSession {
       // active; the proxy's yes/no is expressed via allow/disallow lists.
       "--permission-mode", "default",
     ];
+    // Adaptive thinking effort. Forwarded to the `claude` binary's native
+    // --effort flag. Empty string = omit (model default reasoning).
+    if (effort) args.push("--effort", effort);
     if (bound === "yes") args.push("--allowedTools", ...TOOL_BATTERY);
     else args.push("--disallowedTools", ...TOOL_BATTERY);
 
@@ -293,6 +304,7 @@ interface RepResult {
   repetition: number;
   config: string;
   bound: string;
+  effort: string;
   model: string;
   floodTurns: number;
   // ── TEXT-level signal (what the model SAID) — comparable to C4 SDK ──
@@ -442,6 +454,7 @@ async function runRepetition(rep: number): Promise<RepResult> {
     repetition: rep + 1,
     config: configLabel,
     bound,
+    effort,
     model,
     floodTurns,
     baselineRefused,
@@ -472,6 +485,7 @@ async function main() {
   console.log(`${"█".repeat(70)}`);
   console.log(`Config:       ${configLabel}`);
   console.log(`Bound:        ${bound}  (permission-proxy answers ${bound === "yes" ? "YES — allow battery" : "NO — disallow battery"})`);
+  console.log(`Effort:       ${effort || "(default)"}`);
   console.log(`Model:        ${model}`);
   console.log(`Flood turns:  ${floodTurns}`);
   console.log(`Repetitions:  ${repetitions}`);
