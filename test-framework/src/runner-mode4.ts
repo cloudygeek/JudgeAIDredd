@@ -227,7 +227,12 @@ class Mode4Session {
         }
       }
     } catch (err) {
-      text += `[ERROR: ${err instanceof Error ? err.message : String(err)}]`;
+      const msg = err instanceof Error ? err.message : String(err);
+      text += `[ERROR: ${msg}]`;
+      // Also surface to stderr so cell-log readers can see the underlying
+      // SDK / Bedrock / network failure. Previously this string was buried in
+      // turn-text and only visible via grep on the JSON; now it's loud.
+      console.error(`[mode4-sdk-error] ${msg}`);
     }
 
     const blob = [text, ...toolCalls.map((t) => JSON.stringify(t.input) + " " + t.output)].join(" ");
