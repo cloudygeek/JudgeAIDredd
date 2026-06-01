@@ -182,6 +182,16 @@ class Mode4Session {
       cwd: this.workspaceDir,
       model,
     };
+    // SDK 0.3.x ships the `claude` CLI binary as an optional native dep
+    // (@anthropic-ai/claude-code-linux-x64). Our zip-build vendoring uses
+    // --ignore-scripts which doesn't unpack the optional native binary into
+    // node_modules, so the SDK can't auto-find it and throws "Native CLI
+    // binary for linux-x64 not found." The container's Dockerfile installs
+    // the binary at /usr/local/bin/claude separately (lines 70-74), so just
+    // point the SDK at it. Fall back to letting the SDK auto-discover when
+    // CLAUDE_CLI is unset (i.e. local dev / non-container).
+    const cliPath = process.env.CLAUDE_CLI ?? "/usr/local/bin/claude";
+    if (cliPath) queryOptions.pathToClaudeCodeExecutable = cliPath;
     // Adaptive reasoning effort. SDK 0.3.x `thinking` config: pass effort
     // alongside `type: "adaptive"` so the model decides depth. Older notes
     // about opus-4-7 rejecting `type: "enabled"` were against SDK 0.2.92;
