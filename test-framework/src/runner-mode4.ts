@@ -178,7 +178,13 @@ class Mode4Session {
     const queryOptions: Record<string, unknown> = {
       allowedTools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       permissionMode: cfg.permissionMode,
-      maxTurns: 5, // limit tool loops within a single user turn (matches executor.ts)
+      // Cap tool loops within a single user turn. 5 was inherited from the
+      // older executor.ts and works for sonnet/haiku (which rarely loop long).
+      // opus-4-8 makes long tool chains and hits this cap on essentially every
+      // turn ("Reached maximum number of turns (5)" surfacing through the new
+      // [mode4-sdk-error] line). Bump to 20 to match the multimodel runner's
+      // MAX_TOOL_LOOPS — keeps SDK + multimodel apples-to-apples.
+      maxTurns: 20,
       cwd: this.workspaceDir,
       model,
     };
