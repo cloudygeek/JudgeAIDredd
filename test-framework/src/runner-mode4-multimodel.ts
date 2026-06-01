@@ -112,6 +112,14 @@ const OPENAI_MODELS: Record<string, string> = {
   "o3": "o3",
   "o3-mini": "o3-mini",
   "o4-mini": "o4-mini",
+  // Responses-API-only models (no /v1/chat/completions endpoint). Routed
+  // through Mode4ResponsesSession by isResponsesOnly() — different envelope.
+  "gpt-5-codex": "gpt-5-codex",
+  "gpt-5-pro": "gpt-5-pro",
+  "o3-pro": "o3-pro",
+  "o1-pro": "o1-pro",
+  "o3-deep-research": "o3-deep-research",
+  "o4-mini-deep-research": "o4-mini-deep-research",
 };
 function resolveModel(m: string): string {
   if (backend === "converse") {
@@ -408,11 +416,154 @@ class Mode4OpenAISession {
   }
 }
 
+// ── OpenAI Responses API transport ──
+// gpt-5-codex / gpt-5-pro / o3-pro / o1-pro / o3-deep-research are
+// Responses-only — Chat Completions returns "This model is only supported in
+// v1/responses". Different envelope: `input` (typed item array) instead of
+// `messages`, `tools` without nested `function:{...}`, output items by type
+// (reasoning / function_call / message). No temperature, no max_*_tokens.
+// `store:false` works without persisting reasoning items between turns —
+// reasoning items must be omitted from subsequent input or the API errors.
+interface ResponsesItem {
+  type: "message" | "function_call" | "function_call_output" | "reasoning";
+  role?: "system" | "user" | "assistant";
+  content?: string | Array<{ type: string; text?: string; annotations?: unknown[]; logprobs?: unknown[] }>;
+  // function_call fields
+  name?: string;
+  call_id?: string;
+  arguments?: string;
+  // function_call_output fields
+  output?: string;
+  // identifiers (output only)
+  id?: string;
+  status?: string;
+}
+interface ResponsesTool {
+  type: "function";
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+const RESPONSES_TOOLS: ResponsesTool[] = TOOL_NAMES.map((n) => ({
+  type: "function",
+  name: n,
+  description: TOOL_DESCRIPTIONS[n],
+  parameters: TOOL_PARAMS[n],
+}));
+
+class Mode4ResponsesSession {
+  private history: ResponsesItem[];
+  private apiKey: string;
+  constructor(private readonly workDir: string, systemPrompt: string) {
+    this.history = [{ type: "message", role: "system", content: systemPrompt }];
+    const k = process.env.OPENAI_API_KEY;
+    if (!k) throw new Error("OPENAI_API_KEY not set — backend=openai requires it");
+    this.apiKey = k;
+  }
+
+  private async call(): Promise<any> {
+    // gpt-5-pro requires effort=high (rejects low/medium); cap accordingly.
+    // Otherwise use the operator's effort, mapping `max` -> `high`.
+    let oaiEffort: string | undefined;
+    if (effort) {
+      const mapped = effort === "max" ? "high" : effort;
+      oaiEffort = resolvedModel.includes("pro") ? "high" : mapped;
+    } else if (resolvedModel.includes("pro")) {
+      oaiEffort = "high";  // gpt-5-pro / o-pro need an explicit effort
+    }
+    const body: Record<string, unknown> = {
+      model: resolvedModel,
+      input: this.history,
+      tools: RESPONSES_TOOLS,
+      tool_choice: "auto",
+      store: false,
+    };
+    if (oaiEffort) body.reasoning = { effort: oaiEffort };
+    const maxAttempts = 3;
+    let lastErr: Error | null = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await fetch("https://api.openai.com/v1/responses", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(300_000),
+        });
+        if (!res.ok) {
+          const t = await res.text().catch(() => "");
+          if ((res.status === 429 || res.status >= 500) && attempt < maxAttempts) {
+            await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1))); continue;
+          }
+          throw new Error(`OpenAI Responses HTTP ${res.status}: ${t.substring(0, 500)}`);
+        }
+        return await res.json();
+      } catch (err) {
+        lastErr = err instanceof Error ? err : new Error(String(err));
+        if (attempt < maxAttempts) { await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1))); continue; }
+      }
+    }
+    throw lastErr ?? new Error("OpenAI Responses call failed");
+  }
+
+  async send(userMessage: string): Promise<TurnCapture> {
+    const toolCalls: TurnCapture["toolCalls"] = [];
+    let text = "";
+    try {
+      this.history.push({ type: "message", role: "user", content: userMessage });
+      let loops = 0;
+      while (loops < MAX_TOOL_LOOPS) {
+        loops++;
+        const resp = await this.call();
+        const output: ResponsesItem[] = resp.output ?? [];
+        // Append every function_call to history; collect text from message items.
+        // Reasoning items are NOT appended (store:false rejects them on round-trip).
+        const fcalls: ResponsesItem[] = [];
+        for (const item of output) {
+          if (item.type === "message") {
+            const c = item.content;
+            if (Array.isArray(c)) {
+              for (const block of c) if (block.type === "output_text" && block.text) text += block.text;
+            } else if (typeof c === "string") text += c;
+          } else if (item.type === "function_call") {
+            fcalls.push(item);
+            this.history.push({
+              type: "function_call",
+              name: item.name,
+              call_id: item.call_id,
+              arguments: item.arguments,
+            });
+          }
+          // skip reasoning items entirely — they can't be replayed without store:true
+        }
+        if (fcalls.length === 0) break;
+        for (const fc of fcalls) {
+          let input: Record<string, unknown> = {};
+          try { input = JSON.parse(fc.arguments || "{}"); } catch {}
+          const out = executeTool(fc.name!, input, this.workDir).substring(0, 10000);
+          toolCalls.push({ tool: fc.name!, input, output: out });
+          this.history.push({ type: "function_call_output", call_id: fc.call_id, output: out });
+        }
+      }
+    } catch (err) {
+      text += `[ERROR: ${err instanceof Error ? err.message : String(err)}]`;
+    }
+    const blob = [text, ...toolCalls.map((t) => JSON.stringify(t.input) + " " + t.output)].join(" ");
+    return { text, toolCalls, canaries: [...new Set(detectCanaries(blob))], blob };
+  }
+}
+
+// Models that ONLY support /v1/responses (not /v1/chat/completions). Detected
+// by id and routed through Mode4ResponsesSession.
+function isResponsesOnly(modelId: string): boolean {
+  return /(?:^|-)(?:codex|pro|deep-research)(?:$|-)/.test(modelId);
+}
+
 interface Mode4Session { send(userMessage: string): Promise<TurnCapture>; }
 function newSession(workDir: string, systemPrompt: string): Mode4Session {
-  return backend === "converse"
-    ? new Mode4ConverseSession(workDir, systemPrompt)
-    : new Mode4OpenAISession(workDir, systemPrompt);
+  if (backend === "converse") return new Mode4ConverseSession(workDir, systemPrompt);
+  // OpenAI: pick the right transport per model.
+  if (isResponsesOnly(resolvedModel)) return new Mode4ResponsesSession(workDir, systemPrompt);
+  return new Mode4OpenAISession(workDir, systemPrompt);
 }
 
 // ── Dual-signal scoring (identical to runner-mode4-cli.ts) ──
