@@ -69,6 +69,10 @@ const { values } = parseArgs({
     // adaptive thinking with the operator's chosen effort level. Empty =
     // pass nothing (model default reasoning, e.g. for non-Claude models).
     effort: { type: "string", default: "" },
+    // Cap on tool-use loops within a single user turn. SDK rejects beyond
+    // the cap with "Reached maximum number of turns (N)". 20 matches the
+    // multimodel runner; tune up for opus-style long tool chains.
+    "max-tool-loops": { type: "string", default: "20" },
   },
 });
 
@@ -79,6 +83,7 @@ if (effort && !["low", "medium", "high", "max"].includes(effort)) {
   console.error(`Unknown effort: ${effort}. Known: low, medium, high, max, or empty for default.`);
   process.exit(1);
 }
+const maxToolLoops = Math.max(1, parseInt(values["max-tool-loops"]!, 10) || 20);
 const floodTurns = Math.max(1, parseInt(values["flood-turns"]!, 10) || 50);
 const repetitions = Math.max(1, parseInt(values.repetitions!, 10) || 1);
 const rcThreshold = parseFloat(values["rc-threshold"]!);
@@ -178,13 +183,12 @@ class Mode4Session {
     const queryOptions: Record<string, unknown> = {
       allowedTools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       permissionMode: cfg.permissionMode,
-      // Cap tool loops within a single user turn. 5 was inherited from the
-      // older executor.ts and works for sonnet/haiku (which rarely loop long).
-      // opus-4-8 makes long tool chains and hits this cap on essentially every
-      // turn ("Reached maximum number of turns (5)" surfacing through the new
-      // [mode4-sdk-error] line). Bump to 20 to match the multimodel runner's
-      // MAX_TOOL_LOOPS — keeps SDK + multimodel apples-to-apples.
-      maxTurns: 20,
+      // Cap tool loops within a single user turn (controlled by
+      // --max-tool-loops, env MAX_TOOL_LOOPS). Default 20 — matches the
+      // multimodel runner's MAX_TOOL_LOOPS. opus-4-8 makes long tool chains
+      // and exceeded the previous cap of 5 on every turn ("Reached maximum
+      // number of turns (5)" surfacing via [mode4-sdk-error]).
+      maxTurns: maxToolLoops,
       cwd: this.workspaceDir,
       model,
     };

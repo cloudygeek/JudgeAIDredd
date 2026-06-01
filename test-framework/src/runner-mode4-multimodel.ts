@@ -56,6 +56,9 @@ const { values } = parseArgs({
     // models without an effort knob (qwen and gpt-4o here). Empty = pass
     // nothing.
     effort: { type: "string", default: "" },
+    // Cap on tool-use loops within a single user turn. Default 20 matches the
+    // SDK runner. Tune up for models that make long tool chains.
+    "max-tool-loops": { type: "string", default: "20" },
   },
 });
 
@@ -69,6 +72,7 @@ const floodTurns = Math.max(1, parseInt(values["flood-turns"]!, 10) || 50);
 const repetitions = Math.max(1, parseInt(values.repetitions!, 10) || 1);
 const rcThreshold = parseFloat(values["rc-threshold"]!);
 const effort = (values.effort || "").toLowerCase();
+const maxToolLoopsCli = Math.max(1, parseInt(values["max-tool-loops"]!, 10) || 20);
 if (effort && !["low", "medium", "high", "max"].includes(effort)) {
   console.error(`Unknown effort: ${effort}. Known: low, medium, high, max, or empty for default.`);
   process.exit(1);
@@ -234,7 +238,9 @@ interface TurnCapture {
   blob: string;
 }
 
-const MAX_TOOL_LOOPS = 20;
+// Cap on tool-use loops per user turn. Resolvable via --max-tool-loops CLI
+// flag (entrypoint env MAX_TOOL_LOOPS). Default 20.
+const MAX_TOOL_LOOPS = maxToolLoopsCli;
 const MAX_TOKENS = 4096;
 
 // ── Converse transport (AWS CLI), real multi-turn history ──

@@ -72,6 +72,10 @@ EFFORTS="${EFFORTS:-}"
 # (proven for sonnet/haiku at flood=50: bounds converge because toolsAttempted=0
 # means there's nothing to gate). Values: yes | no | yes,no
 CLI_BOUNDS="${CLI_BOUNDS:-yes,no}"
+# Tool-loop cap per user turn for the SDK + multimodel runners. Default 20.
+# Tune up for models with long tool chains (opus-4-8 hits 5 on every turn).
+# The CLI runner doesn't expose this knob (the binary handles it internally).
+MAX_TOOL_LOOPS="${MAX_TOOL_LOOPS:-20}"
 LOGDIR="${TEST_FRAMEWORK_LOGDIR:-/app/runs}"
 
 mkdir -p "$LOGDIR"
@@ -99,7 +103,7 @@ log "BACKEND=${BACKEND:-(claude path)}"
 log "CONFIGS=$CONFIGS"
 log "FLOOD_TURNS=$FLOOD_TURNS"
 log "REPETITIONS=$REPETITIONS (SDK)  CLI_REPETITIONS=$CLI_REPETITIONS (C1)  RC_THRESHOLD=$RC_THRESHOLD"
-log "CLI_TURN_TIMEOUT_MS=$CLI_TURN_TIMEOUT_MS  RUNNER_CONCURRENCY=${RUNNER_CONCURRENCY:-1}"
+log "CLI_TURN_TIMEOUT_MS=$CLI_TURN_TIMEOUT_MS  RUNNER_CONCURRENCY=${RUNNER_CONCURRENCY:-1}  MAX_TOOL_LOOPS=$MAX_TOOL_LOOPS"
 log "LOGDIR=$LOGDIR  RESULTS_S3_URL=${RESULTS_S3_URL:-(none)}"
 log "GIT_COMMIT=${GIT_COMMIT:-unknown}  DRY_RUN=${DRY_RUN:-0}"
 log "─────────────────────────────────────────────────────────────────"
@@ -324,7 +328,8 @@ run_cell() {
       --flood-turns "$flood" \
       --repetitions "$CLI_REPETITIONS" \
       --rc-threshold "$RC_THRESHOLD" \
-      "${effort_args[@]}" \
+      --max-tool-loops "$MAX_TOOL_LOOPS" \
+      ${effort_args[@]+"${effort_args[@]}"} \
       --output "$out_json"
     return 0
   fi
@@ -353,7 +358,7 @@ run_cell() {
         --repetitions "$CLI_REPETITIONS" \
         --rc-threshold "$RC_THRESHOLD" \
         --turn-timeout-ms "$CLI_TURN_TIMEOUT_MS" \
-        "${effort_args[@]}" \
+        ${effort_args[@]+"${effort_args[@]}"} \
         --output "$out_json"
     done
   else
@@ -370,7 +375,8 @@ run_cell() {
       --flood-turns "$flood" \
       --repetitions "$REPETITIONS" \
       --rc-threshold "$RC_THRESHOLD" \
-      "${effort_args[@]}" \
+      --max-tool-loops "$MAX_TOOL_LOOPS" \
+      ${effort_args[@]+"${effort_args[@]}"} \
       --output "$out_json"
   fi
 }
