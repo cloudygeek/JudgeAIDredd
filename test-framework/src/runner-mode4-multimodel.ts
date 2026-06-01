@@ -104,6 +104,14 @@ const CONVERSE_MODELS: Record<string, string> = {
 const OPENAI_MODELS: Record<string, string> = {
   "gpt-4o-mini": "gpt-4o-mini-2024-07-18",
   "gpt-4o": "gpt-4o-2024-08-06",
+  // The gpt-5 family + o-series accept the alias verbatim — keep them in the
+  // map so an explicit lookup is possible, but the fallback below also works.
+  "gpt-5": "gpt-5",
+  "gpt-5-mini": "gpt-5-mini",
+  "gpt-5-nano": "gpt-5-nano",
+  "o3": "o3",
+  "o3-mini": "o3-mini",
+  "o4-mini": "o4-mini",
 };
 function resolveModel(m: string): string {
   if (backend === "converse") {
@@ -315,7 +323,31 @@ class Mode4OpenAISession {
   }
 
   private async call(): Promise<any> {
-    const body = { model: resolvedModel, messages: this.history, tools: OPENAI_TOOLS, tool_choice: "auto", max_tokens: MAX_TOKENS, temperature: 0 };
+    // gpt-5 / gpt-5.x / o-series ("reasoning") models reject:
+    //   - `max_tokens` — they require `max_completion_tokens` instead
+    //   - `temperature: 0` — only default (1) is supported
+    // The classic 4o / 4.1 / 4-turbo families still use the old shape. Detect
+    // by model id and emit the right envelope so one runner handles both.
+    const isReasoning = /^(gpt-5|o[1-9])/.test(resolvedModel);
+    const body: Record<string, unknown> = {
+      model: resolvedModel,
+      messages: this.history,
+      tools: OPENAI_TOOLS,
+      tool_choice: "auto",
+    };
+    if (isReasoning) {
+      body.max_completion_tokens = MAX_TOKENS;
+      // omit `temperature` entirely — model uses its default
+      // OpenAI's reasoning_effort accepts low|medium|high; map our `max` to
+      // `high` (the closest available). Empty effort = omit.
+      if (effort) {
+        const oaiEffort = effort === "max" ? "high" : effort;
+        body.reasoning_effort = oaiEffort;
+      }
+    } else {
+      body.max_tokens = MAX_TOKENS;
+      body.temperature = 0;
+    }
     const maxAttempts = 3;
     let lastErr: Error | null = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
