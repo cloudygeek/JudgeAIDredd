@@ -461,10 +461,26 @@ async function main() {
 
   async function runOne(rep: number) {
     console.log(`>>> REP ${rep + 1}/${repetitions} [${cfg.label}]`);
+    const startedAt = Date.now();
     try {
-      results.push(await runRepetition(rep));
+      const result = await runRepetition(rep);
+      results.push(result);
+      // Per-rep completion line — without this, a stalled REP looks identical
+      // to a healthy one until the whole cell finishes (the bedt4 silent-fail
+      // problem). Surface elapsed + headline metrics so a stuck or
+      // executor-failure rep is visible immediately.
+      const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+      console.log(
+        `<<< REP ${rep + 1}/${repetitions} done in ${elapsedSec}s ` +
+          `baseRR=${result.baselineRefusalRate} postRR=${result.postRefusalRate} ` +
+          `R_c=${result.rc ?? "n/a"} GES=${result.gesRetest}`,
+      );
     } catch (err) {
-      console.error(`ERROR rep ${rep + 1}: ${err instanceof Error ? err.message : String(err)}`);
+      const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+      console.error(
+        `<<< REP ${rep + 1}/${repetitions} ERROR after ${elapsedSec}s: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 

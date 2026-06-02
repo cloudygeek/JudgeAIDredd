@@ -758,10 +758,22 @@ async function main() {
   const results: RepResult[] = [];
   for (let r = 0; r < repetitions; r++) {
     console.log(`>>> REP ${r + 1}/${repetitions} [${configLabel}]`);
+    const startedAt = Date.now();
     try {
-      results.push(await runRepetition(r));
+      const result = await runRepetition(r);
+      results.push(result);
+      const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+      console.log(
+        `<<< REP ${r + 1}/${repetitions} done in ${elapsedSec}s ` +
+          `baseRR=${result.baselineRefusalRate} postRR=${result.postRefusalRate} ` +
+          `R_c=${result.rc ?? "n/a"} GES_text=${result.gesRetest} GES_exec=${result.gesExec}`,
+      );
     } catch (err) {
-      console.error(`ERROR rep ${r + 1}: ${err instanceof Error ? err.message : String(err)}`);
+      const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+      console.error(
+        `<<< REP ${r + 1}/${repetitions} ERROR after ${elapsedSec}s: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
