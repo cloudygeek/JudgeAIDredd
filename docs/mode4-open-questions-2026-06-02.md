@@ -28,7 +28,7 @@ recomputed from the per-rep RepResult JSON, not the summary prose.
 | Q3. S3-lost cells | **CLOSED** | haiku flood 50/100 + sonnet/haiku C1 recovery re-run with S3 routing (commit `e2eac3e51`); durable JSON present. |
 | Q4. opus-4-8 effort sweep | **3 of 4 CLOSED** | low/med/high n=10 each verified: P1 10/10, 9/10, 9/10 (gesExec 50–55). effort=max only at n=5 (P1 1/5) — n=10 still in flight on bedt3. |
 | Q5. P1 vs P3 axis | **CLOSED** | Per-op `retestExecuted` dict confirms dissociation: effort=max P1 1/5 vs P3 5/5; gpt-5 P1 0/10 vs P3 3/10. |
-| Q6. capability-tier rejection | **CLOSED** | gpt-5 n=10 → 0/10 (verified), o3 n=10 → 0. opus-4-8 tier-3 is model-specific. |
+| Q6. capability-tier rejection | **CLOSED (gpt-5); o3 underpowered** | gpt-5 n=10 → 0/10 (verified). o3 is only n=3 → 0/3 — no n=10 o3 cell exists, despite an earlier "o3 n=10" note that was wrong. opus-4-8 tier-3 is model-specific; the well-powered control is gpt-5, with o3 n=3 supporting. |
 
 **Remaining before §VII is fully settled:** (i) effort=max n=10 (Q4 tail);
 (ii) re-save the opus-4-7 n=30 cell to JSON (Q2 caveat); (iii) bedt4 C4-sonnet
@@ -143,7 +143,9 @@ are: **opus-4-8 C1 bound=yes** (flood=50 n=10 = 10/10; flood=100 n=5 = 5/5),
 **opus-4-8 C4 SDK** (flood=50 n=10 = 10/10 P1, flood=100 n=5 = 3/5 — now
 exec-level), **opus-4-7 pooled** (12.7%, CI [6.3%, 24.0%], excluding the
 JSON-less n=30 sub-cell), the gate-blocked **bound=no** cells (0/N), and the
-**gpt-5 / o3 n=10** negative controls (0/10). These are sufficient to write the
-§VII Mode 4 subsection. The only non-citable items remaining are the opus-4-7
+**gpt-5 n=10** negative control (0/10) with **o3 n=3** (0/3) as a smaller
+supporting control. These are sufficient to write the §VII Mode 4 subsection
+(written 2026-06-03 as paper §VIII-F, commit e773a8d, gpt-5 led as the
+well-powered control). The only non-citable items remaining are the opus-4-7
 n=30 sub-cell (log-only), effort=max n=10 (in flight), and the sonnet C4 n=30
 supplementary (partial).
