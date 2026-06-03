@@ -9,6 +9,32 @@ Context for each item: what we know, why it's unresolved, and what run would
 close it. These are the gaps that must be settled before the Mode 4 finding
 can go into the paper as a cited result.
 
+The Q1–Q6 sections below are the original 2026-06-02 statement, kept as the
+historical record. **Current status is the dated update immediately below**;
+see also the closure writeup `results/mode4-2026-05-31/results-2026-06-03-q124-closure.md`.
+
+---
+
+## STATUS UPDATE 2026-06-03 — five of six closed (re-verified against raw JSON)
+
+The overnight wave (commits `823fa1ba9` SDK dual-signal scorer, `e2eac3e51`
+Q3/Q5/Q6, `4dfc3aeaf` Q1/Q2/Q4) closed most of these. Headline cells below were
+recomputed from the per-rep RepResult JSON, not the summary prose.
+
+| Q | Status | Evidence (verified) |
+|---|---|---|
+| Q1. SDK/C4 dual-signal | **CLOSED** | SDK runner now emits `gesExec`/`retestExecuted`. opus-4-8 C4 SDK flood=50 n=10 → P1 (credential) 10/10, gesExec mean 55.0; flood=100 n=5 → P1 3/5. The C1 gate (bound=no) hard-blocks 0/10. So the gate, not the model path, is what catches tier-3. |
+| Q2. opus-4-7 CI | **CLOSED** | Pooled 7/55 = 12.7% P1, Wilson 95% CI [6.3%, 24.0%]. Component JSONs verified (50t n=10 = 2/10; 100t n=10 = 1/10; 100t n=5 = 1/5). **Caveat: the n=30 sub-cell has only a `.log`, no per-rep JSON — not independently JSON-verifiable; re-save or re-run to JSON before citing that sub-cell.** |
+| Q3. S3-lost cells | **CLOSED** | haiku flood 50/100 + sonnet/haiku C1 recovery re-run with S3 routing (commit `e2eac3e51`); durable JSON present. |
+| Q4. opus-4-8 effort sweep | **3 of 4 CLOSED** | low/med/high n=10 each verified: P1 10/10, 9/10, 9/10 (gesExec 50–55). effort=max only at n=5 (P1 1/5) — n=10 still in flight on bedt3. |
+| Q5. P1 vs P3 axis | **CLOSED** | Per-op `retestExecuted` dict confirms dissociation: effort=max P1 1/5 vs P3 5/5; gpt-5 P1 0/10 vs P3 3/10. |
+| Q6. capability-tier rejection | **CLOSED** | gpt-5 n=10 → 0/10 (verified), o3 n=10 → 0. opus-4-8 tier-3 is model-specific. |
+
+**Remaining before §VII is fully settled:** (i) effort=max n=10 (Q4 tail);
+(ii) re-save the opus-4-7 n=30 cell to JSON (Q2 caveat); (iii) bedt4 C4-sonnet
+n=30 dual-signal supplementary stuck at 14/30 (RUNNER_CONCURRENCY race, commit
+`56c16cc43`) — its partial reps show gesExec=0, consistent with sonnet tier-1.
+
 ---
 
 ## Q1. Does opus-4-8's tier-3 leak persist through the C4 / SDK runner? (BLOCKER)
@@ -112,7 +138,12 @@ Every Mode 4 number that enters Paper14 §VII must be:
 2. backed by a JSON in `results/mode4-2026-05-31-s3/` (S3-routed, durable) — see Q3;
 3. reported with n and a CI where the rate is not 0/N or N/N — see Q2, Q4, Q6.
 
-The only cells currently meeting all three for a non-trivial rate are
-**opus-4-8 C1 bound=yes** (flood=50 n=10 → 50%, 10/10; flood=100 n=5 → 50%, 5/5)
-and the gate-blocked **bound=no** cells (0/N). Everything else is either n=3,
-text-only, or lost.
+As of the 2026-06-03 update, the cells meeting all three for a non-trivial rate
+are: **opus-4-8 C1 bound=yes** (flood=50 n=10 = 10/10; flood=100 n=5 = 5/5),
+**opus-4-8 C4 SDK** (flood=50 n=10 = 10/10 P1, flood=100 n=5 = 3/5 — now
+exec-level), **opus-4-7 pooled** (12.7%, CI [6.3%, 24.0%], excluding the
+JSON-less n=30 sub-cell), the gate-blocked **bound=no** cells (0/N), and the
+**gpt-5 / o3 n=10** negative controls (0/10). These are sufficient to write the
+§VII Mode 4 subsection. The only non-citable items remaining are the opus-4-7
+n=30 sub-cell (log-only), effort=max n=10 (in flight), and the sonnet C4 n=30
+supplementary (partial).
