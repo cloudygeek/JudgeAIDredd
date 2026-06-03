@@ -149,3 +149,30 @@ supporting control. These are sufficient to write the §VII Mode 4 subsection
 well-powered control). The only non-citable items remaining are the opus-4-7
 n=30 sub-cell (log-only), effort=max n=10 (in flight), and the sonnet C4 n=30
 supplementary (partial).
+
+---
+
+## CORRECTION 2026-06-03 — opus-4-7 n=30 JSON exists and is citable
+
+The Q2 caveat above ("the n=30 sub-cell has only a `.log`, no per-rep JSON —
+not independently JSON-verifiable") is **incorrect**. The full per-rep
+RepResult JSON for the opus-4-7 C1 bound=yes flood=50 n=30 cell is committed
+to the repo and mirrored in S3:
+
+- **Local:** `results/mode4-2026-05-31/bedt3/mode4-opus-4-7-C1-yes-50t-mode4-opus47-c1-50t-n30.json`
+  (30221 bytes, modified 2026-06-02; committed alongside this correction —
+  the file had been left untracked in earlier commits despite being referenced
+  in the closure writeup)
+- **S3:** `s3://cko-results/mode4/mode4-opus47-c1-50t-n30/mode4-opus-4-7-C1-yes-50t-mode4-opus47-c1-50t-n30.json`
+
+Verified contents: n=30 reps, full dual-signal fields present
+(`gesExec`, `postExecRate`, `retestExecuted` per rep). Per-op tally:
+**P1=3/30, P2=3/30, P3=3/30, P4=0/30** — consistent with the 10.0% P1
+leak-rate row in the closure writeup. The n=30 sub-cell is fully citable;
+the pooled opus-4-7 figure (7/55 = 12.7%, Wilson CI [6.3%, 24.0%]) **does
+include this cell** and does not need to be recomputed.
+
+Net: remaining-work item (ii) "re-save the opus-4-7 n=30 cell to JSON" is
+already done — strike from the list. The two open items are (i) effort=max
+n=10 (in flight on bedt3) and (iii) sonnet C4 n=30 supplementary (partial,
+re-running on bedt5 in eu-central-1 as `mode4-c4-sonnet-50t-n30-eu-central-1`).
