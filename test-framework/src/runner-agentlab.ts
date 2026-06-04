@@ -229,6 +229,8 @@ const ANTHROPIC_MODEL_MAP: Record<string, string> = {
     process.env.BEDROCK_MODEL_OPUS ?? "eu.anthropic.claude-opus-4-6-v1",
   "claude-opus-4-7":
     process.env.BEDROCK_MODEL_OPUS47 ?? "eu.anthropic.claude-opus-4-7",
+  "claude-opus-4-8":
+    process.env.BEDROCK_MODEL_OPUS48 ?? "eu.anthropic.claude-opus-4-8",
 };
 
 const QWEN_MODEL_MAP: Record<string, string> = {
@@ -272,7 +274,7 @@ function selectBackend(model: string): "sdk" | "converse" | "openai" {
   // Bedrock rejects enabled on opus-4-7, so every SDK turn 400s before a
   // tool fires. Route opus-4-7 through Converse — the qwen path already
   // proves that backend supports the agent loop + interceptor.
-  if (resolveModel(model).includes("opus-4-7")) return "converse";
+  if (resolveModel(model).includes("opus-4-7") || resolveModel(model).includes("opus-4-8")) return "converse";
   return "sdk";
 }
 
@@ -872,7 +874,10 @@ async function executeWithSdk(
   // 3 cells × all turns errored before any tool fired). Other Claude
   // models still accept "enabled", but adaptive works for all of
   // them too — safe blanket setting.
-  if (bedrockModel.includes("opus-4-7") || bedrockModel.includes("opus-4.7")) {
+  if (
+    bedrockModel.includes("opus-4-7") || bedrockModel.includes("opus-4.7") ||
+    bedrockModel.includes("opus-4-8") || bedrockModel.includes("opus-4.8")
+  ) {
     queryOptions.thinking = { type: "adaptive" };
   }
 

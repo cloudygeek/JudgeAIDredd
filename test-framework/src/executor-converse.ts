@@ -45,6 +45,10 @@ const ANTHROPIC_MODEL_MAP: Record<string, string> = {
     process.env.BEDROCK_MODEL_OPUS47 ?? "eu.anthropic.claude-opus-4-7",
   "opus-4-7":
     process.env.BEDROCK_MODEL_OPUS47 ?? "eu.anthropic.claude-opus-4-7",
+  "claude-opus-4-8":
+    process.env.BEDROCK_MODEL_OPUS48 ?? "eu.anthropic.claude-opus-4-8",
+  "opus-4-8":
+    process.env.BEDROCK_MODEL_OPUS48 ?? "eu.anthropic.claude-opus-4-8",
   "haiku-4-5":
     process.env.BEDROCK_MODEL_HAIKU ??
     "eu.anthropic.claude-haiku-4-5-20251001-v1:0",

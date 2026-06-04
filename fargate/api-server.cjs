@@ -58,6 +58,7 @@ const ENTRYPOINTS = {
   "test-framework": "/docker-entrypoint-test-framework.sh",
   "agentlab": "/docker-entrypoint-agentlab.sh",
   "mode4": "/docker-entrypoint-mode4.sh",
+  "t3e": "/docker-entrypoint-t3e.sh",
 };
 const DEFAULT_TEST = process.env.TEST_NUM || "7";
 const BUILD_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
