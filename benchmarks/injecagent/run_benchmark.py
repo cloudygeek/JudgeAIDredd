@@ -100,6 +100,7 @@ def _record_dredd_success() -> None:
 BEDROCK_MODELS = {
     "sonnet": "eu.anthropic.claude-sonnet-4-6",
     "opus-4-7": "eu.anthropic.claude-opus-4-7",
+    "opus-4-8": "eu.anthropic.claude-opus-4-8",
     "haiku": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
     # Qwen3-32B as a weaker (paper-comparable) agent. Sonnet 4.6
     # baseline-refused 100% of InjecAgent (likely trained on the
@@ -126,11 +127,13 @@ OPENAI_MODELS = {
     "gpt-4.1-mini": "gpt-4.1-mini",
 }
 
-# Region routing per model family. Anthropic inference profiles
-# (eu.anthropic.*) are served from any EU region; Qwen direct
-# foundation models live in eu-central-1 only.
+# Region routing per model family. Qwen direct foundation models live
+# in eu-central-1 only. Anthropic inference profiles (eu.anthropic.*)
+# are served from any EU region but eu-central-1 has cleaner sonnet/opus
+# quota than eu-west-1 (see Mode-4 sonnet shard runs), so route there
+# regardless of the entrypoint default.
 def region_for_model(model_id: str, default_region: str) -> str:
-    if model_id.startswith("qwen."):
+    if model_id.startswith("qwen.") or model_id.startswith("eu.anthropic."):
         return "eu-central-1"
     return default_region
 
@@ -171,12 +174,12 @@ def call_bedrock(system_prompt: str, user_prompt: str, model_id: str, region: st
     """
     import boto3
     client = boto3.client("bedrock-runtime", region_name=region)
-    # Opus 4.7 rejects `temperature` with ValidationException — same
-    # gotcha bedrock-client.ts handles. Drop it on opus-4-7; keep it
+    # Opus 4.7 / 4.8 reject `temperature` with ValidationException — same
+    # gotcha bedrock-client.ts handles. Drop it on those models; keep it
     # on every other model so determinism stays in place where the
     # API allows.
     inference_config: dict[str, Any] = {"maxTokens": 4096}
-    if "opus-4-7" not in model_id:
+    if "opus-4-7" not in model_id and "opus-4-8" not in model_id:
         inference_config["temperature"] = 0
     resp = client.converse(
         modelId=model_id,

@@ -78,6 +78,7 @@ MODEL_STEP_BUDGET: dict[str, int] = {
     "sonnet-4.6": 15,
     "sonnet-4.5": 15,
     "opus-4.7": 30,
+    "opus-4.8": 30,
 }
 
 

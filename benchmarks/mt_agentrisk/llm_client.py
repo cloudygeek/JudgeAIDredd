@@ -51,12 +51,18 @@ class ToolDef:
 
 AGENT_MODELS: dict[str, tuple[str, str, str | None]] = {
     # key → (backend, model_id, region)
-    "haiku-4.5":    ("bedrock-anthropic", "eu.anthropic.claude-haiku-4-5-20251001-v1:0", "eu-west-1"),
-    "sonnet-4.5":   ("bedrock-anthropic", "eu.anthropic.claude-sonnet-4-5-20250929-v1:0", "eu-west-1"),
-    "sonnet-4.6":   ("bedrock-anthropic", "eu.anthropic.claude-sonnet-4-6", "eu-west-1"),
-    "opus-4.7":     ("bedrock-anthropic", "eu.anthropic.claude-opus-4-7", "eu-west-1"),
+    # Anthropic inference profiles default to eu-central-1 to dodge
+    # the eu-west-1 quota contention that ballooned Mode-4 sonnet runs
+    # (see results/mode4-2026-05-31/sonnet-shards/). Override per-call
+    # with region_override or AWS_REGION if a specific deployment needs
+    # a different region.
+    "haiku-4.5":    ("bedrock-anthropic", "eu.anthropic.claude-haiku-4-5-20251001-v1:0", "eu-central-1"),
+    "sonnet-4.5":   ("bedrock-anthropic", "eu.anthropic.claude-sonnet-4-5-20250929-v1:0", "eu-central-1"),
+    "sonnet-4.6":   ("bedrock-anthropic", "eu.anthropic.claude-sonnet-4-6", "eu-central-1"),
+    "opus-4.7":     ("bedrock-anthropic", "eu.anthropic.claude-opus-4-7", "eu-central-1"),
+    "opus-4.8":     ("bedrock-anthropic", "eu.anthropic.claude-opus-4-8", "eu-central-1"),
     "gpt-4o-mini":  ("openai", "gpt-4o-mini-2024-07-18", None),
-    "qwen3-coder":  ("bedrock-converse", "qwen.qwen3-coder-480b-a35b-v1:0", "eu-west-2"),
+    "qwen3-coder":  ("bedrock-converse", "qwen.qwen3-coder-480b-a35b-v1:0", "eu-central-1"),
 }
 
 
@@ -184,7 +190,10 @@ def _parse_bedrock_response(response: dict) -> ChatMessage:
 # Bedrock Anthropic client (Claude models via Bedrock Converse API)
 # ---------------------------------------------------------------------------
 
-MODELS_NO_TEMPERATURE = {"eu.anthropic.claude-opus-4-7"}
+MODELS_NO_TEMPERATURE = {
+    "eu.anthropic.claude-opus-4-7",
+    "eu.anthropic.claude-opus-4-8",
+}
 
 
 class BedrockAnthropicClient:

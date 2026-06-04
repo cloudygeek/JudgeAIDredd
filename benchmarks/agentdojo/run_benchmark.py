@@ -100,7 +100,8 @@ def _patch_anthropic_temperature():
         async def patched_ccr(client, model, messages, tools, max_tokens,
                               system_prompt=None, temperature=0.0,
                               thinking_budget_tokens=None):
-            if "opus-4-7" in model or "opus-4-7" in str(getattr(client, '_model', '')):
+            model_str = str(model) + " " + str(getattr(client, '_model', ''))
+            if "opus-4-7" in model_str or "opus-4-8" in model_str:
                 temperature = None
             return await _original_ccr(
                 client, model, messages, tools, max_tokens,
@@ -231,7 +232,11 @@ def build_pipeline(
     set) or combined with a Dredd judge variant.
     """
     if backend == "bedrock":
-        llm = BedrockAnthropicLLM(model_id, aws_region=aws_region, temperature=0.0)
+        # Anthropic inference profiles default to eu-central-1 (cleaner
+        # sonnet/opus quota than eu-west-1 — see Mode-4 sonnet shards).
+        # Honour --agent-region/--aws-region if set.
+        anthropic_region = agent_region or (aws_region if aws_region != "eu-west-2" else "eu-central-1")
+        llm = BedrockAnthropicLLM(model_id, aws_region=anthropic_region, temperature=0.0)
     elif backend == "bedrock-converse":
         llm = BedrockConverseLLM(model_id, aws_region=agent_region or aws_region, temperature=0.0)
     elif backend == "openai":
@@ -460,7 +465,7 @@ def show_results(suite_name: str, results: SuiteResults, has_attack: bool) -> di
 def main():
     parser = argparse.ArgumentParser(description="Run AgentDojo benchmark with Judge Dredd defense")
     parser.add_argument("--model", choices=[
-        "haiku", "sonnet", "opus", "opus-4-7",
+        "haiku", "sonnet", "opus", "opus-4-7", "opus-4-8",
         "gpt-4o", "gpt-4o-mini", "gpt-4.1-mini",
         "gpt-4o-dated", "gpt-4o-mini-dated",
         "qwen3.5", "qwen3.6",

@@ -78,7 +78,7 @@ export async function bedrockChat(
 
   const budgetMap: Record<string, number> = { low: 1024, medium: 5000, high: 16000, max: 60000 };
   const budgetTokens = budgetMap[effort!] ?? 5000;
-  const isOpus47 = modelId.includes("opus-4-7");
+  const isOpus47 = modelId.includes("opus-4-7") || modelId.includes("opus-4-8");
   const inferenceConfig: Record<string, unknown> = {
     maxTokens: effort ? (isOpus47 ? 16384 : Math.min(budgetTokens + 4096, 64000)) : 512,
   };

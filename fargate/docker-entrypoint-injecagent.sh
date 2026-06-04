@@ -2,7 +2,7 @@
 # InjecAgent Phase B (Bedrock subset) entrypoint.
 #
 # Iterates the cell matrix:
-#   AGENT_MODELS  ∈ {sonnet, opus-4-7, gpt-4o-mini, qwen3-32b, qwen3-235b}
+#   AGENT_MODELS  ∈ {sonnet, opus-4-7, opus-4-8, gpt-4o-mini, qwen3-32b, qwen3-235b}
 #   DEFENCES      ∈ {none, promptarmor, B7, B7.1,
 #                    B7+promptarmor, B7.1+promptarmor}
 #                  composite tokens enable both arms simultaneously
