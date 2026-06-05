@@ -857,6 +857,10 @@ async function executeWithSdk(
     cwd: workDir,
     model: bedrockModel,
     stderr: (data: string) => process.stderr.write(data),
+    // SDK 0.3.x ships claude binary as optional dep; --ignore-scripts
+    // build skips it, so the SDK can't auto-locate it. Pin to the
+    // standalone /usr/local/bin/claude installed by the Dockerfile.
+    pathToClaudeCodeExecutable: "/usr/local/bin/claude",
     env: {
       ...process.env,
       CLAUDE_CODE_USE_BEDROCK: "1",
