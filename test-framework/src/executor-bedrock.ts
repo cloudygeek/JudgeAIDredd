@@ -121,6 +121,10 @@ export async function executeScenario(
         cwd: workDir,
         model: bedrockModel,
         stderr: (data: string) => process.stderr.write(data),
+        // SDK 0.3.x ships claude binary as optional dep; --ignore-scripts
+        // build skips it, so SDK can't auto-locate it. Use the standalone
+        // /usr/local/bin/claude installed by the Dockerfile.
+        pathToClaudeCodeExecutable: "/usr/local/bin/claude",
         // Route the agent through Bedrock — no ANTHROPIC_API_KEY needed
         env: {
           ...process.env,
