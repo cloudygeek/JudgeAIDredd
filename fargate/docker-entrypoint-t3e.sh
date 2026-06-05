@@ -113,15 +113,17 @@ if [[ "$AGENT_BACKEND" != "auto" ]]; then
 fi
 
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
-  log "DRY_RUN: cd /app/test-framework && npx tsx src/runner-t3e-pretooluse.ts ${runner_args[*]}"
+  log "DRY_RUN: cd /app/test-framework && node node_modules/tsx/dist/cli.mjs src/runner-t3e-pretooluse.ts ${runner_args[*]}"
   exit 0
 fi
 
 cd /app/test-framework
 exec_rc=0
+# Invoke tsx's cli.mjs directly — the build strips node_modules/.bin so
+# `npx tsx` and `tsx` aren't on PATH. Same pattern as mode4/agentlab.
 AWS_REGION="$AWS_REGION" CLAUDE_CODE_USE_BEDROCK=1 \
   DREDD_URL="${DREDD_URL:-}" DREDD_API_KEY="${DREDD_API_KEY:-}" \
-  npx tsx src/runner-t3e-pretooluse.ts "${runner_args[@]}" || exec_rc=$?
+  node node_modules/tsx/dist/cli.mjs src/runner-t3e-pretooluse.ts "${runner_args[@]}" || exec_rc=$?
 
 if [[ -n "$RESULTS_S3_URL" ]]; then
   log "s3 push: $LOGDIR -> $RESULTS_S3_URL"
