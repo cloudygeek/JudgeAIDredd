@@ -367,12 +367,15 @@ export async function executeScenario(
       while (toolLoopCount < MAX_TOOL_LOOPS) {
         toolLoopCount++;
 
+        // Reasoning models (gpt-oss, minimax, nemotron) burn significant
+        // tokens on reasoning before tool calls. Bump from 4096 to 8192
+        // to give 4-8 turn T3e scenarios room to complete.
         const response = (await bedrockConverse({
           modelId: bedrockModel,
           region,
           messages: conversationHistory,
           system: [{ text: systemPrompt }],
-          inferenceConfig: { maxTokens: 4096 },
+          inferenceConfig: { maxTokens: 8192 },
           toolConfig: { tools: TOOL_SPECS },
         })) as ConverseResponse;
 
@@ -384,6 +387,14 @@ export async function executeScenario(
 
         for (const block of assistantContent) {
           if (block.text) assistantText += block.text;
+          // Reasoning models (gpt-oss, minimax, nemotron) emit reasoningContent
+          // blocks. Capture for the turn audit log so we can see what the
+          // model was thinking when canaries leaked. Echoed back to Bedrock
+          // verbatim via assistantContent; just don't drop it locally.
+          const rc = (block as any).reasoningContent;
+          if (rc?.reasoningText?.text) {
+            assistantText += `[reasoning: ${rc.reasoningText.text}]\n`;
+          }
         }
 
         const toolUseBlocks = assistantContent.filter((b) => b.toolUse);
