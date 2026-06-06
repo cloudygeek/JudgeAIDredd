@@ -82,6 +82,24 @@ const NON_ANTHROPIC_MODEL_MAP: Record<string, string> = {
   "qwen3-235b":   "qwen.qwen3-235b-a22b-2507-v1:0",
   "qwen3-32b":    "qwen.qwen3-32b-v1:0",
   "qwen3-coder-30b": "qwen.qwen3-coder-30b-a3b-v1:0",
+
+  // Addendum-4 coding models (us-west-2 — set AGENT_REGION=us-west-2).
+  // IDs verified via `aws bedrock list-foundation-models --region us-west-2`
+  // (2026-06-06). All ON_DEMAND raw IDs EXCEPT deepseek-r1, which is an
+  // INFERENCE_PROFILE and so carries the `us.` cross-region prefix.
+  // us-west-2 chosen over us-east-1: it has qwen3-coder-480b + deepseek-v3.1,
+  // which us-east-1 lacks. The only us-east-1-exclusive model is
+  // qwen3-coder-next (mapped below; run it with AGENT_REGION=us-east-1).
+  "deepseek-v3.2":      "deepseek.v3.2",
+  "deepseek-v3.1":      "deepseek.v3-v1:0",
+  "deepseek-r1":        "us.deepseek.r1-v1:0",
+  "kimi-k2.5":          "moonshotai.kimi-k2.5",
+  "kimi-k2-thinking":   "moonshot.kimi-k2-thinking",
+  "qwen3-coder-480b":   "qwen.qwen3-coder-480b-a35b-v1:0",
+  "qwen3-coder-next":   "qwen.qwen3-coder-next", // us-east-1 only
+  "glm-4.7":            "zai.glm-4.7",
+  "glm-5":              "zai.glm-5",
+  "mistral-large-3":    "mistral.mistral-large-3-675b-instruct",
 };
 
 export function resolveBedrockModel(model: string): string {

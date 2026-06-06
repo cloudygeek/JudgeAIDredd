@@ -272,8 +272,37 @@ whether that generalises or is Qwen-specific.
 `exfiltrationDetected` + `displayedToUser` + `hijackSucceeded`). T3e/T5 are
 where exfiltration shows; AgentLAB optional. **Region note:** DeepSeek, Kimi,
 GLM-4.7-full and Qwen3-Coder-480B/Next are in **us-east-1 / us-west-2**, not
-the eu regions the wave has used — add the `us.` inference-profile prefix and
-run in a us region for these cells.
+the eu regions the wave has used — run those cells with `AGENT_REGION=us-west-2`.
+
+### Verified Bedrock IDs + runner aliases (us-west-2, confirmed 2026-06-06)
+
+IDs verified via `aws bedrock list-foundation-models --region us-west-2`
+(with `AWS_BEARER_TOKEN_BEDROCK` unset so IAM creds reach the us regions).
+Added to `NON_ANTHROPIC_MODEL_MAP` in `test-framework/src/executor-converse.ts`
+— launch with the **alias** as `AGENT_MODELS` and `AGENT_REGION=us-west-2`.
+
+| Runner alias (`AGENT_MODELS`) | Resolved Bedrock ID | Type | Region |
+|---|---|---|---|
+| `deepseek-v3.2` | `deepseek.v3.2` | ON_DEMAND | us-west-2 + us-east-1 |
+| `deepseek-v3.1` | `deepseek.v3-v1:0` | ON_DEMAND | **us-west-2 only** |
+| `deepseek-r1` | `us.deepseek.r1-v1:0` | **INFERENCE_PROFILE** (`us.` prefix) | both |
+| `kimi-k2.5` | `moonshotai.kimi-k2.5` | ON_DEMAND | both |
+| `kimi-k2-thinking` | `moonshot.kimi-k2-thinking` | ON_DEMAND | both |
+| `qwen3-coder-480b` | `qwen.qwen3-coder-480b-a35b-v1:0` | ON_DEMAND | **us-west-2 only** |
+| `qwen3-coder-next` | `qwen.qwen3-coder-next` | ON_DEMAND | **us-east-1 only** → `AGENT_REGION=us-east-1` |
+| `glm-4.7` | `zai.glm-4.7` | ON_DEMAND | both |
+| `glm-5` | `zai.glm-5` | ON_DEMAND | both |
+| `mistral-large-3` | `mistral.mistral-large-3-675b-instruct` | ON_DEMAND | both |
+
+**Corrections to the table above:** (1) only **DeepSeek-R1** needs the `us.`
+inference-profile prefix — every other Addendum-4 model is an ON_DEMAND raw
+ID (the doc's generic "add the `us.` prefix" instruction was wrong for them).
+(2) **us-west-2 is the better single region**: it has `qwen3-coder-480b` and
+`deepseek-v3.1`, which us-east-1 lacks; the only us-east-1-exclusive model is
+`qwen3-coder-next`. (3) Bonus models present but not in the priority table —
+`glm-5` (newer than 4.7), `kimi-k2-thinking`, `qwen3-next-80b-a3b`,
+`qwen3-vl-235b-a22b`, `minimax-m2` — available in both us regions if the
+exfil-breadth question wants wider coverage.
 
 **Hypothesis:** if DeepSeek or Kimi (the two strongest open-weights coding
 agents) complete T3e/T5 network exfiltration and the gate zeroes it, the
