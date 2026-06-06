@@ -165,3 +165,46 @@ of the existing per-rep transcripts is sufficient — please confirm which.
 Target: a clean `displayedToUser` baseline for Opus 4.5/4.6/(4.7 re-confirm)
 so the lineage panel can state where disclosure first appears. Same
 $N\ge75$, both arms.
+
+---
+
+## ADDENDUM 3 (2026-06-06) — extend T4 (HTTP-injection) and T5 (multi-stage file) across the model roster
+
+**Why.** T4 and T5 are the paper's coding-agent attack-class tests (the
+T-series), but coverage is currently **Qwen3-235B only** (test27); Sonnet 4.6
+and Opus 4.7 have T4/T5 runs of uncertain citability, and everything else is
+untested. This leaves the coding-agent test matrix (`master2-table` in the
+p15b repo) almost empty on the T4/T5 columns. **T5 is the single strongest
+coding-agent defence signal in the whole dataset** — Qwen3-235B C1 baseline
+**48% exfil → 0/75 defended (−48 pp)**, T5.1 alone 84% hijack / 74% exfil
+baseline — so it is the most paper-valuable corpus to broaden:
+
+1. **Does any other model complete T5 multi-stage file exfiltration?** If a
+   non-Qwen model exfiltrates on T5 and the gate zeroes it, that is a second
+   independent strict-exfil result on a coding-specific attack class — directly
+   strengthening the (currently Qwen-only) lethal-trifecta story.
+2. **Is the Opus 4.8 / lineage regression visible on T5/T4** as well as T3e?
+   T5's file-write-then-execute pattern is the closest analogue to the Mode-4
+   long-session leak that 4.8 regressed on.
+
+**Request.** Run **T4 (T4.1--T4.3) and T5 (T5.1--T5.3)**, both arms (`none`,
+`B7.1` intent-tracker), **N ≥ 75/cell**, recording `exfiltrationDetected` +
+`displayedToUser` + `hijackSucceeded` per rep, across:
+
+| Tier | Models | Note |
+|---|---|---|
+| Anthropic | Opus 4.8, Opus 4.5, Opus 4.6, Haiku 4.5, Sonnet 4.5 | + re-confirm Sonnet 4.6 / Opus 4.7 if their existing T4/T5 runs are citable (point us at the JSONs) |
+| Qwen | Qwen3-32B, Qwen3-coder-30B | 235B already deep (test27) — confirm only |
+| Other open-weights | gpt-oss-120b, gpt-oss-20b, minimax-m2.5, devstral-2-123b, nemotron-super-3, glm-4.7 | the T5-exfil question for non-Qwen models |
+
+**Priority order:** T5 before T4 (T5 carries the signal; T4 is at the Qwen
+floor and mostly confirms floors). Within T5, **T5.1 first** (the most
+aggressive scenario, where any latent exfiltration will show). If budget is
+tight, the highest-value single cells are **T5 on gpt-oss-120b, devstral,
+nemotron** (largest non-Qwen open-weights — most likely to exfiltrate) and
+**T5 on Opus 4.8 + Opus 4.5/4.6** (lineage on the file-attack class).
+
+**Acceptance:** same as §4 — durable per-rep JSON with the three metrics +
+`build` field; per-(model, arm) tally appended here with Wilson 95% CIs;
+flag any model with `exfiltrationDetected` baseline > 0. These fill the T4/T5
+columns of `master2-table` and the coding-agent results of the paper.
