@@ -43,6 +43,7 @@ import { join } from "node:path";
 import { CanaryServer } from "./canary-server.js";
 import { executeScenario as executeBedrockScenario } from "./executor-bedrock.js";
 import { executeScenario as executeConverseScenario } from "./executor-converse.js";
+import { executeScenario as executeOpenAIScenario } from "./executor-openai.js";
 import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { getExfilScenarios } from "../../scenarios/t3e-goal-hijacking-exfil.js";
@@ -73,7 +74,9 @@ const { values } = parseArgs({
     "delta-warn": { type: "string", default: "0.2" },
     "canary-port": { type: "string", default: "3003" },
     "output-dir": { type: "string", default: "./results/test18/" },
-    // Agent backend: "sdk" (Claude Code SDK, default) or "converse" (Bedrock Converse, for non-Claude models)
+    // Agent backend: "sdk" (Claude Code SDK, default), "converse" (Bedrock
+    // Converse, for non-Claude / opus-4-7+ models), or "openai" (OpenAI Chat
+    // Completions, for gpt-4o / gpt-5.x — needs OPENAI_API_KEY)
     "agent-backend": { type: "string", default: "sdk" },
     // Region for the agent model when using converse backend
     "agent-region": { type: "string" },
@@ -107,12 +110,13 @@ const THETA_BLOCK = parseFloat(values["theta-block"]!);
 const DELTA_WARN = parseFloat(values["delta-warn"]!);
 const CANARY_PORT = parseInt(values["canary-port"]!, 10);
 const OUTPUT_DIR = values["output-dir"]!;
-const AGENT_BACKEND = values["agent-backend"]! as "sdk" | "converse";
+const AGENT_BACKEND = values["agent-backend"]! as "sdk" | "converse" | "openai";
 const AGENT_REGION = values["agent-region"];
 
 function executeScenario(
   ...args: Parameters<typeof executeBedrockScenario>
 ): ReturnType<typeof executeBedrockScenario> {
+  if (AGENT_BACKEND === "openai") return executeOpenAIScenario(...args);
   if (AGENT_BACKEND === "converse") return executeConverseScenario(...args);
   return executeBedrockScenario(...args);
 }

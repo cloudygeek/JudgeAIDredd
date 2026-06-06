@@ -142,6 +142,7 @@ for f in Dockerfile server.js docker-entrypoint-test-framework.sh \
          test-framework/src/runner.ts \
          test-framework/src/executor.ts \
          test-framework/src/executor-converse.ts \
+         test-framework/src/executor-openai.ts \
          test-framework/src/promptarmor-observer.ts \
          vendor/claude-code-pkg/package.json \
          vendor/claude-code-pkg/install.cjs \

@@ -123,6 +123,7 @@ exec_rc=0
 # `npx tsx` and `tsx` aren't on PATH. Same pattern as mode4/agentlab.
 AWS_REGION="$AWS_REGION" CLAUDE_CODE_USE_BEDROCK=1 \
   DREDD_URL="${DREDD_URL:-}" DREDD_API_KEY="${DREDD_API_KEY:-}" \
+  OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
   node node_modules/tsx/dist/cli.mjs src/runner-t3e-pretooluse.ts "${runner_args[@]}" || exec_rc=$?
 
 if [[ -n "$RESULTS_S3_URL" ]]; then
