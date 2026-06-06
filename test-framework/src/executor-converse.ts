@@ -68,9 +68,26 @@ const ANTHROPIC_MODEL_MAP: Record<string, string> = {
     process.env.BEDROCK_MODEL_SONNET ?? "eu.anthropic.claude-sonnet-4-6",
 };
 
+// Tier B: non-Anthropic Bedrock foundation models. Direct model IDs (no
+// inference-profile prefix). All eu-central-1 only. Per the cross-bedrock
+// exfil test request (docs/test-request-cross-bedrock-exfil-2026-06-06.md).
+const NON_ANTHROPIC_MODEL_MAP: Record<string, string> = {
+  "gpt-oss-120b": "openai.gpt-oss-120b-1:0",
+  "gpt-oss-20b":  "openai.gpt-oss-20b-1:0",
+  "minimax-m2.5": "minimax.minimax-m2.5",
+  "devstral-2-123b": "mistral.devstral-2-123b",
+  "nemotron-super-3-120b": "nvidia.nemotron-super-3-120b",
+  "glm-4.7-flash": "zai.glm-4.7-flash",
+  "qwen3-235b":   "qwen.qwen3-235b-a22b-2507-v1:0",
+  "qwen3-32b":    "qwen.qwen3-32b-v1:0",
+  "qwen3-coder-30b": "qwen.qwen3-coder-30b-a3b-v1:0",
+};
+
 export function resolveBedrockModel(model: string): string {
   if (model.includes(".") || model.includes(":")) return model;
-  return ANTHROPIC_MODEL_MAP[model] ?? model;
+  return ANTHROPIC_MODEL_MAP[model]
+    ?? NON_ANTHROPIC_MODEL_MAP[model]
+    ?? model;
 }
 
 const TOOL_SPECS = [
