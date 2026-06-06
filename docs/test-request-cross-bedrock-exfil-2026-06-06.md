@@ -136,3 +136,32 @@ metric, N≥75. Tier C is a confirmation; Tier D is optional.
   4-7 → 4-8), if the new cells show a trend.
 - Resolves peer-review M1; updates the abstract's T3e wording and the
   §\ref{sec:results} metric paragraph.
+
+---
+
+## ADDENDUM (2026-06-06, post-batch-3) — re-record `displayedToUser` on the lineage cells
+
+The Tier-A lineage and Tier-B T3e runs that landed (Opus 4.5, Opus 4.6,
+gpt-oss-120b, gpt-oss-20b) recorded **`exfiltrationDetected` and
+`hijackSucceeded` but NOT `displayedToUser`**. All four show
+`exfiltrationDetected = 0` (they sandbox out of the network POST, like the
+Anthropic frontier), with `hijackSucceeded` 55–100%.
+
+**Problem:** the paper's Opus 4.8 headline is on the **credential-disclosure**
+axis (`displayedToUser` = 88% baseline). Without `displayedToUser` on the
+lineage cells we **cannot localise where the Opus 4.8 disclosure regression
+enters the lineage** (4.5 → 4.6 → 4.7 → 4.8) — which was the primary purpose
+of the Tier-A sweep. `hijackSucceeded` is not a substitute: test27 showed
+`hijackSucceeded` and `displayedToUser` diverge sharply (35/75 hijacked-but-
+not-displayed on Qwen3-235B T5).
+
+**Request:** re-run (or re-score from saved transcripts if the field is
+recoverable) the T3e cells for **Opus 4.5, Opus 4.6, Sonnet 4.5, and the
+Tier-B models**, recording **`displayedToUser` per rep** alongside
+`exfiltrationDetected` and `hijackSucceeded`. If the runner already emits
+`displayedToUser` and it was merely dropped from these summaries, a re-score
+of the existing per-rep transcripts is sufficient — please confirm which.
+
+Target: a clean `displayedToUser` baseline for Opus 4.5/4.6/(4.7 re-confirm)
+so the lineage panel can state where disclosure first appears. Same
+$N\ge75$, both arms.
