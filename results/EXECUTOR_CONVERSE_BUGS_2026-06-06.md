@@ -2,7 +2,7 @@
 
 **Discovered:** 2026-06-06 while investigating bedt9 nemotron throughput dropping to ~half the Tier B norm.
 
-**Fixed in:** v0.1.520 (commit on `harness/agentlab-restore-and-fr4-adapters`, after this report).
+**Fixed in:** v0.1.523 (commit on `harness/agentlab-restore-and-fr4-adapters`, after this report).
 
 ## The two bugs
 
@@ -39,9 +39,9 @@ All of these used `AGENT_BACKEND=converse` against the new `test-framework/src/e
 | `p15b-t3e-gpt-oss-120b-eu-central-1` (`results/p15b-2026-06-06/t3e-gpt-oss-120b/`) | gpt-oss-120b | 8 | done — RERUN |
 | `p15b-t3e-sonnet45-eu-west-3` (bedt6) | claude-sonnet-4-5 | running 57/160 | KILL + RERUN |
 | `p15b-t3e-devstral-2-123b-eu-central-1` (bedt12) | devstral-2-123b | running 159/160 | LET FINISH ~1m → RERUN |
-| `p15b-t3e-nemotron-super-3-120b-eu-central-1` (bedt9) | nemotron-super-3-120b | running 12/160 (bug 1 affecting throughput) | KILL + RERUN on v0.1.520 |
-| `p15b-t3e-minimax-m25-eu-central-1-rerun` (bedt10) | minimax-m2.5 | running 27/160 | KILL + RERUN on v0.1.520 |
-| `p15b-t3e-glm-4-7-flash-eu-central-1-rerun` (bedt11) | glm-4.7-flash | running 20/160 | KILL + RERUN on v0.1.520 |
+| `p15b-t3e-nemotron-super-3-120b-eu-central-1` (bedt9) | nemotron-super-3-120b | running 12/160 (bug 1 affecting throughput) | KILL + RERUN on v0.1.523 |
+| `p15b-t3e-minimax-m25-eu-central-1-rerun` (bedt10) | minimax-m2.5 | running 27/160 | KILL + RERUN on v0.1.523 |
+| `p15b-t3e-glm-4-7-flash-eu-central-1-rerun` (bedt11) | glm-4.7-flash | running 20/160 | KILL + RERUN on v0.1.523 |
 
 ### Older runs — bug 1 only (event-loop starvation), exfil counts are lower bounds
 
@@ -67,24 +67,24 @@ Affected by event-loop blocking but the canary server WAS plumbed in. Their `exf
 
 ## Rerun plan
 
-Once v0.1.520 image is built and rolled out:
+Once v0.1.523 image is built and rolled out:
 
 1. **Kill in-flight buggy runs** (bedt6, bedt9, bedt10, bedt11). Let bedt12 finish (essentially done).
-2. **Pull bedt12 devstral results** to S3, then mark for rerun on v0.1.520.
+2. **Pull bedt12 devstral results** to S3, then mark for rerun on v0.1.523.
 3. **Sequence reruns by region availability** — Tier B is eu-central-1 only (bedt9-12 slots). Tier A spans eu-west-1/3, eu-central-1.
 4. **Check existing pulled results** stay in `results/p15b-2026-06-06/` as v0.1.518/9 baseline; rerun results land in `results/p15b-2026-06-07/` (or similar dated dir) so the bad-vs-good comparison is preserved.
 
 | Container slot needed | Run | RunId suggestion |
 |---|---|---|
-| eu-central-1 | claude-opus-4-5 T3e | `p15b-t3e-opus45-v0.1.520-eu-central-1` |
-| eu-west-1 | claude-opus-4-6 T3e | `p15b-t3e-opus46-v0.1.520-eu-west-1` |
-| eu-west-3 | claude-sonnet-4-5 T3e | `p15b-t3e-sonnet45-v0.1.520-eu-west-3` |
-| eu-central-1 | gpt-oss-20b T3e | `p15b-t3e-gpt-oss-20b-v0.1.520-eu-central-1` |
-| eu-central-1 | gpt-oss-120b T3e | `p15b-t3e-gpt-oss-120b-v0.1.520-eu-central-1` |
-| eu-central-1 | minimax-m2.5 T3e | `p15b-t3e-minimax-m25-v0.1.520-eu-central-1` |
-| eu-central-1 | glm-4.7-flash T3e | `p15b-t3e-glm-4-7-flash-v0.1.520-eu-central-1` |
-| eu-central-1 | devstral-2-123b T3e | `p15b-t3e-devstral-2-123b-v0.1.520-eu-central-1` |
-| eu-central-1 | nemotron-super-3-120b T3e | `p15b-t3e-nemotron-super-3-120b-v0.1.520-eu-central-1` |
+| eu-central-1 | claude-opus-4-5 T3e | `p15b-t3e-opus45-v0.1.523-eu-central-1` |
+| eu-west-1 | claude-opus-4-6 T3e | `p15b-t3e-opus46-v0.1.523-eu-west-1` |
+| eu-west-3 | claude-sonnet-4-5 T3e | `p15b-t3e-sonnet45-v0.1.523-eu-west-3` |
+| eu-central-1 | gpt-oss-20b T3e | `p15b-t3e-gpt-oss-20b-v0.1.523-eu-central-1` |
+| eu-central-1 | gpt-oss-120b T3e | `p15b-t3e-gpt-oss-120b-v0.1.523-eu-central-1` |
+| eu-central-1 | minimax-m2.5 T3e | `p15b-t3e-minimax-m25-v0.1.523-eu-central-1` |
+| eu-central-1 | glm-4.7-flash T3e | `p15b-t3e-glm-4-7-flash-v0.1.523-eu-central-1` |
+| eu-central-1 | devstral-2-123b T3e | `p15b-t3e-devstral-2-123b-v0.1.523-eu-central-1` |
+| eu-central-1 | nemotron-super-3-120b T3e | `p15b-t3e-nemotron-super-3-120b-v0.1.523-eu-central-1` |
 
 **9 reruns × 8 cells × 20 reps × ~1 min/rep = ~24 container-hours.** Spread across 5-7 free containers, ~4-5 wallclock hours.
 
