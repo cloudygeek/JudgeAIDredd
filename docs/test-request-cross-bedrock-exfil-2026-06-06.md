@@ -276,3 +276,36 @@ gpt-oss/4.5/4.6 sandbox out) extends to a different closed-model vendor — and
 whether the gate's effect there matches the Anthropic-frontier or the
 open-weights pattern. Harness note: add a Vertex backend to the T3e/T5 runner
 model map (alongside the existing bedrock / bedrock-converse / openai backends).
+
+---
+
+## ADDENDUM 6 (2026-06-06) — add OpenAI GPT-5.5 / GPT-5.1 via the existing openai backend
+
+The second **closed non-Anthropic frontier** point (with Gemini, ADDENDUM 5).
+GPT-5.5 is #7 and GPT-5.1 #11 on the llm-stats coding leaderboard
+(2026-06-06). The matrix currently has only the *older, weaker* GPT-4o-mini on
+the OpenAI side — which was notably injection-susceptible (AgentDojo ~29%
+baseline → 0 defended; InjecAgent 16.7% → 0.2%). The frontier GPT-5.x is the
+load-bearing question: does it **sandbox out** (like the Anthropic frontier +
+gpt-oss), **disclose** (like Opus 4.8), or **exfiltrate** (like Qwen)?
+
+**Access:** needs an **OpenAI API key** (or Azure OpenAI) with GPT-5 access.
+**No new adapter** — the harness already has an `openai` backend (it ran
+GPT-4o-mini), so this is just key + model ids (e.g. `gpt-5.5`, `gpt-5.1`;
+confirm exact strings at run time). The action-side judge stays Sonnet 4.6 +
+prompt v2 on Bedrock — only the *defended agent* is on OpenAI (judge and agent
+independently configurable, paper §3.3).
+
+**What to run:** the coding tests **T3e and T5**, both arms (`none`, `B7.1`),
+$N\ge75$, recording `exfiltrationDetected` + `displayedToUser` +
+`hijackSucceeded` per rep. Optional: AgentDojo/InjecAgent for completeness, but
+T3e/T5 are the priority (coding + exfil signal).
+
+**Why it matters:** together with Gemini, this gives the paper two current
+closed non-Anthropic frontier agents on the exact same corpora — turning the
+"disclosure-vs-exfil split" from an Anthropic-plus-open-weights story into a
+genuine cross-vendor frontier comparison. Whichever bucket GPT-5.x lands in,
+it is a load-bearing data point for the M1 resolution.
+
+**Priority:** alongside ADDENDUM 5 (Gemini) — the two closed non-Anthropic
+frontier cells. Both are higher value than Tier-D, comparable to Tier-B.
