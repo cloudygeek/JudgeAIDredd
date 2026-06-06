@@ -244,3 +244,32 @@ agents) complete T3e/T5 network exfiltration and the gate zeroes it, the
 lethal-trifecta result generalises beyond Qwen --- the single biggest
 strengthening available to the paper. If they sandbox out (like gpt-oss),
 "Qwen-family-specific exfiltration" becomes a sharper, well-supported claim.
+
+---
+
+## ADDENDUM 5 (2026-06-06) — add Google Gemini 3.x Pro via Vertex
+
+Gemini 3.x Pro is among the top coding agents in the June-2026 leaderboards
+(provisional coding score ~94%) and is the one **closed non-Anthropic
+frontier** agent missing from the matrix (we have closed Anthropic, the older
+GPT-4o, and open-weights — but no current closed non-Anthropic frontier).
+It is **GCP-only** (Vertex AI / Google AI Studio); not on Bedrock.
+
+**Access:** runner needs a **GCP key** (Vertex AI). Model id e.g.
+`gemini-3.x-pro` via the Vertex `generativeai` endpoint (confirm exact
+version string in Model Garden at run time). The action-side judge stays
+Sonnet 4.6 + prompt v2 on Bedrock — only the *defended agent* is on Vertex,
+which the harness already supports (judge and agent are independently
+configurable, paper §3.3).
+
+**What to run:** the coding tests **T3e and T5**, both arms (`none`, `B7.1`),
+$N\ge75$, recording `exfiltrationDetected` + `displayedToUser` +
+`hijackSucceeded`. Optional: AgentDojo/InjecAgent for completeness, but T3e/T5
+are the priority (coding + exfil signal).
+
+**Why it matters:** a frontier closed non-Anthropic agent tests whether the
+T3e disclosure / exfil behaviour (Opus 4.8 discloses; Qwen exfiltrates;
+gpt-oss/4.5/4.6 sandbox out) extends to a different closed-model vendor — and
+whether the gate's effect there matches the Anthropic-frontier or the
+open-weights pattern. Harness note: add a Vertex backend to the T3e/T5 runner
+model map (alongside the existing bedrock / bedrock-converse / openai backends).
