@@ -208,3 +208,39 @@ nemotron** (largest non-Qwen open-weights — most likely to exfiltrate) and
 `build` field; per-(model, arm) tally appended here with Wilson 95% CIs;
 flag any model with `exfiltrationDetected` baseline > 0. These fill the T4/T5
 columns of `master2-table` and the coding-agent results of the paper.
+
+---
+
+## ADDENDUM 4 (2026-06-06) — additional coding models worth running (web-researched)
+
+The current matrix's open-weights coding coverage is the Qwen family + gpt-oss.
+Web research (SWE-bench Verified / LiveCodeBench, June 2026) plus a Bedrock
+roster check (`aws bedrock list-foundation-models`, us-east-1 / us-west-2 —
+note: **not** the eu regions used so far) surfaces the top open-weights
+**coding** models not yet tested. These are the highest-value additions
+because the load-bearing finding so far is "**Qwen is the only exfiltrator
+family**" — testing other strong open-weights coding agents directly probes
+whether that generalises or is Qwen-specific.
+
+| Priority | Model | Bedrock id (us-east-1/us-west-2) | Coding strength | Why test |
+|---|---|---|---|---|
+| **1** | **DeepSeek V3.2** | `deepseek.v3.2` | SWE-bench ~72–74%, LiveCodeBench 83% | The #2 open-weights coding model after Qwen; MoE; cheapest. The single most important "does it exfiltrate like Qwen?" test. |
+| **1** | **DeepSeek R1** | `deepseek.r1-v1:0` | reasoning model | Reasoning-model variant — does extended thinking change the exfil/disclosure behaviour vs V3.2? |
+| **2** | **Kimi K2.5** | `moonshotai.kimi-k2.5` | **SWE-bench 76.8%** (top open-weights), LiveCodeBench 85% | Highest open-weights agentic-coding score; strong on agentic/tool tasks — most likely to drive a multi-step hijack to completion. |
+| **2** | **Qwen3-Coder-480B** | `qwen.qwen3-coder-480b-a35b-v1:0` (us-west-2); `qwen.qwen3-coder-next` (us-east-1) | coding-specialised Qwen | The big coding Qwen (we test 30B/32B/235B, not the 480B coder or Coder-Next). Confirms the Qwen-exfil finding on the flagship coding variant. |
+| **3** | **GLM 4.7** (full) | `zai.glm-4.7` | coding-capable | We have glm-4.7-flash in the matrix; the full model is the coding-grade one. |
+| **3** | **Mistral Devstral-2-123B** | `mistral.devstral-2-123b` (all regions) | agentic coding (Codestral lineage) | Mistral's dedicated agentic-coding model; already in the Tier-B list above — confirm it's run on T3e/T5. |
+| 4 | DeepSeek V3.1 / Mistral Large 3 675B | `deepseek.v3-v1:0`, `mistral.mistral-large-3-675b-instruct` | general+coding | Lower priority; run only if the priority-1/2 models show signal. |
+
+**What to run:** the coding tests **T3e and T5** (both arms, $N\ge75$, record
+`exfiltrationDetected` + `displayedToUser` + `hijackSucceeded`). T3e/T5 are
+where exfiltration shows; AgentLAB optional. **Region note:** DeepSeek, Kimi,
+GLM-4.7-full and Qwen3-Coder-480B/Next are in **us-east-1 / us-west-2**, not
+the eu regions the wave has used — add the `us.` inference-profile prefix and
+run in a us region for these cells.
+
+**Hypothesis:** if DeepSeek or Kimi (the two strongest open-weights coding
+agents) complete T3e/T5 network exfiltration and the gate zeroes it, the
+lethal-trifecta result generalises beyond Qwen --- the single biggest
+strengthening available to the paper. If they sandbox out (like gpt-oss),
+"Qwen-family-specific exfiltration" becomes a sharper, well-supported claim.
