@@ -35,8 +35,10 @@ const WORKSPACE_TEMPLATE = join(
 //   BEDROCK_MODEL_SONNET=eu.anthropic.claude-sonnet-4-6
 //   BEDROCK_MODEL_OPUS=eu.anthropic.claude-opus-4-6
 const BEDROCK_MODEL_MAP: Record<string, string> = {
-  "claude-haiku-4-5": process.env.BEDROCK_MODEL_HAIKU  ?? "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "claude-haiku-4-5":  process.env.BEDROCK_MODEL_HAIKU  ?? "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "claude-sonnet-4-5": process.env.BEDROCK_MODEL_SONNET45 ?? "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
   "claude-sonnet-4-6": process.env.BEDROCK_MODEL_SONNET ?? "eu.anthropic.claude-sonnet-4-6",
+  "claude-opus-4-5":   process.env.BEDROCK_MODEL_OPUS45 ?? "eu.anthropic.claude-opus-4-5-20251101-v1:0",
   "claude-opus-4-6":   process.env.BEDROCK_MODEL_OPUS   ?? "eu.anthropic.claude-opus-4-6-v1",
   "claude-opus-4-7":   process.env.BEDROCK_MODEL_OPUS47 ?? "eu.anthropic.claude-opus-4-7",
   "claude-opus-4-8":   process.env.BEDROCK_MODEL_OPUS48 ?? "eu.anthropic.claude-opus-4-8",
