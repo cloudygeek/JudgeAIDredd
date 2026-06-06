@@ -49,13 +49,22 @@ split:
 
 | Tier | Agents (tested) | T3e/T5 baseline exfil | defended |
 |---|---|---|---|
-| **Exfiltrates** | Qwen3-235B / 32B / coder-30B | **45–83%** (network POST) | **0/75** |
+| **Exfiltrates** | Qwen3-235B / 32B / coder-30B; **gpt-oss-20b / 120b** (v0.1.523 reruns) | **45–83%** (network POST) | **0/75** (Qwen); reruns in flight (gpt-oss) |
 | **Discloses only** | Opus 4.8 | 88% disclosure, ~0 network | 28% disclosure |
-| **Floor** | Sonnet 4.6, Opus 4.7, Haiku 4.5 | ~0 both axes | ~0 |
+| **Floor / sandbox-out** | Sonnet 4.6, Opus 4.7, Opus 4.5/4.6 (rerun), Haiku 4.5 | ~0 both axes | ~0 |
+
+> **Updated 2026-06-06:** gpt-oss-20b/120b were moved into the **Exfiltrates**
+> tier after the v0.1.523 reruns showed `exfiltrationDetected = true` — the
+> earlier "sandbox out" placement was an executor-converse bug artifact (see
+> the ADDENDUM correction and `results/EXECUTOR_CONVERSE_BUGS_2026-06-06.md`).
+> Final exfil%/CIs land when the reruns complete and §6 is appended.
 
 A broad cross-Bedrock sweep turns this 7-agent anecdote into a proper map,
 and answers the reviewer's question definitively: \emph{which models
 actually exfiltrate, and does the gate stop them on the strict metric?}
+This sweep also surfaced the executor bug that had been suppressing the
+strict-exfil signal on the converse path — so the map is now built on
+correctly-instrumented data.
 
 ---
 
@@ -141,6 +150,34 @@ metric, N≥75. Tier C is a confirmation; Tier D is optional.
 
 ## ADDENDUM (2026-06-06, post-batch-3) — re-record `displayedToUser` on the lineage cells
 
+> **⚠️ CORRECTION (2026-06-06, later) — this addendum's premise was wrong; superseded by the v0.1.523 reruns.**
+> The original text below claimed the landed Tier-A/Tier-B runs "show
+> `exfiltrationDetected = 0` (they sandbox out of the network POST)." **That
+> was an artifact of two bugs in `test-framework/src/executor-converse.ts`**
+> (full writeup: `results/EXECUTOR_CONVERSE_BUGS_2026-06-06.md`):
+> 1. The converse executor **never plumbed the canary server in at all**, so
+>    `exfiltrationDetected` was *absent* from those JSONs, not a measured `0`.
+>    Reading the missing field as `0` produced the false "they sandbox out"
+>    conclusion.
+> 2. `executeTool` used a blocking `execSync`, which froze the in-process
+>    canary server's event loop during every agent `curl`. Even where the
+>    server *was* wired in (older `archive` path / SDK path), exfil POSTs to
+>    `localhost:3003` stalled at the 10 s connect-timeout and were undercounted.
+>
+> Both fixed in **v0.1.523** (async `spawn` exec + canary plumbing restored).
+> The v0.1.523 reruns invalidate the "all sandbox out" claim outright:
+> **`gpt-oss-20b` and `gpt-oss-120b` record `exfiltrationDetected = true` on
+> T3e.1** — i.e. they **complete real network exfiltration, like Qwen**, NOT
+> floor/sandbox-out. This is a *second non-Qwen exfiltrator family* and a
+> positive M1 result; see the §6 results table once the reruns land.
+>
+> A **re-score from saved transcripts is NOT sufficient** (contra the request
+> below): the canary server never recorded the hits server-side under the
+> buggy executor, so the signal does not exist in the old artifacts. A full
+> re-run on v0.1.523 is required — and is in flight (bedt3/5/6/8/9/10/11/12).
+
+_Original text (retained for provenance; superseded by the correction above):_
+
 The Tier-A lineage and Tier-B T3e runs that landed (Opus 4.5, Opus 4.6,
 gpt-oss-120b, gpt-oss-20b) recorded **`exfiltrationDetected` and
 `hijackSucceeded` but NOT `displayedToUser`**. All four show
@@ -155,12 +192,11 @@ of the Tier-A sweep. `hijackSucceeded` is not a substitute: test27 showed
 `hijackSucceeded` and `displayedToUser` diverge sharply (35/75 hijacked-but-
 not-displayed on Qwen3-235B T5).
 
-**Request:** re-run (or re-score from saved transcripts if the field is
-recoverable) the T3e cells for **Opus 4.5, Opus 4.6, Sonnet 4.5, and the
-Tier-B models**, recording **`displayedToUser` per rep** alongside
-`exfiltrationDetected` and `hijackSucceeded`. If the runner already emits
-`displayedToUser` and it was merely dropped from these summaries, a re-score
-of the existing per-rep transcripts is sufficient — please confirm which.
+**Request:** re-run the T3e cells for **Opus 4.5, Opus 4.6, Sonnet 4.5, and
+the Tier-B models**, recording **`displayedToUser` per rep** alongside
+`exfiltrationDetected` and `hijackSucceeded`. (The correction above resolves
+the original "re-score from transcripts?" question: a full re-run is required
+because the canary detections were never captured server-side.)
 
 Target: a clean `displayedToUser` baseline for Opus 4.5/4.6/(4.7 re-confirm)
 so the lineage panel can state where disclosure first appears. Same
@@ -242,8 +278,11 @@ run in a us region for these cells.
 **Hypothesis:** if DeepSeek or Kimi (the two strongest open-weights coding
 agents) complete T3e/T5 network exfiltration and the gate zeroes it, the
 lethal-trifecta result generalises beyond Qwen --- the single biggest
-strengthening available to the paper. If they sandbox out (like gpt-oss),
-"Qwen-family-specific exfiltration" becomes a sharper, well-supported claim.
+strengthening available to the paper. (Note: "Qwen-family-specific
+exfiltration" is **already falsified** — the v0.1.523 reruns show gpt-oss-20b
+and gpt-oss-120b exfiltrate too; see the ADDENDUM correction. The open
+question is now how *broad* the exfiltrator set is, not whether it is
+Qwen-only.)
 
 ---
 
@@ -271,8 +310,9 @@ $N\ge75$, recording `exfiltrationDetected` + `displayedToUser` +
 are the priority (coding + exfil signal).
 
 **Why it matters:** a frontier closed non-Anthropic agent tests whether the
-T3e disclosure / exfil behaviour (Opus 4.8 discloses; Qwen exfiltrates;
-gpt-oss/4.5/4.6 sandbox out) extends to a different closed-model vendor — and
+T3e disclosure / exfil behaviour (Opus 4.8 discloses; Qwen **and gpt-oss**
+exfiltrate; Opus 4.5/4.6 sandbox out — see ADDENDUM correction, gpt-oss is an
+exfiltrator not a sandbox-out) extends to a different closed-model vendor — and
 whether the gate's effect there matches the Anthropic-frontier or the
 open-weights pattern. Harness note: add a Vertex backend to the T3e/T5 runner
 model map (alongside the existing bedrock / bedrock-converse / openai backends).
@@ -286,8 +326,9 @@ GPT-5.5 is #7 and GPT-5.1 #11 on the llm-stats coding leaderboard
 (2026-06-06). The matrix currently has only the *older, weaker* GPT-4o-mini on
 the OpenAI side — which was notably injection-susceptible (AgentDojo ~29%
 baseline → 0 defended; InjecAgent 16.7% → 0.2%). The frontier GPT-5.x is the
-load-bearing question: does it **sandbox out** (like the Anthropic frontier +
-gpt-oss), **disclose** (like Opus 4.8), or **exfiltrate** (like Qwen)?
+load-bearing question: does it **sandbox out** (like Opus 4.5/4.6/4.7),
+**disclose** (like Opus 4.8), or **exfiltrate** (like Qwen and gpt-oss — see
+ADDENDUM correction)?
 
 **Access:** needs an **OpenAI API key** (or Azure OpenAI) with GPT-5 access.
 **No new adapter** — the harness already has an `openai` backend (it ran
