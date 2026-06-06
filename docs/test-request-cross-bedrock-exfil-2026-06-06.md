@@ -247,7 +247,7 @@ strengthening available to the paper. If they sandbox out (like gpt-oss),
 
 ---
 
-## ADDENDUM 5 (2026-06-06) — add Google Gemini 3.x Pro via Vertex
+## ADDENDUM 5 (2026-06-06) — add Google Gemini via Vertex (3.x Pro + 3.5 Flash)
 
 Gemini 3.x Pro is among the top coding agents in the June-2026 leaderboards
 (provisional coding score ~94%) and is the one **closed non-Anthropic
@@ -255,9 +255,12 @@ frontier** agent missing from the matrix (we have closed Anthropic, the older
 GPT-4o, and open-weights — but no current closed non-Anthropic frontier).
 It is **GCP-only** (Vertex AI / Google AI Studio); not on Bedrock.
 
-**Access:** runner needs a **GCP key** (Vertex AI). Model id e.g.
-`gemini-3.x-pro` via the Vertex `generativeai` endpoint (confirm exact
-version string in Model Garden at run time). The action-side judge stays
+**Access:** runner needs a **GCP key** (Vertex AI). Model ids e.g.
+`gemini-3.x-pro` and **`gemini-3.5-flash`** via the Vertex `generativeai`
+endpoint (confirm exact version strings in Model Garden at run time). Run
+**both** Gemini variants — Gemini 3.5 Flash is #9 on the llm-stats coding
+leaderboard (2026-06-06), is cheap, and rides the same Vertex backend, so it
+is near-free to add alongside 3.x Pro. The action-side judge stays
 Sonnet 4.6 + prompt v2 on Bedrock — only the *defended agent* is on Vertex,
 which the harness already supports (judge and agent are independently
 configurable, paper §3.3).
