@@ -84,10 +84,9 @@ const NON_ANTHROPIC_MODEL_MAP: Record<string, string> = {
 };
 
 export function resolveBedrockModel(model: string): string {
-  if (model.includes(".") || model.includes(":")) return model;
-  return ANTHROPIC_MODEL_MAP[model]
-    ?? NON_ANTHROPIC_MODEL_MAP[model]
-    ?? model;
+  const mapped = ANTHROPIC_MODEL_MAP[model] ?? NON_ANTHROPIC_MODEL_MAP[model];
+  if (mapped) return mapped;
+  return model;
 }
 
 const TOOL_SPECS = [
