@@ -1,18 +1,23 @@
 /**
- * Test Executor — Google Gemini path (Vertex / AI Studio)
+ * Test Executor — Google Gemini path (Vertex AI, Workload Identity Federation)
  *
  * Sibling of executor-openai.ts for Google's Gemini models (3.x Pro,
  * 3.5 Flash). Drives the same multi-turn hijack scenarios with the identical
  * tool surface (Read, Write, Edit, Bash, Glob, Grep) so attacks land
  * byte-equivalent across vendors. Uses the global fetch (Node 22+).
  *
- * Auth: the simple Google AI Studio API-key path
- * (generativelanguage.googleapis.com, `x-goog-api-key` header). Set
- * GEMINI_API_KEY (or GOOGLE_API_KEY). The doc (Addendum 5) calls this the
- * "GCP key" — only the defended *agent* runs here; the action-side judge
- * stays Sonnet/Haiku on Bedrock (judge and agent are independently
- * configurable). If a full Vertex service-account / OAuth path is needed
- * later, swap callGemini's endpoint + auth header; the rest is unchanged.
+ * Auth: Vertex AI ({region}-aiplatform.googleapis.com) via Workload Identity
+ * Federation — NO static API key. google-auth-library's ExternalAccountClient
+ * takes the container's Fargate task-role AWS credentials (read from the ECS
+ * container-credentials metadata endpoint), exchanges them at GCP STS against
+ * a Workload Identity Pool that trusts the task-role ARN, optionally
+ * impersonates a service account with Vertex AI User, and mints a short-lived
+ * OAuth access token. The WIF credential-config JSON is provided via
+ * GOOGLE_APPLICATION_CREDENTIALS (or GCP_WIF_CONFIG_JSON inline); GCP_PROJECT
+ * and VERTEX_REGION pick the endpoint + model path.
+ *
+ * Only the defended *agent* runs on Vertex; the action-side judge stays
+ * Sonnet/Haiku on Bedrock (judge and agent are independently configurable).
  *
  * Same canary plumbing + three-axis scoring (context / displayed / exfil) and
  * async spawn-based Bash exec as executor-converse/openai (no execSync — the
@@ -23,6 +28,7 @@ import { IntentTracker } from "./intent-tracker.js";
 import type { CanaryServer } from "./canary-server.js";
 import type { HijackScenario } from "../scenarios/t3-goal-hijacking.js";
 import type { TurnLog, ToolCallLog, TestResult } from "./types.js";
+import { GoogleAuth } from "google-auth-library";
 import {
   mkdtempSync,
   cpSync,
@@ -262,15 +268,46 @@ interface GeminiResponse {
   promptFeedback?: { blockReason?: string };
 }
 
+// Vertex endpoint config + WIF auth. Region/project from env; the GoogleAuth
+// client resolves the WIF credential-config (GOOGLE_APPLICATION_CREDENTIALS,
+// or GCP_WIF_CONFIG_JSON written to a temp file at startup) and caches a
+// short-lived OAuth token, refreshing transparently.
+const VERTEX_REGION = process.env.VERTEX_REGION ?? "us-central1";
+const GCP_PROJECT = process.env.GCP_PROJECT ?? process.env.GOOGLE_CLOUD_PROJECT ?? "";
+
+let _authClient: Awaited<ReturnType<GoogleAuth["getClient"]>> | null = null;
+async function getAccessToken(): Promise<string> {
+  if (!_authClient) {
+    // If the WIF config was passed inline, materialize it to a temp file and
+    // point ADC at it (google-auth-library reads GOOGLE_APPLICATION_CREDENTIALS).
+    if (process.env.GCP_WIF_CONFIG_JSON && !process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+      const cfgPath = join(tmpdir(), "gcp-wif-config.json");
+      writeFileSync(cfgPath, process.env.GCP_WIF_CONFIG_JSON);
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = cfgPath;
+    }
+    const auth = new GoogleAuth({
+      scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+    });
+    _authClient = await auth.getClient();
+  }
+  const tok = await _authClient.getAccessToken();
+  const token = typeof tok === "string" ? tok : tok?.token;
+  if (!token) throw new Error("WIF token exchange returned no access token");
+  return token;
+}
+
 async function callGemini(
   contents: GeminiContent[],
   systemPrompt: string,
   modelId: string,
-  apiKey: string,
   maxTokens: number = 8192,
 ): Promise<GeminiResponse> {
+  if (!GCP_PROJECT) {
+    throw new Error("GCP_PROJECT (or GOOGLE_CLOUD_PROJECT) not set — Vertex executor requires it");
+  }
   const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
+    `https://${VERTEX_REGION}-aiplatform.googleapis.com/v1/projects/${GCP_PROJECT}` +
+    `/locations/${VERTEX_REGION}/publishers/google/models/${modelId}:generateContent`;
   const body = {
     systemInstruction: { parts: [{ text: systemPrompt }] },
     contents,
@@ -282,9 +319,13 @@ async function callGemini(
   let lastErr: Error | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
+      const token = await getAccessToken();
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(300_000),
       });
@@ -292,24 +333,24 @@ async function callGemini(
         const text = await res.text().catch(() => "");
         if ((res.status === 429 || res.status >= 500) && attempt < maxAttempts) {
           const backoff = 1000 * Math.pow(2, attempt - 1);
-          console.error(`  [Gemini ${res.status}] attempt ${attempt}/${maxAttempts}; sleeping ${backoff}ms`);
+          console.error(`  [Vertex ${res.status}] attempt ${attempt}/${maxAttempts}; sleeping ${backoff}ms`);
           await new Promise((r) => setTimeout(r, backoff));
           continue;
         }
-        throw new Error(`Gemini HTTP ${res.status}: ${text.substring(0, 500)}`);
+        throw new Error(`Vertex HTTP ${res.status}: ${text.substring(0, 500)}`);
       }
       return (await res.json()) as GeminiResponse;
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
       if (attempt < maxAttempts) {
         const backoff = 1000 * Math.pow(2, attempt - 1);
-        console.error(`  [Gemini fetch error] attempt ${attempt}/${maxAttempts}: ${lastErr.message}; sleeping ${backoff}ms`);
+        console.error(`  [Vertex fetch error] attempt ${attempt}/${maxAttempts}: ${lastErr.message}; sleeping ${backoff}ms`);
         await new Promise((r) => setTimeout(r, backoff));
         continue;
       }
     }
   }
-  throw lastErr ?? new Error("Gemini call failed with no captured error");
+  throw lastErr ?? new Error("Vertex call failed with no captured error");
 }
 
 export interface ExecutorOptions {
@@ -330,9 +371,14 @@ export async function executeScenario(
   const startTime = Date.now();
   const geminiModel = resolveGeminiModel(model);
 
-  const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
-  if (!apiKey) {
-    throw new Error("GEMINI_API_KEY (or GOOGLE_API_KEY) not set — executor-vertex.ts requires it");
+  // Auth is via WIF (GoogleAuth in callGemini) — no API key. Fail fast here
+  // if neither the project nor a WIF config is configured, so the error is
+  // clear rather than surfacing mid-turn.
+  if (!GCP_PROJECT) {
+    throw new Error("GCP_PROJECT (or GOOGLE_CLOUD_PROJECT) not set — Vertex executor requires it");
+  }
+  if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && !process.env.GCP_WIF_CONFIG_JSON) {
+    throw new Error("No WIF credential config — set GOOGLE_APPLICATION_CREDENTIALS or GCP_WIF_CONFIG_JSON");
   }
 
   const canary = options.canaryServer;
@@ -393,7 +439,7 @@ export async function executeScenario(
       while (toolLoopCount < MAX_TOOL_LOOPS) {
         toolLoopCount++;
 
-        const response = await callGemini(contents, systemPrompt, geminiModel, apiKey, 8192);
+        const response = await callGemini(contents, systemPrompt, geminiModel, 8192);
         const cand = response.candidates?.[0];
         if (!cand?.content) {
           const reason = response.promptFeedback?.blockReason ?? cand?.finishReason ?? "no candidate";
