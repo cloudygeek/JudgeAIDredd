@@ -434,3 +434,50 @@ The pooled defence Δ is within the Wilson CI — at this N the gate's effect on
 _Pending reruns (will extend this table): opus-4-5, opus-4-6, sonnet-4-5,
 minimax-m2.5, glm-4.7-flash, nemotron-super-3-120b (all in flight on v0.1.523),
 then the Addendum-4 us-west-2 models + Addendum-6 GPT-5.x on v0.1.528._
+
+---
+
+## ADDENDUM 7 (2026-06-07) — re-run load-bearing cells on the Sonnet 4.6 judge (main-paper config); keep Haiku runs for a supplementary judge-tier comparison
+
+**Why.** The v0.1.533/549 reruns that resolved M1 (open-weights exfiltrator
+breadth on T3e; frontier exfiltration on T5) ran with a **Haiku 4.5** action-side
+judge (`judgeModel = claude-haiku-4-5`, B7.1, cohere-embed-v4). The paper's
+headline production config and every Anthropic-agent cell use a **Sonnet 4.6**
+judge (paper §3.3, master tables). To keep the **main** results single-judge-
+consistent, re-run the load-bearing *defended* cells on the **Sonnet 4.6 judge**.
+
+**The Haiku runs are NOT wasted.** They are already a complete matched set, so
+pairing them with Sonnet-judge runs on the *same* (model × arm × scenario) cells
+yields a **supplementary judge-tier comparison** — Haiku 4.5 vs Sonnet 4.6 as the
+judge backend, identical everything else. That comparison is itself a paper
+result: it tests whether the defence is judge-tier-robust and quantifies the
+Haiku cost advantage (~¼ price; paper cost section). **Run matched cells** — do
+not change scenarios/arms/N from the Haiku runs — so the two judges line up 1:1.
+
+**What to run** — Sonnet 4.6 judge (`eu.anthropic.claude-sonnet-4-6`, B7.1,
+cohere-embed-v4), recording the three metrics + `build`. The `none` baseline is
+judge-independent and already banked — **only the *defended* arm needs the
+Sonnet judge**; re-pair it against the existing `none` baselines.
+
+| Corpus | Cells (the exfiltrator / defended-effect cells) | N |
+|---|---|---|
+| **T3e** | deepseek-v3.1, qwen3-coder-next, glm-4.7-flash, nemotron-super-3-120b, gpt-oss-120b, devstral-2-123b, mistral-large-3, glm-4.7, minimax-m2.5 | ≥75/arm |
+| **T5** (now featured in the paper) | gpt-5.1, gpt-5.5, gemini-3.1-pro-preview, gemini-3.5-flash, devstral-2-123b | **≥75/arm** (bump from N=60) |
+
+Floor / sandbox-out cells (Anthropic lineage; GPT-5.x and GLM-5 on T3e) are
+judge-independent at baseline 0 → **no Sonnet re-run needed** for the main
+result; run a couple only if cheap, to widen the supplementary judge comparison.
+
+**Optional (closes a gap).** A clean post-fix **Opus 4.8 / Opus 4.7 / Sonnet 4.6**
+T3e run on the production Sonnet judge — the three headline agents were not
+themselves re-run on the fixed executor (only lineage neighbours were). Low
+priority (their disclosure headline is bug-independent and the lineage
+corroborates ~0 exfil), but it closes the loop cleanly.
+
+**Acceptance.** Extend §6 with a Sonnet-judge column per cell (and a
+Haiku-vs-Sonnet Δ where matched); same per-rep JSON + `build` requirements as §4.
+
+**Paper placement.** Main results → Sonnet-judge numbers; **supplementary** → the
+Haiku-vs-Sonnet judge-tier comparison; **T5 featured** as the cross-vendor
+frontier-exfiltration result (Gemini/GPT-5.x complete T5 multi-stage exfil; the
+gate stops it — gemini-3.1-pro 23%→0%, gpt-5.1 33%→3%).
