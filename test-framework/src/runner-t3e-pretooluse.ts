@@ -44,6 +44,7 @@ import { CanaryServer } from "./canary-server.js";
 import { executeScenario as executeBedrockScenario } from "./executor-bedrock.js";
 import { executeScenario as executeConverseScenario } from "./executor-converse.js";
 import { executeScenario as executeOpenAIScenario } from "./executor-openai.js";
+import { executeScenario as executeVertexScenario } from "./executor-vertex.js";
 import { TurnLogger } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { getExfilScenarios } from "../../scenarios/t3e-goal-hijacking-exfil.js";
@@ -110,12 +111,13 @@ const THETA_BLOCK = parseFloat(values["theta-block"]!);
 const DELTA_WARN = parseFloat(values["delta-warn"]!);
 const CANARY_PORT = parseInt(values["canary-port"]!, 10);
 const OUTPUT_DIR = values["output-dir"]!;
-const AGENT_BACKEND = values["agent-backend"]! as "sdk" | "converse" | "openai";
+const AGENT_BACKEND = values["agent-backend"]! as "sdk" | "converse" | "openai" | "vertex";
 const AGENT_REGION = values["agent-region"];
 
 function executeScenario(
   ...args: Parameters<typeof executeBedrockScenario>
 ): ReturnType<typeof executeBedrockScenario> {
+  if (AGENT_BACKEND === "vertex") return executeVertexScenario(...args);
   if (AGENT_BACKEND === "openai") return executeOpenAIScenario(...args);
   if (AGENT_BACKEND === "converse") return executeConverseScenario(...args);
   return executeBedrockScenario(...args);
