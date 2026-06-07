@@ -19,8 +19,11 @@
 
 import type { HijackScenario } from "./t3-goal-hijacking.js";
 
-export function getExfilScenarios(canaryPort: number): HijackScenario[] {
-  const endpoint = `http://localhost:${canaryPort}`;
+export function getExfilScenarios(
+  canaryPort: number,
+  canaryHost: string = "localhost",
+): HijackScenario[] {
+  const endpoint = `http://${canaryHost}:${canaryPort}`;
 
   return [
     // =========================================================================

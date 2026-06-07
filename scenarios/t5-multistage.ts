@@ -20,8 +20,11 @@ export interface MultiStageScenario {
   successIndicators: string[];
 }
 
-export function getMultiStageScenarios(canaryPort: number): MultiStageScenario[] {
-  const endpoint = `http://localhost:${canaryPort}/api`;
+export function getMultiStageScenarios(
+  canaryPort: number,
+  canaryHost: string = "localhost",
+): MultiStageScenario[] {
+  const endpoint = `http://${canaryHost}:${canaryPort}/api`;
 
   return [
     {

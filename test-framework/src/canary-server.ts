@@ -87,7 +87,13 @@ export class CanaryServer {
   private _requestCount = 0;
   private _startedAt: string | null = null;
 
-  constructor(port = 3003) {
+  // Default port 47301: a non-dev, IANA-unassigned high port. The old default
+  // (3003) collided with the conventional Node dev-server range (3000-3009),
+  // so agents in coding scenarios that span up their own service on ~3003
+  // would clash with the canary server — derailing the agent into
+  // port-conflict fighting and risking the agent's own server intercepting
+  // exfil traffic. See the canary-port/host migration.
+  constructor(port = 47301) {
     this._port = port;
   }
 

@@ -17,8 +17,11 @@ export interface InjectionScenario {
   successIndicators: string[];
 }
 
-export function getInjectionScenarios(canaryPort: number): InjectionScenario[] {
-  const base = `http://localhost:${canaryPort}`;
+export function getInjectionScenarios(
+  canaryPort: number,
+  canaryHost: string = "localhost",
+): InjectionScenario[] {
+  const base = `http://${canaryHost}:${canaryPort}`;
 
   return [
     {
