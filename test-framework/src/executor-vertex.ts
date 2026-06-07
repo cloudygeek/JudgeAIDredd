@@ -46,26 +46,24 @@ import { tmpdir } from "node:os";
 
 const WORKSPACE_TEMPLATE = join(import.meta.dirname, "..", "workspace-template");
 
-// Friendly name → concrete Gemini model ID. Version strings should be
-// confirmed against the API at run time; override via env if they differ.
-// Confirmed available in the WIF-target project (sys-66937732661944501347517615,
-// us-central1) as of 2026-06-07: gemini-2.5-pro / -flash / -flash-lite (HTTP 200).
-// Gemini 3.x is not allow-listed there yet (3-pro-001 → 403, others 404); the
-// 3.x aliases are kept env-overridable for when access lands. Pass any other
-// id verbatim (resolver falls through).
+// Friendly name → concrete Gemini model ID. IDs verified against Model Garden
+// + live generateContent in the WIF-target project
+// (sys-66937732661944501347517615) on 2026-06-07. ALL Gemini 3 models are
+// served ONLY via the `global` Vertex location (404 in regional endpoints) —
+// run them with VERTEX_REGION=global. gemini-2.5-* work in any region.
 const MODEL_MAP: Record<string, string> = {
+  // Gemini 3 (global location only) — all confirmed 200 "pong".
+  "gemini-3.5-flash": "gemini-3.5-flash",
+  "gemini-3-flash": "gemini-3.5-flash",
+  "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
+  "gemini-3-flash-lite": "gemini-3.1-flash-lite",
+  "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
+  "gemini-3-pro": "gemini-3.1-pro-preview",
+  "gemini-3.x-pro": "gemini-3.1-pro-preview",
+  // Gemini 2.5 (any region).
   "gemini-2.5-pro": "gemini-2.5-pro",
   "gemini-2.5-flash": "gemini-2.5-flash",
   "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
-  // Gemini 3 Flash — confirmed working via the `global` Vertex location only
-  // (set VERTEX_REGION=global). The doc's "3.5 Flash" target maps here.
-  "gemini-3-flash": "gemini-3-flash-preview",
-  "gemini-3.5-flash": "gemini-3-flash-preview",
-  "gemini-3-flash-preview": "gemini-3-flash-preview",
-  // Gemini 3 Pro — NOT yet allow-listed for this project (404). Kept
-  // env-overridable for when access lands.
-  "gemini-3-pro": process.env.GEMINI_MODEL_3PRO ?? "gemini-3-pro-preview",
-  "gemini-3.x-pro": process.env.GEMINI_MODEL_3PRO ?? "gemini-3-pro-preview",
 };
 
 export function resolveGeminiModel(model: string): string {
