@@ -48,12 +48,24 @@ const WORKSPACE_TEMPLATE = join(import.meta.dirname, "..", "workspace-template")
 
 // Friendly name → concrete Gemini model ID. Version strings should be
 // confirmed against the API at run time; override via env if they differ.
+// Confirmed available in the WIF-target project (sys-66937732661944501347517615,
+// us-central1) as of 2026-06-07: gemini-2.5-pro / -flash / -flash-lite (HTTP 200).
+// Gemini 3.x is not allow-listed there yet (3-pro-001 → 403, others 404); the
+// 3.x aliases are kept env-overridable for when access lands. Pass any other
+// id verbatim (resolver falls through).
 const MODEL_MAP: Record<string, string> = {
-  "gemini-3-pro": process.env.GEMINI_MODEL_3PRO ?? "gemini-3-pro",
-  "gemini-3.x-pro": process.env.GEMINI_MODEL_3PRO ?? "gemini-3-pro",
-  "gemini-3.5-flash": process.env.GEMINI_MODEL_35FLASH ?? "gemini-3.5-flash",
   "gemini-2.5-pro": "gemini-2.5-pro",
   "gemini-2.5-flash": "gemini-2.5-flash",
+  "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
+  // Gemini 3 Flash — confirmed working via the `global` Vertex location only
+  // (set VERTEX_REGION=global). The doc's "3.5 Flash" target maps here.
+  "gemini-3-flash": "gemini-3-flash-preview",
+  "gemini-3.5-flash": "gemini-3-flash-preview",
+  "gemini-3-flash-preview": "gemini-3-flash-preview",
+  // Gemini 3 Pro — NOT yet allow-listed for this project (404). Kept
+  // env-overridable for when access lands.
+  "gemini-3-pro": process.env.GEMINI_MODEL_3PRO ?? "gemini-3-pro-preview",
+  "gemini-3.x-pro": process.env.GEMINI_MODEL_3PRO ?? "gemini-3-pro-preview",
 };
 
 export function resolveGeminiModel(model: string): string {
@@ -272,7 +284,12 @@ interface GeminiResponse {
 
 // Vertex endpoint config + WIF auth. Region/project from env.
 const VERTEX_REGION = process.env.VERTEX_REGION ?? "us-central1";
-const GCP_PROJECT = process.env.GCP_PROJECT ?? process.env.GOOGLE_CLOUD_PROJECT ?? "";
+// Default to the WIF-target project where Vertex is enabled + the test-vertex
+// SA can run (sys-66937732661944501347517615). Override via GCP_PROJECT.
+const GCP_PROJECT =
+  process.env.GCP_PROJECT ??
+  process.env.GOOGLE_CLOUD_PROJECT ??
+  "sys-66937732661944501347517615";
 
 // WIF on Fargate: the credential-config JSON's `credential_source` points at
 // EC2 IMDS (169.254.169.254), which DOES NOT EXIST on Fargate (Fargate uses
@@ -349,8 +366,16 @@ async function callGemini(
   if (!GCP_PROJECT) {
     throw new Error("GCP_PROJECT (or GOOGLE_CLOUD_PROJECT) not set — Vertex executor requires it");
   }
+  // The `global` location uses the bare aiplatform host (no region prefix);
+  // regional locations use {region}-aiplatform. Gemini 3.x is currently only
+  // served from `global` for this project, so VERTEX_REGION=global is the
+  // path for gemini-3-flash-preview; gemini-2.5-* work in any region.
+  const host =
+    VERTEX_REGION === "global"
+      ? "aiplatform.googleapis.com"
+      : `${VERTEX_REGION}-aiplatform.googleapis.com`;
   const url =
-    `https://${VERTEX_REGION}-aiplatform.googleapis.com/v1/projects/${GCP_PROJECT}` +
+    `https://${host}/v1/projects/${GCP_PROJECT}` +
     `/locations/${VERTEX_REGION}/publishers/google/models/${modelId}:generateContent`;
   const body = {
     systemInstruction: { parts: [{ text: systemPrompt }] },
