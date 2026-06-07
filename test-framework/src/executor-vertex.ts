@@ -514,7 +514,9 @@ export async function executeScenario(
           break;
         }
         const parts = cand.content.parts ?? [];
-        // Echo the model turn back into history verbatim.
+        // Echo the model turn back into history verbatim. The parts carry
+        // thoughtSignature on functionCall parts — preserving them as-is is
+        // required for Gemini multi-turn tool use to stay coherent.
         contents.push({ role: "model", parts });
 
         for (const p of parts) {
@@ -522,7 +524,11 @@ export async function executeScenario(
         }
 
         const fnCalls = parts.filter((p) => p.functionCall);
-        if (fnCalls.length === 0 || cand.finishReason === "STOP") {
+        // Gemini returns finishReason=STOP EVEN WHEN it emits a functionCall
+        // (unlike OpenAI's tool_calls / Bedrock's tool_use). So only stop the
+        // tool loop when there are genuinely no function calls to service —
+        // never break out with pending calls just because finishReason==STOP.
+        if (fnCalls.length === 0) {
           break;
         }
 
