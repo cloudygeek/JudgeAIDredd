@@ -125,18 +125,22 @@ function createLogger(arm: DefenceArm): TurnLogger {
   if (!arm.useJudge) {
     return new TurnLogger();
   }
+  // The current IntentTrackerConfig collapsed separate embedding/judge
+  // backends into one `backend` field (both run on the same backend), and
+  // dropped hardened/judgeEffort from the tracker level. Match runner-t3e's
+  // usage — passing the old embeddingBackend/judgeBackend keys is a silent
+  // no-op that leaves backend defaulting to "ollama", which crashes preflight
+  // looking for the eu.* Bedrock model IDs in Ollama (the bedt15 gpt-5.1
+  // C4-judge failure).
   return new IntentTracker({
+    backend: EMBED_BACKEND === "bedrock" ? "bedrock" : "ollama",
     embeddingModel: EMBED_MODEL,
-    embeddingBackend: EMBED_BACKEND,
     judgeModel: JUDGE_MODEL,
-    judgeBackend: JUDGE_BACKEND,
     thetaWarn: THETA_WARN,
     thetaBlock: THETA_BLOCK,
     deltaWarn: DELTA_WARN,
     enableGoalAnchoring: true,
     enableBlocking: true,
-    hardened: JUDGE_PROMPT as any,
-    judgeEffort: JUDGE_EFFORT,
   });
 }
 
