@@ -59,6 +59,8 @@ cp "$PROJECT_ROOT/fargate/docker-entrypoint-mode4.sh" \
    "$STAGING/docker-entrypoint-mode4.sh"
 cp "$PROJECT_ROOT/fargate/docker-entrypoint-t3e.sh" \
    "$STAGING/docker-entrypoint-t3e.sh"
+cp "$PROJECT_ROOT/fargate/docker-entrypoint-t5.sh" \
+   "$STAGING/docker-entrypoint-t5.sh"
 cp "$PROJECT_ROOT/fargate/tests/docker-entrypoint-test22.sh" \
    "$STAGING/docker-entrypoint-test22.sh"
 cp "$PROJECT_ROOT/fargate/api-server.cjs" "$STAGING/server.js"
@@ -130,13 +132,17 @@ echo "[build] verifying flat layout..."
 for f in Dockerfile server.js docker-entrypoint-test-framework.sh \
          docker-entrypoint-agentlab.sh docker-entrypoint-test22.sh \
          docker-entrypoint-mode4.sh docker-entrypoint-t3e.sh \
+         docker-entrypoint-t5.sh \
          test-framework/src/runner-agentlab.ts \
          test-framework/src/runner-mode4.ts \
          test-framework/src/runner-mode4-cli.ts \
          test-framework/src/runner-mode4-multimodel.ts \
          test-framework/src/runner-t3e-pretooluse.ts \
+         test-framework/src/runner-p14.ts \
          test-framework/scenarios/mode4-behavioural-drift.ts \
          scenarios/t3e-goal-hijacking-exfil.ts \
+         scenarios/t4-http-injection.ts \
+         scenarios/t5-multistage.ts \
          test-framework/workspace-template/.env.test \
          package.json test-framework/package.json \
          test-framework/src/runner.ts \
