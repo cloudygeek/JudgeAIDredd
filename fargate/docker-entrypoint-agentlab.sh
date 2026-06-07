@@ -75,8 +75,17 @@ s3_push() {
     log "s3_sync: aws CLI not installed — skipping push"
     return 0
   fi
-  aws s3 sync "$LOGDIR/" "$RESULTS_S3_URL/" --no-progress \
-    || log "s3_sync: push failed (results stay local)"
+  local push_rc=0
+  aws s3 sync "$LOGDIR/" "$RESULTS_S3_URL/" --no-progress || push_rc=$?
+  if [[ "$push_rc" == "0" ]]; then
+    # Clean the run dir after a SUCCESSFUL upload — the container reuses
+    # $LOGDIR across runs and would otherwise re-sync stale cells into the
+    # next run's prefix (shared-bucket contamination). Only on rc==0.
+    log "s3_sync: push OK — cleaning $LOGDIR for the next run"
+    rm -rf "${LOGDIR:?}"/* 2>/dev/null || true
+  else
+    log "s3_sync: push failed (rc=$push_rc) — results stay local, NOT cleaning"
+  fi
 }
 
 log "─── AgentLAB Smoke × Judge AI Dredd ─────────────────────────────"

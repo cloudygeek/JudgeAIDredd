@@ -127,8 +127,17 @@ AWS_REGION="$AWS_REGION" AGENT_REGION="$AGENT_REGION" CLAUDE_CODE_USE_BEDROCK=1 
 
 if [[ -n "$RESULTS_S3_URL" ]]; then
   log "s3 push: $LOGDIR -> $RESULTS_S3_URL"
-  aws s3 sync "$LOGDIR/" "$RESULTS_S3_URL/" --no-progress \
-    || log "s3 push: failed (results stay local)"
+  push_rc=0
+  aws s3 sync "$LOGDIR/" "$RESULTS_S3_URL/" --no-progress || push_rc=$?
+  if [[ "$push_rc" == "0" ]]; then
+    # Clean the run dir after a SUCCESSFUL upload — the container reuses
+    # $LOGDIR across runs and would otherwise re-sync stale cells into the
+    # next run's prefix (shared-bucket contamination). Only on rc==0.
+    log "s3 push OK — cleaning $LOGDIR for the next run"
+    rm -rf "${LOGDIR:?}"/* 2>/dev/null || true
+  else
+    log "s3 push: failed (rc=$push_rc) — results stay local, NOT cleaning"
+  fi
 fi
 
 exit $exec_rc

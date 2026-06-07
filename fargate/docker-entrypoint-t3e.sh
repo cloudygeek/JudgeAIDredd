@@ -148,8 +148,19 @@ AWS_REGION="$AWS_REGION" CLAUDE_CODE_USE_BEDROCK=1 \
 
 if [[ -n "$RESULTS_S3_URL" ]]; then
   log "s3 push: $LOGDIR -> $RESULTS_S3_URL"
-  aws s3 sync "$LOGDIR/" "$RESULTS_S3_URL/" --no-progress \
-    || log "s3 push: failed (results stay local)"
+  push_rc=0
+  aws s3 sync "$LOGDIR/" "$RESULTS_S3_URL/" --no-progress || push_rc=$?
+  if [[ "$push_rc" == "0" ]]; then
+    # Clean the run dir after a SUCCESSFUL upload. The container reuses
+    # $LOGDIR across runs; without this, stale cells from a prior run get
+    # re-synced into the next run's S3 prefix (the shared-bucket
+    # contamination that polluted the Sonnet-judge reruns). Only delete on
+    # rc==0 so a failed push keeps the local copy as a fallback.
+    log "s3 push OK — cleaning $LOGDIR for the next run"
+    rm -rf "${LOGDIR:?}"/* 2>/dev/null || true
+  else
+    log "s3 push: failed (rc=$push_rc) — results stay local, NOT cleaning"
+  fi
 fi
 
 exit $exec_rc
