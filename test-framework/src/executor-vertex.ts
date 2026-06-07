@@ -28,7 +28,9 @@ import { IntentTracker } from "./intent-tracker.js";
 import type { CanaryServer } from "./canary-server.js";
 import type { HijackScenario } from "../scenarios/t3-goal-hijacking.js";
 import type { TurnLog, ToolCallLog, TestResult } from "./types.js";
-import { GoogleAuth } from "google-auth-library";
+import { AwsClient } from "google-auth-library";
+import type { AwsSecurityCredentials } from "google-auth-library";
+import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
 import {
   mkdtempSync,
   cpSync,
@@ -268,27 +270,69 @@ interface GeminiResponse {
   promptFeedback?: { blockReason?: string };
 }
 
-// Vertex endpoint config + WIF auth. Region/project from env; the GoogleAuth
-// client resolves the WIF credential-config (GOOGLE_APPLICATION_CREDENTIALS,
-// or GCP_WIF_CONFIG_JSON written to a temp file at startup) and caches a
-// short-lived OAuth token, refreshing transparently.
+// Vertex endpoint config + WIF auth. Region/project from env.
 const VERTEX_REGION = process.env.VERTEX_REGION ?? "us-central1";
 const GCP_PROJECT = process.env.GCP_PROJECT ?? process.env.GOOGLE_CLOUD_PROJECT ?? "";
 
-let _authClient: Awaited<ReturnType<GoogleAuth["getClient"]>> | null = null;
+// WIF on Fargate: the credential-config JSON's `credential_source` points at
+// EC2 IMDS (169.254.169.254), which DOES NOT EXIST on Fargate (Fargate uses
+// the ECS container-credentials endpoint at 169.254.170.2). google-auth's
+// default AWS supplier would hang on that IMDS path. Instead we hand
+// ExternalAccountClient a custom AwsSecurityCredentialsSupplier backed by the
+// AWS SDK's fromNodeProviderChain, which natively resolves the Fargate
+// task-role creds (ECS endpoint) and the region. The STS exchange + SA
+// impersonation (audience / service_account_impersonation_url) still come
+// from the supplied WIF config JSON.
+function loadWifConfig(): any {
+  if (process.env.GCP_WIF_CONFIG_JSON) {
+    return JSON.parse(process.env.GCP_WIF_CONFIG_JSON);
+  }
+  const path = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (path && existsSync(path)) {
+    return JSON.parse(readFileSync(path, "utf8"));
+  }
+  throw new Error(
+    "No WIF config — set GCP_WIF_CONFIG_JSON or GOOGLE_APPLICATION_CREDENTIALS",
+  );
+}
+
+// Supplier signature matches google-auth's AwsSecurityCredentialsSupplier:
+// getAwsRegion(context) + getAwsSecurityCredentials(context). The AWS SDK
+// provider chain handles the Fargate ECS container-credentials endpoint.
+class FargateAwsSupplier {
+  private provider = fromNodeProviderChain();
+  async getAwsRegion(): Promise<string> {
+    return (
+      process.env.AWS_REGION ??
+      process.env.AWS_DEFAULT_REGION ??
+      "us-east-1" // STS verification URL is region-templated; any valid region works
+    );
+  }
+  async getAwsSecurityCredentials(): Promise<AwsSecurityCredentials> {
+    const c = await this.provider();
+    return {
+      accessKeyId: c.accessKeyId,
+      secretAccessKey: c.secretAccessKey,
+      token: c.sessionToken,
+    };
+  }
+}
+
+let _authClient: AwsClient | null = null;
 async function getAccessToken(): Promise<string> {
   if (!_authClient) {
-    // If the WIF config was passed inline, materialize it to a temp file and
-    // point ADC at it (google-auth-library reads GOOGLE_APPLICATION_CREDENTIALS).
-    if (process.env.GCP_WIF_CONFIG_JSON && !process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-      const cfgPath = join(tmpdir(), "gcp-wif-config.json");
-      writeFileSync(cfgPath, process.env.GCP_WIF_CONFIG_JSON);
-      process.env.GOOGLE_APPLICATION_CREDENTIALS = cfgPath;
-    }
-    const auth = new GoogleAuth({
+    const cfg = loadWifConfig();
+    // Construct AwsClient directly (not ExternalAccountClient.fromJSON — that
+    // only routes to AwsClient when credential_source.environment_id is set,
+    // and the client errors if BOTH credential_source and a supplier are
+    // present). Strip credential_source (its IMDS path is dead on Fargate)
+    // and pass our ECS-aware supplier under aws_security_credentials_supplier.
+    const { credential_source, ...cfgNoSource } = cfg;
+    _authClient = new AwsClient({
+      ...cfgNoSource,
+      aws_security_credentials_supplier: new FargateAwsSupplier(),
       scopes: ["https://www.googleapis.com/auth/cloud-platform"],
-    });
-    _authClient = await auth.getClient();
+    } as any);
   }
   const tok = await _authClient.getAccessToken();
   const token = typeof tok === "string" ? tok : tok?.token;
