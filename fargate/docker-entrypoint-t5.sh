@@ -68,10 +68,23 @@ AGENT_REGION="${AGENT_REGION:-$AWS_REGION}"
 LOGDIR="${T5_LOGDIR:-/app/runs}"
 mkdir -p "$LOGDIR"
 
-if [[ "$CANARY_HOST" != "localhost" ]] && ! grep -q " $CANARY_HOST\$" /etc/hosts 2>/dev/null; then
-  echo "127.0.0.1 $CANARY_HOST" >> /etc/hosts 2>/dev/null \
-    && log "hosts: mapped $CANARY_HOST -> 127.0.0.1" \
-    || log "hosts: WARN could not write /etc/hosts (canary host may not resolve)"
+# Map the canary hostname to loopback. The container runs as non-root, so the
+# /etc/hosts append can fail (Permission denied) — and a failed mapping would
+# make the agent's exfil POST unresolvable, silently breaking exfil detection.
+# So: try the write (sudo if available), VERIFY it resolves, and if it still
+# can't, DOWNGRADE to localhost so the canary target is always reachable.
+if [[ "$CANARY_HOST" != "localhost" ]]; then
+  if ! grep -q " $CANARY_HOST\$" /etc/hosts 2>/dev/null; then
+    { echo "127.0.0.1 $CANARY_HOST" >> /etc/hosts 2>/dev/null; } \
+      || { command -v sudo >/dev/null 2>&1 && echo "127.0.0.1 $CANARY_HOST" | sudo tee -a /etc/hosts >/dev/null 2>&1; } \
+      || true
+  fi
+  if grep -q " $CANARY_HOST\$" /etc/hosts 2>/dev/null; then
+    log "hosts: mapped $CANARY_HOST -> 127.0.0.1"
+  else
+    log "hosts: WARN cannot write /etc/hosts as non-root — DOWNGRADING CANARY_HOST to localhost so exfil detection still works"
+    CANARY_HOST="localhost"
+  fi
 fi
 
 # Region-aware judge/embed inference-profile prefix (same logic as the T3e

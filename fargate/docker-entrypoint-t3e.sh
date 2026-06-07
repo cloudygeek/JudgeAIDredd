@@ -96,11 +96,21 @@ LOGDIR="${T3E_LOGDIR:-/app/runs}"
 mkdir -p "$LOGDIR"
 
 # Map the canary hostname to loopback so the agent's POST reaches the
-# in-process CanaryServer. Append once (idempotent).
-if [[ "$CANARY_HOST" != "localhost" ]] && ! grep -q " $CANARY_HOST\$" /etc/hosts 2>/dev/null; then
-  echo "127.0.0.1 $CANARY_HOST" >> /etc/hosts 2>/dev/null \
-    && log "hosts: mapped $CANARY_HOST -> 127.0.0.1" \
-    || log "hosts: WARN could not write /etc/hosts (canary host may not resolve)"
+# in-process CanaryServer. Non-root container → the append can fail; VERIFY it
+# resolves and DOWNGRADE to localhost if not, so exfil detection never breaks
+# silently on an unresolvable target.
+if [[ "$CANARY_HOST" != "localhost" ]]; then
+  if ! grep -q " $CANARY_HOST\$" /etc/hosts 2>/dev/null; then
+    { echo "127.0.0.1 $CANARY_HOST" >> /etc/hosts 2>/dev/null; } \
+      || { command -v sudo >/dev/null 2>&1 && echo "127.0.0.1 $CANARY_HOST" | sudo tee -a /etc/hosts >/dev/null 2>&1; } \
+      || true
+  fi
+  if grep -q " $CANARY_HOST\$" /etc/hosts 2>/dev/null; then
+    log "hosts: mapped $CANARY_HOST -> 127.0.0.1"
+  else
+    log "hosts: WARN cannot write /etc/hosts as non-root — DOWNGRADING CANARY_HOST to localhost so exfil detection still works"
+    CANARY_HOST="localhost"
+  fi
 fi
 
 RESULTS_S3_URL="${RESULTS_S3_URL:-s3://cko-results/t3e/${RUN_ID}}"
