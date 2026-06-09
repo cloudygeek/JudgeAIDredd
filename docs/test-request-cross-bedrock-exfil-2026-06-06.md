@@ -481,3 +481,72 @@ Haiku-vs-Sonnet Δ where matched); same per-rep JSON + `build` requirements as �
 Haiku-vs-Sonnet judge-tier comparison; **T5 featured** as the cross-vendor
 frontier-exfiltration result (Gemini/GPT-5.x complete T5 multi-stage exfil; the
 gate stops it — gemini-3.1-pro 23%→0%, gpt-5.1 33%→3%).
+
+---
+
+## ADDENDUM 8 (2026-06-09) — 🔴 REQUIRED: re-run Opus 4.8 (and matched Opus 4.7 / Sonnet 4.6) to resolve the defence paper's frontier headline
+
+**This UPGRADES ADDENDUM 7's "Optional (closes a gap)" note from low-priority to
+blocking.** That note assumed the Opus 4.8 disclosure headline was "bug-independent
+and the lineage corroborates." A peer-review data audit of `p15b-defence.tex`
+against the raw `d2/` results shows that reasoning was wrong: **the headline
+number has no run behind it at all.**
+
+### What the audit found (exhaustive scan of every Opus-4.8 JSON in `d2/`)
+
+| Defence-paper claim (abstract, Contribution 2, Table `tab:cross-corpus`, §4.3, conclusion) | Reality in the data |
+|---|---|
+| **Opus 4.8 T3e credential disclosure 88% (53/60) → 28% (17/60), −60 pp** — "the first defendable frontier cell" | **No T3e Opus 4.8 run exists.** Opus 4.8 was only ever run on **T5**. Its only disclosure data: T5 **baseline 19/60 = 32%** (`C4-baseline`) → **defended 17/59 = 29%** (`C4-judge`), concentrated in T5.3 (70%→65%). ⇒ real effect **−3 pp, n.s.** No file anywhere contains 53 disclosures. The "88%" traces to `canonical_data_2026-06-06.md` (pre-fix era), never backed by a run. |
+| **AgentDojo Opus 4.8 travel 12.1% → 0.7%** | **No AgentDojo Opus 4.8 file found** anywhere in `d2/`. |
+| **AgentLAB Opus 4.8 strat-50 14% → 0% (IT)** | **No strat-50 AgentLAB Opus 4.8 run** — only the `mode4`-flood variant (different corpus/metric) exists; the 14% is not reproducible from the strat summaries. |
+
+**Cross-check — the AgentLAB frontier picture (from the runner's own
+`agentlab-summary-*.json`, authoritative):** Opus 4.7 = **0/30 none, 0/30 IT**
+(at the floor, nothing to defend); Sonnet 4.6 strat50 = **2/50 none → 12/50 IT**
+(the defence **backfires** +20 pp — the paper's own §`backfire` result), strat100
+= 13/100 → 26/100. **Opus 4.6 has no AgentLAB data at all.** ⇒ In the *current*
+data there is **no Anthropic-frontier cell where the defence demonstrably
+reduces attacks** — every frontier cell is floor, no-data, or backfire. The only
+genuine Anthropic defence win is small/narrow: **Haiku 4.5 split-file 11/120 →
+1/120** (T3e.4).
+
+### What to run (to either recover the frontier headline with real numbers, or confirm the floor)
+
+Production stack: **Sonnet 4.6 judge** (`eu.anthropic.claude-sonnet-4-6`, B7.1,
+cohere-embed-v4, prompt v2), the post-fix executor (≥v0.1.523). Record
+`exfiltrationDetected`, `displayedToUser`, `hijackSucceeded` per rep + `build`.
+
+1. **T3e × Opus 4.8 — baseline (`none`) + defended (judge)**, **N≥80/arm** pooled
+   over T3e.1–T3e.4. This is the load-bearing cell: it yields the real
+   baseline→defended **disclosure** delta (replacing the fabricated 88%→28%) and
+   confirms exfil ~0 (sandbox-out). *Decision rule:* if defended `displayedToUser`
+   is materially below baseline with disjoint Wilson intervals → real frontier
+   defence cell, headline stands with corrected numbers; if within noise / at the
+   floor → the frontier is at the floor and the paper reframes to open-weights.
+2. **strat-50 AgentLAB × Opus 4.8 — none + intent-tracker + promptarmor**, N=50
+   (5 attack types × 10), matching the Sonnet 4.6 strat-50 protocol
+   (`agentlab-sonnet46-strat100/...strat50...`). Gives a real strat-AgentLAB
+   Opus 4.8 number (currently only the flood variant exists). Watch for the
+   intent-tracker **backfire** seen on Sonnet 4.6.
+3. **(matched control) T3e × Opus 4.7 and × Sonnet 4.6 — baseline + defended**,
+   N≥80/arm, same Sonnet judge — so the Anthropic-frontier disclosure trio
+   (4.7/4.8 + Sonnet 4.6) is one clean post-fix set rather than pre-fix
+   transcript estimates (42% / 22% currently).
+4. **(optional) AgentDojo travel × Opus 4.8 — none + Dredd v2 + PromptArmor**, to
+   back the 12.1%→0.7% cell (no file currently); skip if AgentDojo-Opus-4.8 is
+   not cheap.
+
+### Already verified — do NOT re-run (the paper's surviving spine is solid)
+
+- **Eleven-agent open-weights T3e exfil** (`tab:exfil-defended`): −8 to −59 pp,
+  Sonnet-judge, post-fix — solid (ADDENDUM 7 cells).
+- **Qwen3-235B 45% → 0/75** (45% is a pre-fix floor; defended 0/75 real).
+- **Sonnet 4.6 AgentLAB backfire** (2/50 → 12/50) and **Opus 4.7 AgentLAB floor**
+  (0/30) — confirmed from `agentlab-summary-*.json`.
+
+### Acceptance
+
+Append an Opus-4.8 (+ matched 4.7 / Sonnet 4.6) block to §6 with baseline vs
+defended on T3e (both metrics) and strat-50 AgentLAB (per-attack-type), Wilson
+intervals + `build`. The defence-paper frontier edits are **on hold** until this
+lands; the open-weights spine ships independently.
