@@ -660,3 +660,34 @@ stronger than DeepSeek-V3.2 (`65 %→6 %`). Re-add Qwen3-235B to `tab:fullmap` a
    localisation and the promptarmor null; flag the N=42 IT under-fill.
 3. **Supplementary:** the opus-4-7/sonnet-4-6 T3e controls give a clean
    post-fix Anthropic-frontier disclosure trio (all overlapping, all 0 % exfil).
+
+---
+
+## ADDENDUM 10 (2026-06-09) — complete the errored Opus 4.8 strat-50 AgentLAB intent-tracker arm (N=42 → 50)
+
+**Context.** The strat-50 AgentLAB Opus 4.8 run
+(`results/p15b-2026-06-09-agentlab-opus48-strat50`, harness v0.1.565) completed
+the **none** and **PromptArmor** arms at 50/50, but the **intent-tracker** arm
+errored on **8 trajectories** (n=42/50). This is the load-bearing defence
+comparison (none 8/50; IT 1/42; memory_poisoning 8/10 → 0/7), so the under-fill
+should be closed for a balanced 50/50 rather than carried as a paper caveat.
+
+**Request.** Re-run the 8 errored intent-tracker trajectories (or the whole IT
+arm) on the **hang-fixed executor (v0.1.578, commit c6a058312)** — the
+backgrounded-daemon hang is the likely cause of the errors — same config
+(Sonnet 4.6 judge, prompt v2, Cohere Embed v4). Per-attack-type shortfall:
+
+| Attack type | IT now | target | note |
+|---|---|---|---|
+| memory_poisoning | 7/10 | 10 | **load-bearing** — 8/10 in `none`, 0/7 in IT; complete to confirm the kill |
+| task_injection | 7/10 | 10 | |
+| tool_chaining | 9/10 | 10 | |
+| objective_drifting | 9/10 | 10 | |
+
+Confirmed-missing scenarios include `memory_poisoning-api_server-3`,
+`objective_drifting-ci_pipeline-9`, `task_injection-ci_pipeline-4`.
+
+**Acceptance.** IT arm at n=50; regenerate the strat-50 summary so the Opus 4.8
+AgentLAB cell reports a balanced none/IT/PromptArmor comparison (and reconcile the
+§6 note's "11 %→3 %" against the verified 50/50 summary — the per-cell summary
+reads none 8/50=16 % → IT 1/42).
