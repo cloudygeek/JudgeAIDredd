@@ -213,6 +213,20 @@ const TOOL_SPECS = [
 // throughput on cells where the agent attempted exfil. Behaviour-equivalent
 // to the previous execSync wrapper: same timeout, same buffer cap, same
 // exit-code-on-failure return shape.
+//
+// HANG FIX (2026-06-09): the first spawn version resolved on the child's
+// "close" event, which fires only once ALL stdio pipes hit EOF. When the
+// agent backgrounded a long-lived daemon (`node server.js &`, then `curl
+// localhost:3000`), the daemon inherited the shell's stdout pipe and kept it
+// open forever — so "close" never fired, the await hung, and the whole rep
+// loop wedged indefinitely (observed: 4 converse cells frozen 20–36h on the
+// migration/server scenarios). Fixes:
+//   1. spawn detached → the child leads its own process group, so we can
+//      SIGKILL the WHOLE group (daemon included), not just the foreground sh.
+//   2. resolve on "exit" (foreground process ended) rather than "close",
+//      with a short grace window for buffered stdout to drain. "close" still
+//      resolves immediately when it fires first (the normal, fast path).
+//   3. the timeout killer also targets the process group.
 function execAsync(
   cmd: string,
   cwd: string,
@@ -224,11 +238,31 @@ function execAsync(
     const child = spawn("/bin/sh", ["-c", cmd], {
       cwd,
       env: shellEnv ?? { ...process.env, HOME: process.env.HOME ?? "/tmp" },
+      // Own process group so we can reap backgrounded grandchildren (daemons
+      // the agent spins up with `&`) by killing the negative PID.
+      detached: true,
     });
     let stdout = "";
     let stderr = "";
     let truncated = false;
     let timedOut = false;
+    let settled = false;
+
+    // Kill the child AND any process it backgrounded. With detached:true the
+    // child is its own group leader, so -pid targets the whole group.
+    const killGroup = (signal: NodeJS.Signals) => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        // group already gone — fall back to the direct child
+        try {
+          child.kill(signal);
+        } catch {
+          // ignore — already exited
+        }
+      }
+    };
 
     const onChunk = (which: "stdout" | "stderr") => (data: Buffer) => {
       const target = which === "stdout" ? stdout : stderr;
@@ -247,15 +281,16 @@ function execAsync(
 
     const killer = setTimeout(() => {
       timedOut = true;
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // ignore — child may have already exited
-      }
+      killGroup("SIGKILL");
     }, timeoutMs);
 
-    child.on("close", (code) => {
+    const settle = (code: number | null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(killer);
+      // Reap anything the command left backgrounded so it can't hold pipes
+      // open (or leak across reps). Best-effort.
+      killGroup("SIGKILL");
       const status = code ?? 1;
       const tail = truncated ? "\n[truncated]" : "";
       if (timedOut) {
@@ -269,9 +304,20 @@ function execAsync(
       } else {
         resolvePromise((stdout + tail) || "(no output)");
       }
+    };
+
+    // "close" is the clean path (all pipes EOF'd) — resolve immediately when
+    // it fires. "exit" is the backstop: the foreground process ended but a
+    // backgrounded daemon may still hold a pipe, so "close" would never come.
+    // On exit, give buffered stdout a brief window to drain, then settle.
+    child.on("close", (code) => settle(code));
+    child.on("exit", (code) => {
+      setTimeout(() => settle(code), 150);
     });
 
     child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(killer);
       resolvePromise(`Error: ${err.message}`);
     });
