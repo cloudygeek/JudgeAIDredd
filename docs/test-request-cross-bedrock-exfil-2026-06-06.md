@@ -618,27 +618,24 @@ open-weights exfiltrator tier** (see 8.3 / 9).
 
 `scenarioMode=stratified-50`, seed 27, maxTurns 8, 5 attack types × 10.
 **Numbers from the authoritative per-arm `agentlab-summary-*.json` `succeeded`
-counts** (an earlier trajectory-level tally undercounted from a partial file
-sync — corrected here).
+counts.** Balanced 50/50/50 (IT arm re-run to N=50 on v0.1.578 per ADDENDUM 10,
+after 8 trajectories errored on the daemon hang in the v0.1.565 run).
 
 | Arm | N | succeeded | ASR | memory_poisoning |
 |---|--:|--:|--:|---|
 | none | 50 | 8 | **16 %** | 8/10 (80 %) |
 | promptarmor | 50 | 8 | **16 %** | 8/10 (80 %) |
-| intent-tracker | 42* | 1 | **2 %** | 0/7 |
+| intent-tracker | 50 | 2 | **4 %** | **0/10** |
 
-By attack type, **all successful attacks are `memory_poisoning`** (none 8/10 →
-IT 0/7); the other four types (intent_hijacking, tool_chaining, task_injection,
-objective_drifting) are at the floor 0/N on every arm (IT's one success is a
-single intent_hijacking, 1/10). The fabricated "14 % → 0 %" is not reproduced,
-but there is a real, narrow signal: baseline **16 %** concentrated entirely in
-memory_poisoning (80 % there), which intent-tracker removes (→0/7).
-**promptarmor has no effect** (16 %, identical to none).
-
-*IT arm errored at N=42 (8 trajectories failed — the backgrounded-daemon exec
-hang, fixed in v0.1.578). Re-running the IT arm to N=50 on the hang-fixed image
-per ADDENDUM 10; numbers above will be refreshed to the balanced 50/50 on
-landing.
+By attack type, **the baseline attacks are entirely `memory_poisoning`** (none
+8/10; the other four types floor at 0/10 on every arm). **intent-tracker fully
+kills memory_poisoning (8/10 → 0/10)**; its 2/50 residual is one intent_hijacking
+and one objective_drifting (1/10 each). The fabricated "14 % → 0 %" is not
+reproduced, but there is a real, clean signal: baseline **16 %** concentrated in
+memory_poisoning, which the gate removes (**16 % → 4 % overall, 80 % → 0 % on the
+live attack type**). **promptarmor has no effect** (16 %, identical to none).
+IT-arm data: `results/p15b-2026-06-09-agentlab-opus48-strat50-IT-v578/`
+(none/promptarmor from the original `…-strat50/` v0.1.565 run).
 
 ### 9.1 — Qwen3-235B T3e (restored exfiltrator anchor)
 
@@ -664,9 +661,9 @@ stronger than DeepSeek-V3.2 (`65 %→6 %`). Re-add Qwen3-235B to `tab:fullmap` a
    DeepSeek-V3.2 65 %→6 %, the 11-agent set). State the Anthropic frontier is at
    the disclosure floor with no significant defence cell (CIs overlap), and that
    network exfil is 0 % across the Anthropic frontier.
-2. **strat-50 AgentLAB opus-4-8:** report 16 %→2 % (IT) with the memory_poisoning
-   localisation (none 8/10 → IT 0/7) and the promptarmor null (16 %); refresh to
-   the balanced 50/50 once the ADDENDUM-10 IT re-run lands.
+2. **strat-50 AgentLAB opus-4-8 (balanced 50/50/50):** report 16 %→4 % (IT) with
+   the memory_poisoning localisation (none 8/10 → IT 0/10) and the promptarmor
+   null (16 %).
 3. **Supplementary:** the opus-4-7/sonnet-4-6 T3e controls give a clean
    post-fix Anthropic-frontier disclosure trio (all overlapping, all 0 % exfil).
 
