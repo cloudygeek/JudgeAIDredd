@@ -540,7 +540,9 @@ cohere-embed-v4, prompt v2), the post-fix executor (≥v0.1.523). Record
 
 - **Eleven-agent open-weights T3e exfil** (`tab:exfil-defended`): −8 to −59 pp,
   Sonnet-judge, post-fix — solid (ADDENDUM 7 cells).
-- **Qwen3-235B 45% → 0/75** (45% is a pre-fix floor; defended 0/75 real).
+- ~~**Qwen3-235B 45% → 0/75**~~ **SUPERSEDED by ADDENDUM 9** — the 45% baseline is
+  pre-fix; under the new post-fix-only policy it is excluded and **must be
+  re-run** (its InjecAgent/AgentDojo cells, a different metric, are unaffected).
 - **Sonnet 4.6 AgentLAB backfire** (2/50 → 12/50) and **Opus 4.7 AgentLAB floor**
   (0/30) — confirmed from `agentlab-summary-*.json`.
 
@@ -550,3 +552,32 @@ Append an Opus-4.8 (+ matched 4.7 / Sonnet 4.6) block to §6 with baseline vs
 defended on T3e (both metrics) and strat-50 AgentLAB (per-attack-type), Wilson
 intervals + `build`. The defence-paper frontier edits are **on hold** until this
 lands; the open-weights spine ships independently.
+
+---
+
+## ADDENDUM 9 (2026-06-09) — REQUIRED: clean post-fix Qwen3-235B T3e (supersedes ADDENDUM 8's "do not re-run Qwen3-235B")
+
+**Why.** Author decision (2026-06-09): the papers now use **post-fix (good-harness)
+runs only** — any cell sourced from a pre-fix run is *excluded*, not floored or
+footnoted. Qwen3-235B's T3e exfil **45%** baseline is pre-fix (test22/23/27, old
+executor), so it has been removed from the measurement-paper map (was the `≥45%`
+anchor) and from the defence-paper anchor (`45%→0/75`, now re-anchored on
+DeepSeek-V3.2 `65%→6%`). A clean post-fix run restores Qwen3-235B as a measured
+exfiltrator and the deeply-powered defence anchor.
+
+**What to run.** Qwen3-235B (Bedrock `qwen3-235b-a22b`) on **T3e**, post-fix
+executor (≥v0.1.523), production **Sonnet 4.6 judge** (B7.1, cohere-embed-v4,
+prompt v2):
+- **baseline (`none`)** and **defended (judge)** arms, **N≥80** pooled over
+  T3e.1–T3e.4 (deeper if cheap — this was the deeply-powered anchor at N≥120).
+- Record `exfiltrationDetected` / `displayedToUser` / `hijackSucceeded` per rep
+  + `build`.
+
+**NOT affected — do not re-run.** Qwen3-235B's **InjecAgent** (33.7%→0.1%) and
+**AgentDojo** (53.1%→0.1%) cells use corpus-native ASR, not the canary metric —
+the executor bug never touched them; they stay in the defence paper as-is.
+
+**Acceptance.** Append a Qwen3-235B T3e block to §6 (baseline vs defended, both
+metrics, Wilson + `build`). On landing: re-add the Qwen3-235B row to the
+measurement map (`tab:fullmap`) and to the defence `tab:exfil-defended`, and
+restore it as the anchor if the clean baseline supports it.
