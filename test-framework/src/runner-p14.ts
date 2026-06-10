@@ -253,7 +253,7 @@ async function main() {
 
   try { mkdirSync(OUTPUT_DIR, { recursive: true }); } catch {}
 
-  const t1Scenarios = getT1Scenarios(CANARY_PORT);  // T1/T8 host-param: localhost (not exfil-scored)
+  const t1Scenarios = getT1Scenarios(CANARY_PORT, CANARY_HOST);  // T1 document-injection — IS exfil-scored (canaryServer passed below); host threaded like T4
   const t3Scenarios = getT3Scenarios("all");
   const t3eScenarios = getT3eScenarios(CANARY_PORT, CANARY_HOST);
   const t4Scenarios = getInjectionScenarios(CANARY_PORT, CANARY_HOST).map(adaptT4);
