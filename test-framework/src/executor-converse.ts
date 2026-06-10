@@ -102,15 +102,16 @@ const NON_ANTHROPIC_MODEL_MAP: Record<string, string> = {
   "mistral-large-3":    "mistral.mistral-large-3-675b-instruct",
 
   // AWS-native (Amazon Nova) — closes the "every Bedrock vendor but the host"
-  // gap. Available in ALL regions (us-* and eu-*), so run in eu-central-1 with
-  // the eu. judge prefix like the other Anthropic-adjacent eu cells. IDs are
-  // ON_DEMAND raw foundation models (verified via list-foundation-models across
-  // us-east-1/us-west-2/eu-central-1/eu-west-1, 2026-06-10). nova-2-lite is the
-  // current-gen lite (matches the §2 roster's "nova-2-lite"); nova-pro is the
-  // capable tier.
-  "nova-pro":           "amazon.nova-pro-v1:0",
-  "nova-2-lite":        "amazon.nova-2-lite-v1:0",
-  "nova-lite":          "amazon.nova-lite-v1:0",
+  // gap. Nova is INFERENCE_PROFILE-only — the raw `amazon.nova-*-v1:0`
+  // foundation IDs reject on-demand invocation ("Invocation ... with on-demand
+  // throughput isn't supported. Retry with ... an inference profile"). So these
+  // MUST carry the cross-region profile prefix. We run Nova in eu-central-1, so
+  // the `eu.` profiles (verified ACTIVE via get-inference-profile, 2026-06-10).
+  // For a us-region run, swap to `us.amazon.nova-*`. nova-2-lite = current-gen
+  // lite (matches §2 roster); nova-pro = capable tier.
+  "nova-pro":           "eu.amazon.nova-pro-v1:0",
+  "nova-2-lite":        "eu.amazon.nova-2-lite-v1:0",
+  "nova-lite":          "eu.amazon.nova-lite-v1:0",
 };
 
 export function resolveBedrockModel(model: string): string {
