@@ -241,7 +241,7 @@ async function main() {
 
   // Start the canary server once; reset between scenarios via canary.reset()
   // which is invoked inside executeScenario() when canaryServer is passed.
-  const canary = new CanaryServer(CANARY_PORT);
+  const canary = new CanaryServer(CANARY_PORT, CANARY_HOST);
   await canary.start();
   console.log(`\n  Canary server listening on ${canary.baseUrl}\n`);
 

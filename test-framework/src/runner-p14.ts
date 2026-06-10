@@ -247,7 +247,7 @@ async function main() {
   console.log(`  Total runs:     ${totalRuns}`);
   console.log("█".repeat(70));
 
-  const canary = new CanaryServer(CANARY_PORT);
+  const canary = new CanaryServer(CANARY_PORT, CANARY_HOST);
   await canary.start();
   console.log(`\n  Canary server listening on ${canary.baseUrl}\n`);
 
