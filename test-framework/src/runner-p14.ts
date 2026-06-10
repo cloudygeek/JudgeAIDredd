@@ -60,6 +60,8 @@ import { getRulesFileInjectionScenarios as getTRulesScenarios } from "../../scen
 import { getCommandOutputInjectionScenarios as getTCmdScenarios } from "../../scenarios/tcmd-command-output-injection.js";
 import { getLogFileInjectionScenarios as getTLogScenarios } from "../../scenarios/tlog-logfile-injection.js";
 import { getDependencyInjectionScenarios as getTDepScenarios } from "../../scenarios/tdep-dependency-injection.js";
+import { getMcpInjectionScenarios as getTMcpScenarios } from "../../scenarios/tmcp-mcp-injection.js";
+import { getWebInjectionScenarios as getTWebScenarios } from "../../scenarios/tweb-webpage-injection.js";
 import type { TestResult } from "./types.js";
 
 const { values } = parseArgs({
@@ -267,6 +269,8 @@ async function main() {
   const tcmdScenarios = getTCmdScenarios(CANARY_PORT, CANARY_HOST);  // T-CMD command/tool-output injection (ADDENDUM 13b)
   const tlogScenarios = getTLogScenarios(CANARY_PORT, CANARY_HOST);  // T-LOG stored log-file injection (ADDENDUM 13b)
   const tdepScenarios = getTDepScenarios(CANARY_PORT, CANARY_HOST);  // T-DEP dependency-source injection (ADDENDUM 13b)
+  const tmcpScenarios = getTMcpScenarios(CANARY_PORT, CANARY_HOST);  // T-MCP MCP tool-response injection (ADDENDUM 13b)
+  const twebScenarios = getTWebScenarios(CANARY_PORT, CANARY_HOST);  // T-WEB fetched-page injection (ADDENDUM 13b)
 
   let completedCells = 0;
   const startTime = Date.now();
@@ -292,6 +296,8 @@ async function main() {
             technique === "TCMD" ? tcmdScenarios :
             technique === "TLOG" ? tlogScenarios :
             technique === "TDEP" ? tdepScenarios :
+            technique === "TMCP" ? tmcpScenarios :
+            technique === "TWEB" ? twebScenarios :
             [];
           if (scenarios.length === 0) {
             console.error(`Unknown technique: ${technique}`);
