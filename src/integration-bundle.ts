@@ -133,9 +133,16 @@ function renderSettings(dreddUrl: string): string {
       PostToolUse: [
         { matcher: "*", hooks: [{ type: "command", command: install, timeout: 10 }] },
       ],
+      PostToolUseFailure: [
+        { matcher: "*", hooks: [{ type: "command", command: install, timeout: 10 }] },
+      ],
+      InstructionsLoaded: [
+        { hooks: [{ type: "command", command: install, timeout: 5 }] },
+      ],
       Stop: [{ hooks: [{ type: "command", command: install, timeout: 10 }] }],
       SessionEnd: [{ hooks: [{ type: "command", command: install, timeout: 10 }] }],
       PreCompact: [{ hooks: [{ type: "command", command: install, timeout: 5 }] }],
+      Notification: [{ hooks: [{ type: "command", command: install, timeout: 5 }] }],
     },
     env: {
       DREDD_URL: dreddUrl,
@@ -438,12 +445,15 @@ the hook script wherever you see \`{HOOK_INSTALL_PATH}\` (it should be
 ${JSON.stringify(
   {
     hooks: {
-      UserPromptSubmit: [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 30 }] }],
-      PreToolUse:       [{ matcher: "*", hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 60 }] }],
-      PostToolUse:      [{ matcher: "*", hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 10 }] }],
-      Stop:             [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 10 }] }],
-      SessionEnd:       [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 10 }] }],
-      PreCompact:       [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 5 }] }],
+      UserPromptSubmit:   [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 30 }] }],
+      PreToolUse:         [{ matcher: "*", hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 60 }] }],
+      PostToolUse:        [{ matcher: "*", hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 10 }] }],
+      PostToolUseFailure: [{ matcher: "*", hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 10 }] }],
+      InstructionsLoaded: [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 5 }] }],
+      Stop:               [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 10 }] }],
+      SessionEnd:         [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 10 }] }],
+      PreCompact:         [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 5 }] }],
+      Notification:       [{ hooks: [{ type: "command", command: "{HOOK_INSTALL_PATH}", timeout: 5 }] }],
     },
     env: {
       DREDD_URL: dreddUrl,

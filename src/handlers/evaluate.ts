@@ -30,6 +30,7 @@ import {
   PATTERN_LEARNING_ENABLED,
   PATTERN_LEARNING_HARD,
   PROVENANCE_TAINT_ENABLED,
+  INSTRUCTIONS_EVIDENCE_ENABLED,
   CREDENTIAL_CONSENT_ENABLED,
   credentialProvider,
   byotStore,
@@ -48,6 +49,7 @@ import {
 import { APPROVAL_INTENT_DRIFT_THRESHOLD } from "../approval-store.js";
 import { cosineSimilarity } from "../ollama-client.js";
 import { buildTaintEvidence } from "../provenance-taint.js";
+import { buildInstructionEvidence } from "../instruction-evidence.js";
 import {
   effectiveMode,
   effectiveIntentHistoryMode,
@@ -464,6 +466,29 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     }
   }
 
+  // Instruction-load evidence (CLAUDE.md / rules goal-hijack channel).
+  // Derived purely from already-tracked session state — no extra Bedrock or
+  // Dynamo round-trip beyond the cheap getInstructionLoads getter (served
+  // from the warm in-container snapshot). Strictly fail-soft: any error
+  // leaves instructionsEvidence undefined and the judge runs as today.
+  let instructionsEvidence: string | undefined;
+  if (INSTRUCTIONS_EVIDENCE_ENABLED) {
+    try {
+      const loads = await tracker.getInstructionLoads(session_id);
+      const ev = buildInstructionEvidence(loads);
+      if (ev.count > 0) {
+        instructionsEvidence = ev.text;
+        console.log(
+          `  [${session_id.substring(0, 8)}] [INSTR] ${ev.count} instruction file(s) in judge evidence`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `  [${session_id.substring(0, 8)}] [INSTR] evidence build failed; skipping: ${(err as Error)?.message ?? err}`,
+      );
+    }
+  }
+
   const result = await interceptor.evaluate(
     session_id,
     tool_name,
@@ -480,6 +505,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     bedrockAuth,
     taintEvidence,
     cwdForEval,
+    instructionsEvidence,
   );
 
   // Spec §7: surface BYOT runtime failures on the config record so the

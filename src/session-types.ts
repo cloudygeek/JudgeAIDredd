@@ -163,6 +163,33 @@ export interface ToolCallRecord {
    *  call. matched = chain count; topSeverity/topSummary describe the
    *  highest-severity chain. Absent when the flag is off or no chain. */
   taint?: { matched: number; topSeverity: "high" | "medium"; topSummary: string };
+  /** Runtime outcome of the call, recorded at PostToolUseFailure time.
+   *  The PreToolUse decision row is created at /evaluate; the matching
+   *  PostToolUseFailure (paired by toolUseId) decorates it with the
+   *  failure. Absent means the call either succeeded or its outcome was
+   *  never reported. `error` is capped server-side. Only failures are
+   *  recorded today — successes are implicit. */
+  outcome?: { status: "error"; error: string; at: string };
+}
+
+/**
+ * A CLAUDE.md / .claude/rules/*.md instruction file entering the agent's
+ * context, reported by the InstructionsLoaded hook. Instruction files are
+ * a goal-hijack channel (a malicious repo's CLAUDE.md can redirect the
+ * agent), and Dredd otherwise has no visibility into them — the judge runs
+ * in clean context. Recorded per session and optionally surfaced to the
+ * judge as soft evidence (DREDD_INSTRUCTIONS_EVIDENCE_ENABLED).
+ */
+export interface InstructionLoadRecord {
+  /** Absolute path of the instruction file that was loaded. */
+  path: string;
+  /** Why it loaded: session_start | nested_traversal | path_glob_match |
+   *  include | compact. Free-form — passed through from the hook. */
+  reason: string;
+  /** Session turn at which the load was reported. */
+  turn: number;
+  /** ISO timestamp when the load was recorded. */
+  at: string;
 }
 
 export interface FileRecord {
@@ -357,6 +384,14 @@ export interface SessionState {
    * call (Phase 4) without ever hitting the cross-session table.
    */
   userPermissions: UserPermissionsLists | null;
+  /**
+   * Instruction files (CLAUDE.md / .claude/rules/*.md) reported loaded
+   * into the agent's context by the InstructionsLoaded hook. Append-only,
+   * bounded by MAX_INSTRUCTION_LOADS. Consulted at /evaluate when
+   * DREDD_INSTRUCTIONS_EVIDENCE_ENABLED is on to feed the judge soft
+   * evidence about what instructions are shaping the agent's behaviour.
+   */
+  instructionLoads: InstructionLoadRecord[];
 }
 
 // ---- Constants -----------------------------------------------------------
@@ -389,6 +424,15 @@ export const MAX_ACTIVE_INTENTS = 5;
  * at one prompt every 70 minutes, well past normal session length.
  */
 export const MAX_INTENT_HISTORY = 500;
+
+/**
+ * Cap on retained InstructionLoadRecord entries per session. Instruction
+ * files load rarely (session start + the odd nested CLAUDE.md), so 50 is
+ * generous; the most recent are kept on overflow. The judge-evidence
+ * builder dedupes by path on top of this, so the effective signal stays
+ * small even at the cap.
+ */
+export const MAX_INSTRUCTION_LOADS = 50;
 
 /**
  * How long after Stop a resolved entry stays on the stack before being

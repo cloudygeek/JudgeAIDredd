@@ -12,7 +12,7 @@ The deployed prod stack lives in AWS account `110745800154` (eu-west-1) and the 
 
 | Role | URL | Purpose |
 |---|---|---|
-| Hook | `https://dredd-hook.acta.io` | Hot path the CLI hook script POSTs to (`/intent`, `/evaluate`, `/track`, `/end`, `/pivot`, `/compact`, `/notification`). Bearer-API-key auth. |
+| Hook | `https://dredd-hook.acta.io` | Hot path the CLI hook script POSTs to (`/intent`, `/evaluate`, `/track`, `/end`, `/pivot`, `/compact`, `/notification`, `/instructions`). Bearer-API-key auth. |
 | Dashboard | `https://dredd.acta.io` | Operator UI (sessions, live feed, approvals, API keys, logs, integration bundle). Clerk-gated. |
 
 These hostnames are baked into `terraform/variables.tf` as the defaults for `hook_host` / `dashboard_host` (with `route53_zone_id` defaulting to the acta.io zone) — a fresh `tofu apply` in this repo targets prod with no extra flags. To deploy elsewhere, override those three vars in a `.tfvars`.
@@ -63,7 +63,8 @@ Three layers, all centred on **`SessionTracker`** (`src/session-tracker.ts`) whi
 Routes called by the hook script:
 - `POST /intent` ← UserPromptSubmit. Registers/updates intent. Detects confirmation prompts (`yes`, `ok`, `do it`, ... under 80 chars) and does NOT treat them as new intents. Persists `isConfirmation` on each TurnIntent so the dashboard's Goals view can mute confirmation noise.
 - `POST /evaluate` ← PreToolUse. Runs the three-stage pipeline. Returns `permissionDecision: allow|deny|ask`.
-- `POST /track` ← PostToolUse. Records tool result, accumulates file writes, parses env exports.
+- `POST /track` ← PostToolUse **and PostToolUseFailure**. On success: records tool result, accumulates file writes, parses env exports, promotes approvals. On failure (`is_error: true`, carrying `tool_error`): records the failure as the call's `outcome` (paired to the PreToolUse decision by `tool_use_id`, else a standalone row) and **skips** both accumulation (the side effects never happened) and approval promotion (a failure is not consent). Current Claude Code routes failed tool calls to PostToolUseFailure, not PostToolUse — without this branch they'd be invisible to Dredd.
+- `POST /instructions` ← InstructionsLoaded. Records a CLAUDE.md / `.claude/rules/*.md` file entering context (`file_path`, `load_reason`) onto the session's `instructionLoads`. Instruction files are a goal-hijack channel the judge can't otherwise see; surfaced in the session log and (behind `DREDD_INSTRUCTIONS_EVIDENCE_ENABLED`) fed to the judge as a server-trusted `<instructions_loaded>` block. See "Instruction-load judge evidence" below.
 - `POST /end` ← Stop. Writes full session log to `results/`.
 - `POST /pivot` ← explicit user direction change.
 - `POST /compact` ← PreCompact notification.
@@ -195,6 +196,7 @@ docker run -p 3000:3000 \
 | `DREDD_PATTERN_LEARNING_ENABLED` | `false` | Phase 8b umbrella flag. When `true`, `/evaluate` does one `listForScope` Query on `jaid-approvals` + one Bedrock embed per call, and folds matches with cosine ≥ 0.6 into the judge prompt as `<prior_approvals>` evidence of legitimate intent. Verdicts unchanged in soft-only mode |
 | `DREDD_PATTERN_LEARNING_HARD_ENABLED` | `false` | Phase 8b hard-mode flag. Only consulted when the umbrella is `true`. When `true`, ≥2 matches with cosine ≥ 0.85 short-circuit the pipeline to `stage=pattern-trust-allow` BEFORE Stage 1 policy — overrides Dredd's hard denies (`rm -rf`, dangerous combinations) by design. Flip only after observing soft-mode telemetry |
 | `DREDD_PROVENANCE_TAINT_ENABLED` | `false` | When `true`, `/evaluate` derives a deterministic data-flow graph from already-tracked session state (file reads, file writes, env vars) and injects any sensitive-source→sink chain — including multi-turn read→write→exec/egress chains that span many turns — into the judge prompt as a server-trusted `<provenance_alert>` block. Soft signal only: the judge still decides; no hard block. Fail-soft (analysis error → judge runs unchanged). No extra Bedrock/Dynamo calls. Default off; flip on after observing telemetry |
+| `DREDD_INSTRUCTIONS_EVIDENCE_ENABLED` | `false` | When `true`, `/evaluate` folds the session's recorded instruction-file loads (CLAUDE.md / rules, from the InstructionsLoaded hook → `/instructions`) into the judge prompt as a server-trusted `<instructions_loaded>` block — evidence about which instructions are shaping the agent, since the judge runs in clean context and can't see them. Soft signal only; the judge still decides. Recording + session-log surfacing happen regardless of the flag; only the judge-prompt injection is gated. Fail-soft, no extra Bedrock/Dynamo calls. Default off; flip on after observing telemetry |
 | `DREDD_MANAGED_ALLOW_SCOPE` | `conservative` | **Hook-side env var.** Picks which patterns Dredd splices into the project's `.claude/settings.local.json` on every UserPromptSubmit so Claude Code stops re-prompting for tool calls Dredd already authorises. `conservative` = ~19 read-only / inspection patterns (Read, Glob, Grep, awk/sed/grep/ls/cat/head/tail/wc/echo/pwd/file/date/jq/find/rg/node --check). `off` = never splice anything |
 | `DREDD_MANAGED_ALLOW_RULES` | (unset) | **Hook-side env var.** Optional operator override — a raw JSON array that replaces the scope-driven defaults. e.g. `'["Bash(awk:*)","Read"]'` |
 | `DREDD_MANAGED_DIR` | `$HOME/.claude/dredd/managed` | **Hook-side env var.** Where Dredd writes per-(project, session) sidecars tracking which allow rules it has injected. Also holds `manage.log` for audit |
@@ -231,7 +233,7 @@ Production deployments run **two services** behind separate URLs that share the 
 
 | Role | What it does |
 |---|---|
-| `hook` (default) | Hot path: `POST /intent`, `/evaluate`, `/track`, `/end`, `/pivot`, `/compact`, `/register`. Plus status: `/health`, `/api/health`, `/api/data-status`, `/api/whoami`. Plus runtime toggle: `POST /api/mode`. Plus the in-memory feed ring: `GET /api/feed`. Runs the Bedrock/Ollama preflight. Authenticates hook Bearer tokens. Landing page at `GET /` (Clerk-gated). |
+| `hook` (default) | Hot path: `POST /intent`, `/evaluate`, `/track`, `/instructions`, `/end`, `/pivot`, `/compact`, `/notification`, `/register`. Plus status: `/health`, `/api/health`, `/api/data-status`, `/api/whoami`. Plus runtime toggle: `POST /api/mode`. Plus the in-memory feed ring: `GET /api/feed`. Runs the Bedrock/Ollama preflight. Authenticates hook Bearer tokens. Landing page at `GET /` (Clerk-gated). |
 | `dashboard` | UI: `GET /` (dashboard HTML), `/api/sessions`, `/api/session-log/:id`, `/api/policies`, `/api/logs*`, `/api/integration-bundle`, `/api/whoami`. Clerk-gated. No judge preflight. |
 
 Cross-container calls go **from the browser**:
@@ -455,6 +457,19 @@ Augments the LLM judge with deterministic, explainable evidence of multi-turn da
 - **Wiring**: `/evaluate` (gated on `DREDD_PROVENANCE_TAINT_ENABLED`) builds the evidence from `getFilesRead` / `getWrittenFiles` / `getEnvVars` and threads it through `interceptor.evaluate` → `judge.evaluate`, where `renderProvenanceBlock` emits a server-trusted `<provenance_alert>` block at the head of the user prompt (same injection pattern as Phase 8b `<prior_approvals>`; system prompt stays static for cache stability).
 - **Soft-only by design**: no deterministic hard block ships in this phase — the evidence informs the judge, matching how every other Dredd feature soaked behind a flag before any enforcement.
 
+### 6. Instruction-load judge evidence
+
+Same shape as provenance taint, for a different blind spot: instruction files. A repo's `CLAUDE.md` (or `.claude/rules/*.md`) can silently redirect the agent, but the judge runs in clean context and never sees them.
+
+- **Hook**: the `InstructionsLoaded` event → `POST /instructions` records each load (`file_path`, `load_reason`) onto `SessionState.instructionLoads` (append-only, capped at `MAX_INSTRUCTION_LOADS`=50). Fire-and-forget; recording is unconditional.
+- **`src/instruction-evidence.ts`** — pure `buildInstructionEvidence(loads)`: dedupes by path, formats a compact list, returns `{ text, count, topSummary }`.
+- **Wiring**: `/evaluate` (gated on `DREDD_INSTRUCTIONS_EVIDENCE_ENABLED`) builds the evidence from `tracker.getInstructionLoads()` and threads it through `interceptor.evaluate` → `judge.evaluate`, where `renderInstructionsBlock` emits a server-trusted `<instructions_loaded>` block at the head of the user prompt (same injection pattern as `<provenance_alert>`; system prompt stays static for cache stability). The block tells the judge to weigh instructions loaded mid-session or from outside the project root as lower-trust.
+- **Soft-only by design**, fail-soft, no extra Bedrock/Dynamo calls. Surfaced on the dashboard session-detail "Instructions Loaded" section regardless of the flag.
+
+### PostToolUseFailure — failure visibility
+
+Current Claude Code routes a tool call that *fails* at runtime to the `PostToolUseFailure` hook, not `PostToolUse`. The hook POSTs these to `/track` with `is_error: true` + `tool_error`. The server records the failure as the call's `ToolCallRecord.outcome` (paired to the PreToolUse decision by `tool_use_id`; an unpaired failure becomes a standalone `stage="post-tool-failure"` row) and skips state accumulation + approval promotion. Persisted as append-only `FAIL#` Dynamo items merged onto the decision row at `loadSession` time. The dashboard Tool Calls table shows a red `failed` badge. This makes repeated failed exec/egress attempts (probing behaviour) visible to the judge's `recentTools` and to operators.
+
 ### Test surface
 
 ```
@@ -476,6 +491,9 @@ hooks/tests/test_byot_probe.ts                      # capability probe against s
 hooks/tests/test_byot_pipeline.ts                   # provider + service end-to-end round-trip      (5, npx tsx)
 hooks/tests/test_provenance_taint.ts                # buildTaintEvidence detection (incl. long-horizon)  (npx tsx)
 hooks/tests/test_provenance_pipeline.ts             # render block + interceptor→judge threading          (npx tsx)
+hooks/tests/test_posttoolfailure.ts                 # recordToolFailure decorate/fallback/cap            (16, npx tsx)
+hooks/tests/test_instruction_evidence.ts            # build + render + store + interceptor→judge thread  (20, npx tsx)
+hooks/tests/test_new_hook_events.sh                 # hook routing: PostToolUseFailure + InstructionsLoaded (13)
 ```
 
 All green at last full run. The bash suites are self-contained (mktemp sandboxes + python stub HTTP server); the `.ts` ones run via `npx tsx`.
@@ -492,7 +510,9 @@ All green at last full run. The bash suites are self-contained (mktemp sandboxes
 | `src/session-tracker.ts` | Central state (intent, files, env, drift, turn metrics) |
 | `src/pretool-interceptor.ts` | Three-stage pipeline orchestration |
 | `src/tool-policy.ts` | Policy rules + chained-command splitter + dangerous-combo detector |
-| `src/intent-judge.ts` | LLM judge with partial-JSON fallback |
+| `src/intent-judge.ts` | LLM judge with partial-JSON fallback; `renderProvenanceBlock` / `renderInstructionsBlock` server-trusted prompt blocks |
+| `src/instruction-evidence.ts` | Pure `buildInstructionEvidence` — InstructionsLoaded → judge `<instructions_loaded>` block |
+| `src/handlers/instructions.ts` | `POST /instructions` handler (InstructionsLoaded hook) |
 | `src/drift-detector.ts` | Embedding similarity via Ollama |
 | `src/ollama-client.ts` / `src/bedrock-client.ts` | Backend clients |
 | `src/sensitive-env.ts` | Sensitive env-var detection (name + value heuristics) for log redaction |

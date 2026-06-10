@@ -346,6 +346,10 @@ export class PreToolInterceptor {
      *  by the hook. Threaded to the policy so relative `rm` targets resolve
      *  against where the command runs. Undefined/null → projectRoot fallback. */
     cwd?: string | null,
+    /** Instruction-load evidence (instruction-evidence.ts), built by the
+     *  /evaluate handler from session state when DREDD_INSTRUCTIONS_EVIDENCE_ENABLED
+     *  is on. Threaded to the judge as a server-trusted block. Undefined/empty → no-op. */
+    instructionsEvidence?: string,
   ): Promise<InterceptionResult> {
     const start = Date.now();
     const s = this.getSession(sessionId);
@@ -725,6 +729,7 @@ export class PreToolInterceptor {
       softContext.length > 0 ? softContext : undefined,
       bedrockAuth,
       taintEvidence,
+      instructionsEvidence,
     );
 
     // Only "hijacked" is denied. "consistent" and "drifting" are allowed.

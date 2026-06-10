@@ -76,13 +76,14 @@ import type {
   FileRecord,
   FileReadRecord,
   EnvVarRecord,
+  InstructionLoadRecord,
   TurnMetrics,
   ImageBlock,
   UserPermissionsLists,
 } from "./session-store.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isSensitiveEnvVar } from "./sensitive-env.js";
-import { MAX_ACTIVE_INTENTS, MAX_INTENT_HISTORY } from "./session-tracker.js";
+import { MAX_ACTIVE_INTENTS, MAX_INTENT_HISTORY, MAX_INSTRUCTION_LOADS } from "./session-tracker.js";
 import {
   TTL_DAYS,
   TTL_SECONDS,
@@ -192,6 +193,7 @@ export class DynamoSessionStore implements SessionStore {
       lastPreToolUseAt: 0,
       lastStopAt: 0,
       userPermissions: null,
+      instructionLoads: [],
     };
   }
 
@@ -396,6 +398,15 @@ export class DynamoSessionStore implements SessionStore {
     const metricItems = items
       .filter((i) => typeof i.sk === "string" && i.sk.startsWith("METRIC#"))
       .sort((a, b) => (a.sk as string).localeCompare(b.sk as string));
+    // PostToolUseFailure outcomes are stored append-only as FAIL# items and
+    // merged into the matching tool decision (by toolUseId) below, keeping
+    // Dynamo append-only while still presenting a single decorated row.
+    const failItems = items
+      .filter((i) => typeof i.sk === "string" && i.sk.startsWith("FAIL#"))
+      .sort((a, b) => (a.sk as string).localeCompare(b.sk as string));
+    const instrItems = items
+      .filter((i) => typeof i.sk === "string" && i.sk.startsWith("INSTR#"))
+      .sort((a, b) => (a.sk as string).localeCompare(b.sk as string));
 
     const filesWritten = new Map<string, FileRecord>();
     for (const f of filesWrittenItems) {
@@ -457,6 +468,50 @@ export class DynamoSessionStore implements SessionStore {
       userPermissionMatch: t.userPermissionMatch,
       patternTrust: t.patternTrust,
       taint: t.taint,
+      outcome: t.outcome,
+    }));
+
+    // Merge FAIL# outcomes onto the matching decision row by toolUseId. If
+    // no decision row matches (the PreToolUse row was lost), append a
+    // standalone outcome-only entry so the failure isn't dropped — mirrors
+    // InMemorySessionStore.recordToolFailure's fallback.
+    for (const f of failItems) {
+      const outcome = {
+        status: "error" as const,
+        error: String(f.error ?? "").slice(0, 2000),
+        at: f.at ?? f.timestamp ?? "",
+      };
+      const tuid = f.toolUseId ?? null;
+      let merged = false;
+      if (tuid) {
+        for (let i = toolHistory.length - 1; i >= 0; i--) {
+          if (toolHistory[i].toolUseId === tuid) {
+            toolHistory[i].outcome = outcome;
+            merged = true;
+            break;
+          }
+        }
+      }
+      if (!merged) {
+        toolHistory.push({
+          turnNumber: f.turnNumber ?? 0,
+          tool: f.tool ?? "(unknown)",
+          input: f.input ?? {},
+          decision: "allow",
+          similarity: null,
+          timestamp: outcome.at,
+          toolUseId: tuid,
+          stage: "post-tool-failure",
+          outcome,
+        });
+      }
+    }
+
+    const instructionLoads: InstructionLoadRecord[] = instrItems.map((r) => ({
+      path: r.path,
+      reason: r.reason ?? "",
+      turn: r.turn ?? 0,
+      at: r.at ?? "",
     }));
 
     const turnIntents: TurnIntent[] = turns.map((t) => ({
@@ -577,6 +632,7 @@ export class DynamoSessionStore implements SessionStore {
       lastStopAt: meta?.lastStopAt ?? 0,
       userPermissions:
         (meta?.userPermissions as SessionState["userPermissions"] | undefined) ?? null,
+      instructionLoads,
     };
 
     // Lazy migration trigger: if the legacy META blob is still
@@ -1747,6 +1803,49 @@ export class DynamoSessionStore implements SessionStore {
     return meta?.hijackStrikes ?? 0;
   }
 
+  /**
+   * PostToolUseFailure outcome. Stored append-only as a FAIL# item (mirrors
+   * recordFileRead's ts+seq sk pattern) and merged onto the matching tool
+   * decision at loadSession time by toolUseId. Append-only keeps the write
+   * path collision-free with no query-before-write; the read-side merge in
+   * loadSession reconstructs the single decorated row. Failures never touch
+   * the aggToolCalls counter — they annotate an already-counted call.
+   * Best-effort: a write error is logged, never thrown onto /track.
+   */
+  async recordToolFailure(
+    sessionId: string,
+    tool: string,
+    input: Record<string, unknown>,
+    toolUseId: string | null,
+    error: string,
+  ): Promise<void> {
+    try {
+      const meta = await this.getMeta(sessionId);
+      const turnNumber = meta?.currentTurn ?? 0;
+      const seq = this.nextToolSeq(sessionId, turnNumber); // separate sk namespace
+      await this.client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: {
+            pk: pk(sessionId),
+            sk: `FAIL#${new Date().toISOString()}#${pad(seq)}`,
+            turnNumber,
+            tool,
+            input: truncToolInput(input),
+            toolUseId: toolUseId ?? null,
+            error: String(error ?? "").slice(0, 2000),
+            at: new Date().toISOString(),
+            ttl: ttl(),
+          },
+        }),
+      );
+    } catch (err) {
+      console.warn(
+        `  [${sessionId.substring(0, 8)}] [FAIL] recordToolFailure write failed: ${(err as Error)?.message ?? err}`,
+      );
+    }
+  }
+
   // ---- files ----------------------------------------------------------
 
   async recordFileRead(sessionId: string, filePath: string, content: string): Promise<void> {
@@ -1976,6 +2075,45 @@ export class DynamoSessionStore implements SessionStore {
 
   async getSensitiveEnvVars(sessionId: string): Promise<EnvVarRecord[]> {
     return (await this.getEnvVars(sessionId)).filter((v) => v.isSensitive);
+  }
+
+  // ---- instruction loads ----------------------------------------------
+
+  async recordInstructionLoad(
+    sessionId: string,
+    path: string,
+    reason: string,
+  ): Promise<void> {
+    try {
+      const meta = await this.getMeta(sessionId);
+      const turnNumber = meta?.currentTurn ?? 0;
+      const seq = this.nextToolSeq(sessionId, turnNumber); // separate sk namespace
+      await this.client.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: {
+            pk: pk(sessionId),
+            sk: `INSTR#${new Date().toISOString()}#${pad(seq)}`,
+            path,
+            reason,
+            turn: turnNumber,
+            at: new Date().toISOString(),
+            ttl: ttl(),
+          },
+        }),
+      );
+    } catch (err) {
+      console.warn(
+        `  [${sessionId.substring(0, 8)}] [INSTR] recordInstructionLoad write failed: ${(err as Error)?.message ?? err}`,
+      );
+    }
+  }
+
+  async getInstructionLoads(sessionId: string): Promise<InstructionLoadRecord[]> {
+    const state = (await this.loadSession(sessionId)) ?? this.emptyState(sessionId);
+    // loadSession returns oldest-first; cap to the most recent for parity
+    // with the in-memory store's bound.
+    return state.instructionLoads.slice(-MAX_INSTRUCTION_LOADS);
   }
 
   // ---- turn metrics ---------------------------------------------------

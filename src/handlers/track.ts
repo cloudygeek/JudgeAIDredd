@@ -41,6 +41,35 @@ export async function handleTrack(req: IncomingMessage, res: ServerResponse) {
     return json(res, 400, { error: "Missing tool_name" });
   }
 
+  // PostToolUseFailure path. The tool was allowed at PreToolUse but failed
+  // at runtime. We DON'T run the file/env accumulation below — those side
+  // effects never happened (no file written, no env exported) — and we
+  // DON'T promote a pending approval, because a failure is not user
+  // consent. We DO record the failure so the judge's recentTools and the
+  // dashboard surface this call's outcome (repeated failed exec/egress is
+  // probing behaviour). Best-effort: never block the /track response.
+  if (body.is_error === true) {
+    try {
+      await tracker.recordToolFailure(
+        session_id,
+        tool_name,
+        (tool_input ?? {}) as Record<string, unknown>,
+        tool_use_id,
+        String(body.tool_error ?? ""),
+      );
+    } catch (err) {
+      console.warn(
+        `  [${session_id.substring(0, 8)}] [FAIL] recordToolFailure failed:`,
+        (err as Error)?.message ?? err,
+      );
+    }
+    // Drop the pending approval candidate without promoting it — the user
+    // never consented to a call that errored. Leaving it would let the
+    // NEXT (successful) call with a stale id promote against this failure.
+    if (tool_use_id) consumePendingApproval(session_id, tool_use_id);
+    return json(res, 200, {});
+  }
+
   if (tool_name === "Read") {
     await tracker.recordFileRead(
       session_id,

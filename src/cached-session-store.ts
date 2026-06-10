@@ -24,6 +24,7 @@
 
 import { randomUUID } from "node:crypto";
 import { DriftDetector } from "./drift-detector.js";
+import { MAX_INSTRUCTION_LOADS } from "./session-types.js";
 import type {
   SessionStore,
   DriftClassification,
@@ -34,6 +35,7 @@ import type {
   FileRecord,
   FileReadRecord,
   EnvVarRecord,
+  InstructionLoadRecord,
   TurnMetrics,
   ImageBlock,
   UserPermissionsLists,
@@ -126,6 +128,7 @@ export class CachedSessionStore implements SessionStore {
       lastPreToolUseAt: 0,
       lastStopAt: 0,
       userPermissions: null,
+      instructionLoads: [],
     };
   }
 
@@ -514,6 +517,44 @@ export class CachedSessionStore implements SessionStore {
     });
   }
 
+  async recordToolFailure(
+    sessionId: string,
+    tool: string,
+    input: Record<string, unknown>,
+    toolUseId: string | null,
+    error: string,
+  ): Promise<void> {
+    await this.backend.recordToolFailure(sessionId, tool, input, toolUseId, error);
+    // Mirror the decoration in the cached copy so a same-container read
+    // (the hot path — sticky sessions keep the judge reading from here)
+    // reflects the outcome without a reload round-trip.
+    const s = await this.getOrLoad(sessionId);
+    const outcome = {
+      status: "error" as const,
+      error: error.slice(0, 2000),
+      at: new Date().toISOString(),
+    };
+    if (toolUseId) {
+      for (let i = s.toolHistory.length - 1; i >= 0; i--) {
+        if (s.toolHistory[i].toolUseId === toolUseId) {
+          s.toolHistory[i].outcome = outcome;
+          return;
+        }
+      }
+    }
+    s.toolHistory.push({
+      turnNumber: s.currentTurn,
+      tool,
+      input,
+      decision: "allow",
+      similarity: null,
+      timestamp: outcome.at,
+      toolUseId: toolUseId ?? null,
+      stage: "post-tool-failure",
+      outcome,
+    });
+  }
+
   async recordHijackStrike(
     sessionId: string,
     threshold: number,
@@ -632,6 +673,31 @@ export class CachedSessionStore implements SessionStore {
 
   async getSensitiveEnvVars(sessionId: string): Promise<EnvVarRecord[]> {
     return (await this.getEnvVars(sessionId)).filter((v) => v.isSensitive);
+  }
+
+  // ---- instruction loads ------------------------------------------------
+
+  async recordInstructionLoad(
+    sessionId: string,
+    path: string,
+    reason: string,
+  ): Promise<void> {
+    await this.backend.recordInstructionLoad(sessionId, path, reason);
+    const s = await this.getOrLoad(sessionId);
+    s.instructionLoads.push({
+      path,
+      reason,
+      turn: s.currentTurn,
+      at: new Date().toISOString(),
+    });
+    if (s.instructionLoads.length > MAX_INSTRUCTION_LOADS) {
+      s.instructionLoads = s.instructionLoads.slice(-MAX_INSTRUCTION_LOADS);
+    }
+  }
+
+  async getInstructionLoads(sessionId: string): Promise<InstructionLoadRecord[]> {
+    const s = await this.getOrLoad(sessionId);
+    return s.instructionLoads;
   }
 
   // ---- turn metrics -----------------------------------------------------

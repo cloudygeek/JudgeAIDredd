@@ -26,6 +26,7 @@ import type {
   FileRecord,
   FileReadRecord,
   EnvVarRecord,
+  InstructionLoadRecord,
   TurnMetrics,
   SessionState,
   UserPermissionsLists,
@@ -39,6 +40,7 @@ export type {
   FileRecord,
   FileReadRecord,
   EnvVarRecord,
+  InstructionLoadRecord,
   TurnMetrics,
   SessionState,
   UserPermissionsLists,
@@ -317,6 +319,21 @@ export interface SessionStore {
     },
   ): Promise<void>;
 
+  /**
+   * Record the runtime failure of a tool call (PostToolUseFailure hook).
+   * Pairs with the PreToolUse decision by toolUseId and decorates that
+   * record's `outcome`. When no matching decision exists (e.g. the
+   * PreToolUse row was lost), a standalone outcome-only record is appended
+   * so the failure signal is never dropped. Best-effort: implementations
+   * must not throw on the /track path. `error` is capped by the impl. */
+  recordToolFailure(
+    sessionId: string,
+    tool: string,
+    input: Record<string, unknown>,
+    toolUseId: string | null,
+    error: string,
+  ): Promise<void>;
+
   recordHijackStrike(
     sessionId: string,
     threshold: number,
@@ -348,6 +365,18 @@ export interface SessionStore {
   recordEnvVar(sessionId: string, command: string): Promise<void>;
   getEnvVars(sessionId: string): Promise<EnvVarRecord[]>;
   getSensitiveEnvVars(sessionId: string): Promise<EnvVarRecord[]>;
+
+  // ---- instruction loads --------------------------------------------------
+  /** Record a CLAUDE.md / rules file entering context (InstructionsLoaded
+   *  hook). Append-only, bounded by MAX_INSTRUCTION_LOADS. Best-effort. */
+  recordInstructionLoad(
+    sessionId: string,
+    path: string,
+    reason: string,
+  ): Promise<void>;
+  /** Instruction files loaded this session, oldest-first. Consumed by the
+   *  judge-evidence builder at /evaluate when the feature flag is on. */
+  getInstructionLoads(sessionId: string): Promise<InstructionLoadRecord[]>;
 
   // ---- turn metrics & summaries ------------------------------------------
   recordTurnMetrics(

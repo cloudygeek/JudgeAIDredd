@@ -37,6 +37,7 @@ export type {
   FileRecord,
   FileReadRecord,
   EnvVarRecord,
+  InstructionLoadRecord,
   TurnMetrics,
   SessionState,
   UserPermissionsLists,
@@ -45,6 +46,7 @@ export {
   MAX_INTENT_STACK,
   MAX_ACTIVE_INTENTS,
   MAX_INTENT_HISTORY,
+  MAX_INSTRUCTION_LOADS,
   RESOLVED_INTENT_TTL_MS,
 } from "./session-types.js";
 
@@ -56,6 +58,7 @@ import type {
   FileRecord,
   FileReadRecord,
   EnvVarRecord,
+  InstructionLoadRecord,
   TurnMetrics,
   SessionState,
   UserPermissionsLists,
@@ -63,6 +66,7 @@ import type {
 import {
   MAX_ACTIVE_INTENTS,
   MAX_INTENT_HISTORY,
+  MAX_INSTRUCTION_LOADS,
   RESOLVED_INTENT_TTL_MS,
 } from "./session-types.js";
 
@@ -142,6 +146,7 @@ export class InMemorySessionStore implements SessionStore {
         lastPreToolUseAt: 0,
         lastStopAt: 0,
         userPermissions: null,
+        instructionLoads: [],
       });
     }
     return this.sessions.get(sessionId)!;
@@ -445,6 +450,75 @@ export class InMemorySessionStore implements SessionStore {
       patternTrust: extras?.patternTrust,
       taint: extras?.taint,
     });
+  }
+
+  /**
+   * Record the runtime failure of a tool call. Pairs with the PreToolUse
+   * decision by toolUseId and decorates its `outcome`; if no matching
+   * decision exists, appends a standalone outcome-only record so the
+   * signal is never lost. Failures don't count as new tool calls — they
+   * annotate an existing one — so this never advances any aggregate.
+   */
+  async recordToolFailure(
+    sessionId: string,
+    tool: string,
+    input: Record<string, unknown>,
+    toolUseId: string | null,
+    error: string,
+  ): Promise<void> {
+    const session = this.getSession(sessionId);
+    const outcome = {
+      status: "error" as const,
+      error: error.slice(0, 2000),
+      at: new Date().toISOString(),
+    };
+    if (toolUseId) {
+      for (let i = session.toolHistory.length - 1; i >= 0; i--) {
+        if (session.toolHistory[i].toolUseId === toolUseId) {
+          session.toolHistory[i].outcome = outcome;
+          return;
+        }
+      }
+    }
+    // No pairing — record a standalone failure entry. decision="allow"
+    // because the call DID run (PreToolUse let it through); the failure
+    // is its runtime outcome, not a Dredd verdict.
+    session.toolHistory.push({
+      turnNumber: session.currentTurn,
+      tool,
+      input,
+      decision: "allow",
+      similarity: null,
+      timestamp: outcome.at,
+      toolUseId: toolUseId ?? null,
+      stage: "post-tool-failure",
+      outcome,
+    });
+  }
+
+  /**
+   * Record an instruction file (CLAUDE.md / rules) entering context.
+   * Append-only, bounded by MAX_INSTRUCTION_LOADS (most-recent kept).
+   */
+  async recordInstructionLoad(
+    sessionId: string,
+    path: string,
+    reason: string,
+  ): Promise<void> {
+    const session = this.getSession(sessionId);
+    session.instructionLoads.push({
+      path,
+      reason,
+      turn: session.currentTurn,
+      at: new Date().toISOString(),
+    });
+    if (session.instructionLoads.length > MAX_INSTRUCTION_LOADS) {
+      session.instructionLoads = session.instructionLoads.slice(-MAX_INSTRUCTION_LOADS);
+    }
+  }
+
+  async getInstructionLoads(sessionId: string): Promise<InstructionLoadRecord[]> {
+    return this.getSession(sessionId).instructionLoads;
   }
 
   /**

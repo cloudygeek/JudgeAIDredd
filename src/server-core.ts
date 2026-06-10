@@ -739,6 +739,18 @@ console.log(
   `  [TAINT] Provenance-taint judge evidence: ${PROVENANCE_TAINT_ENABLED ? "ON" : "OFF (rollout)"}`,
 );
 
+// Instruction-load judge evidence: when on, /evaluate folds the session's
+// recorded CLAUDE.md / rules loads (from the InstructionsLoaded hook) into
+// the judge prompt as a server-trusted <instructions_loaded> block. Soft
+// signal only — the judge still decides. Recording + session-log surfacing
+// happen regardless of this flag; it only gates the judge-prompt injection.
+// Default off; flip on after observing telemetry.
+export const INSTRUCTIONS_EVIDENCE_ENABLED =
+  (process.env.DREDD_INSTRUCTIONS_EVIDENCE_ENABLED ?? "false").toLowerCase() === "true";
+console.log(
+  `  [INSTR] Instruction-load judge evidence: ${INSTRUCTIONS_EVIDENCE_ENABLED ? "ON" : "OFF (rollout)"}`,
+);
+
 // Credential-consent: when on (default), the approval layer keys on the
 // (credential-source, exact-host) pair from credential-flow.ts, and an
 // exact-pair match skips the intent-drift backstop (the pair IS the
@@ -1152,6 +1164,7 @@ export async function buildSessionLogShape(sessionId: string): Promise<Record<st
     hijackStrikes: state.hijackStrikes,
     lockedHijacked: state.lockedHijacked,
     toolHistory: state.toolHistory,
+    instructionLoads: state.instructionLoads ?? [],
     activeIntents,
     turnState: deriveTurnState({
       prevUserPromptAt: state.lastUserPromptAt,

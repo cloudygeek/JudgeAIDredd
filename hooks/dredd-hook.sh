@@ -42,6 +42,10 @@
 #       }]
 #     }
 #   }
+#
+# This script also handles PostToolUseFailure, InstructionsLoaded,
+# PreCompact, and Notification — see hooks/settings.json.example for the
+# full, copy-pasteable hook block wiring every event.
 # =============================================================================
 
 DREDD_URL="${DREDD_URL:-http://localhost:3001}"
@@ -833,6 +837,49 @@ case "$HOOK_EVENT" in
     echo '{}'
     ;;
 
+  "PostToolUseFailure")
+    # A tool call that Dredd allowed at PreToolUse FAILED at runtime.
+    # Claude Code routes failures here instead of PostToolUse, so without
+    # this branch failed calls are invisible to Dredd — and repeated failed
+    # exec/egress attempts are exactly the probing behaviour the judge
+    # should see. POST to /track with is_error=true: the server records the
+    # failure as the call's outcome but skips file/env accumulation (the
+    # side effects never happened) and skips approval promotion (a failure
+    # is not user consent).
+    TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
+    TOOL_INPUT=$(echo "$INPUT" | jq '.tool_input // {}')
+    TOOL_USE_ID=$(echo "$INPUT" | jq -r '.tool_use_id // empty')
+    # Error text lives under a few possible keys across CC versions; take
+    # the first non-empty. Cap to keep the row small.
+    TOOL_ERROR=$(echo "$INPUT" | jq -r '.tool_error // .error // (.tool_response.error?) // empty' | head -c 5000)
+
+    FAIL_REQ_FILE=$(mktemp -t dredd-fail.XXXXXX)
+    jq -n \
+      --arg sid "$SESSION_ID" \
+      --arg tn "$TOOL_NAME" \
+      --argjson ti "$TOOL_INPUT" \
+      --arg tuid "$TOOL_USE_ID" \
+      --arg te "$TOOL_ERROR" \
+      '{
+        session_id: $sid,
+        tool_name: $tn,
+        tool_input: $ti,
+        tool_use_id: (if $tuid == "" then null else $tuid end),
+        is_error: true,
+        tool_error: $te
+      }' >"$FAIL_REQ_FILE"
+
+    ( curl -s -X POST "$DREDD_URL/track" \
+        "${DREDD_CURL_ARGS[@]}" \
+        -H "Content-Type: application/json" \
+        --data-binary "@$FAIL_REQ_FILE" \
+        --connect-timeout 2 --max-time 5 > /dev/null 2>&1
+      rm -f "$FAIL_REQ_FILE" 2>/dev/null || true
+    ) &
+
+    echo '{}'
+    ;;
+
   "Stop")
     # Stop fires after every assistant turn (not at session end). We POST
     # to /stop so the server can mark the turn boundary — this is what
@@ -896,6 +943,27 @@ case "$HOOK_EVENT" in
       -d "$(jq -n --arg sid "$SESSION_ID" --arg msg "$MESSAGE" \
             '{session_id: $sid, message: $msg}')" \
       --connect-timeout 2 --max-time 5 > /dev/null 2>&1 &
+
+    echo '{}'
+    ;;
+
+  "InstructionsLoaded")
+    # A CLAUDE.md / .claude/rules/*.md file entered the agent's context.
+    # Instruction files are a goal-hijack channel (a malicious repo's
+    # CLAUDE.md can redirect the agent) and the judge — which runs in clean
+    # context — never sees them. Record the load so Dredd can surface it and
+    # (behind DREDD_INSTRUCTIONS_EVIDENCE_ENABLED) feed it to the judge as
+    # soft evidence. Fire-and-forget — informational, never blocks.
+    FILE_PATH=$(echo "$INPUT" | jq -r '.file_path // empty')
+    LOAD_REASON=$(echo "$INPUT" | jq -r '.load_reason // empty')
+    if [ -n "$FILE_PATH" ]; then
+      curl -s -X POST "$DREDD_URL/instructions" \
+        "${DREDD_CURL_ARGS[@]}" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n --arg sid "$SESSION_ID" --arg fp "$FILE_PATH" --arg lr "$LOAD_REASON" \
+              '{session_id: $sid, file_path: $fp, load_reason: $lr}')" \
+        --connect-timeout 2 --max-time 5 > /dev/null 2>&1 &
+    fi
 
     echo '{}'
     ;;

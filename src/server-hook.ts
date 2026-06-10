@@ -54,6 +54,7 @@ import { handleTrack } from "./handlers/track.js";
 import { handleEnd } from "./handlers/end.js";
 import { handleStop } from "./handlers/stop.js";
 import { handleNotification, handleNotificationsGet } from "./handlers/notification.js";
+import { handleInstructions } from "./handlers/instructions.js";
 import { handleSessionGet } from "./handlers/session-get.js";
 import { handlePivot, handleCompact } from "./handlers/pivot.js";
 import { handleScreen } from "./handlers/screen.js";
@@ -193,8 +194,8 @@ const server = createServer(async (req, res) => {
   <ul>
     <li><code>POST /intent</code> — UserPromptSubmit</li>
     <li><code>POST /evaluate</code> — PreToolUse (judge pipeline)</li>
-    <li><code>POST /track</code> — PostToolUse</li>
-    <li><code>POST /end</code> · <code>/pivot</code> · <code>/compact</code></li>
+    <li><code>POST /track</code> — PostToolUse · <code>/instructions</code> — InstructionsLoaded</li>
+    <li><code>POST /end</code> · <code>/pivot</code> · <code>/compact</code> · <code>/notification</code></li>
     <li><code>POST /screen</code> — PromptArmor detector (benchmark side-channel)</li>
     <li><code>GET /api/health</code> · <code>/api/whoami</code> · <code>/api/data-status</code></li>
     <li><code>GET /api/feed</code> · <code>POST /api/mode</code> · <code>POST /api/session-mode</code> · <code>GET /api/session-modes</code> <span style="color:#8b949e">(cross-origin from dashboard)</span></li>
@@ -770,6 +771,7 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
     if (req.method === "POST" && url.pathname === "/pivot")    return await handlePivot(req, res);
     if (req.method === "POST" && url.pathname === "/compact")  return await handleCompact(req, res);
     if (req.method === "POST" && url.pathname === "/notification") return await handleNotification(req, res);
+    if (req.method === "POST" && url.pathname === "/instructions") return await handleInstructions(req, res);
 
     if (req.method === "GET" && url.pathname.startsWith("/api/notifications/")) {
       const id = url.pathname.split("/api/notifications/")[1];
@@ -831,7 +833,8 @@ export async function main() {
     console.log(`\n  Endpoints:`);
     console.log(`    POST /intent    — UserPromptSubmit (register intent)`);
     console.log(`    POST /evaluate  — PreToolUse (evaluate tool call)`);
-    console.log(`    POST /track     — PostToolUse (record file/env state)`);
+    console.log(`    POST /track     — PostToolUse (record file/env state); is_error=PostToolUseFailure`);
+    console.log(`    POST /instructions — InstructionsLoaded (CLAUDE.md / rules judge evidence)`);
     console.log(`    POST /end       — Stop (write log, cleanup)`);
     console.log(`    POST /pivot     — explicit direction change`);
     console.log(`    POST /compact   — context compaction notification`);
