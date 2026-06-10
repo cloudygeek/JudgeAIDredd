@@ -58,6 +58,8 @@ import { getDocumentInjectionScenarios as getT1Scenarios } from "../../scenarios
 import { getTaskDescriptionInjectionScenarios as getT8Scenarios } from "../../scenarios/t8-task-description-injection.js";
 import { getRulesFileInjectionScenarios as getTRulesScenarios } from "../../scenarios/trules-rulesfile-injection.js";
 import { getCommandOutputInjectionScenarios as getTCmdScenarios } from "../../scenarios/tcmd-command-output-injection.js";
+import { getLogFileInjectionScenarios as getTLogScenarios } from "../../scenarios/tlog-logfile-injection.js";
+import { getDependencyInjectionScenarios as getTDepScenarios } from "../../scenarios/tdep-dependency-injection.js";
 import type { TestResult } from "./types.js";
 
 const { values } = parseArgs({
@@ -263,6 +265,8 @@ async function main() {
   const t8Scenarios = getT8Scenarios(CANARY_PORT);
   const trulesScenarios = getTRulesScenarios(CANARY_PORT, CANARY_HOST);  // T-RULES rules-file injection (ADDENDUM 13b headline)
   const tcmdScenarios = getTCmdScenarios(CANARY_PORT, CANARY_HOST);  // T-CMD command/tool-output injection (ADDENDUM 13b)
+  const tlogScenarios = getTLogScenarios(CANARY_PORT, CANARY_HOST);  // T-LOG stored log-file injection (ADDENDUM 13b)
+  const tdepScenarios = getTDepScenarios(CANARY_PORT, CANARY_HOST);  // T-DEP dependency-source injection (ADDENDUM 13b)
 
   let completedCells = 0;
   const startTime = Date.now();
@@ -286,6 +290,8 @@ async function main() {
             technique === "T8"  ? t8Scenarios :
             technique === "TRULES" ? trulesScenarios :
             technique === "TCMD" ? tcmdScenarios :
+            technique === "TLOG" ? tlogScenarios :
+            technique === "TDEP" ? tdepScenarios :
             [];
           if (scenarios.length === 0) {
             console.error(`Unknown technique: ${technique}`);
