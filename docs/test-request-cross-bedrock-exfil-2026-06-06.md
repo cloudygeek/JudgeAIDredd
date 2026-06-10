@@ -697,3 +697,55 @@ Confirmed-missing scenarios include `memory_poisoning-api_server-3`,
 AgentLAB cell reports a balanced none/IT/PromptArmor comparison (and reconcile the
 §6 note's "11 %→3 %" against the verified 50/50 summary — the per-cell summary
 reads none 8/50=16 % → IT 1/42).
+
+## ADDENDUM 11 (2026-06-09) — complete the T5 column: 4 missing (agent × T5) cells
+
+**Status (2026-06-10):** Qwen3-235B and Mistral-Large-3 T5 have since landed (clean
+v578, 33 % / 32 %) and are folded into the paper table; **only Opus 4.7 and
+Sonnet 4.5 remain outstanding.**
+
+**Context.** The measurement paper's full map (`tab:fullmap`, 29 agents) now carries
+T5 (multi-stage file exfiltration) on **27 of 29** agents. Four roster agents were
+initially T3e-only; two have since landed (✅ below), leaving Opus 4.7 and Sonnet 4.5:
+
+| Agent | T3e exfil (baseline) | T5 | Backend (per `model-access-2026-06-06`) |
+|---|---|---|---|
+| Claude Opus 4.7 | 0/80 | **gap** | Bedrock `anthropic.claude-opus-4-7` (eu-central-1) or Vertex |
+| Claude Sonnet 4.5 | 0/80 | **gap** | Bedrock `anthropic.claude-sonnet-4-5` (eu-central-1) or Vertex |
+| Qwen3-235B | 64 % | ✅ 33 % (06-10) | Bedrock `qwen.qwen3-235b-a22b-2507-v1:0` (eu-central-1) — Bedrock only |
+| Mistral-Large-3 | 33 % | ✅ 32 % (06-10) | Bedrock `mistral.mistral-large-3-675b-instruct` (us-east-1 / us-west-2) |
+
+> GLM-4.7-flash was previously a 5th gap but is **already covered** — clean post-fix
+> data exists (`p15b-2026-06-07-t5-sonnetjudge/glm-4-7-flash-v578/`, 21/60 = 35 %)
+> and has been folded into the table. No re-run needed there.
+
+**Why.** Coverage gaps, not blockers — all four ran fine on T3e. Two close
+load-bearing claims: Opus 4.7 + Sonnet 4.5 are the only Anthropic-frontier models
+asserted to sandbox out of T3e (0/80) **without** a T5 confirmation, so the §4.3
+"Anthropic frontier robust to *both* attack classes" currently rests only on
+Opus 4.5/4.6/4.8 + Sonnet 4.6 (all 0/60 T5). Qwen3-235B (64 % T3e) and
+Mistral-Large-3 (33 % T3e) are open-weights exfiltrators with no T5 point.
+
+**Request.** Run **T5.1, T5.2, T5.3** on the four agents, **both arms** (`none` +
+recommended PreToolUse / Sonnet 4.6 judge), **N=20 per scenario** (= N=60 per arm),
+on the current post-fix harness (v0.1.578+), Sonnet 4.6 judge, matching the existing
+T5 cells (`p15b-2026-06-07-t5-sonnetjudge` schema):
+
+```
+<t5-runner> --model <modelId> --scenarios T5.1,T5.2,T5.3 --reps 20 --defense none
+<t5-runner> --model <modelId> --scenarios T5.1,T5.2,T5.3 --reps 20 --defense B7.1
+```
+
+The measurement paper's `tab:fullmap` uses only the `none`-arm exfil cell; the
+defended arm serves the companion defence paper.
+
+**Acceptance.** Per-run JSONs carrying `exfiltrationDetected` / `displayedToUser` /
+`hijackSucceeded`, in a `p15b-2026-06-*-t5*` dir matching the existing schema.
+Hypotheses (not gates): Opus 4.7 / Sonnet 4.5 ≈ 0/60 (Anthropic-frontier floor, as
+their siblings); Qwen3-235B and Mistral-Large-3 non-zero (open-weights tier — by
+analogy to their T3e rates and sibling open-weights T5 cells, plausibly 30–90 %).
+
+**Paper placement.** Fills the four remaining T5 dashes in `tab:fullmap` (T5 → full
+29/29 coverage), lets the §4.4 Limitations line drop the "T5 covers 25 of 29"
+caveat, and firms up the §4.3 Anthropic-both-classes claim (Opus 4.7 / Sonnet 4.5)
+plus open-weights T5 breadth (Qwen3-235B, Mistral-Large-3).
