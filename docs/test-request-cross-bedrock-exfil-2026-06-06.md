@@ -832,3 +832,64 @@ AWS-native exfil data point — fold into the cross-vendor map on landing.
 metrics + `judge-fired`, all 11 cells. Nova: fold into `tab:fullmap` as the
 AWS-native row(s). Paper: add the turn-0-injection / egress-control limitation to
 §4.4 and the channel distinction to the threat-model section.
+
+## ADDENDUM 13 (2026-06-10) — threat-model pivot: drop trusted-channel goal-drift, build the indirect-injection map
+
+**Decision (p15b authors, confirmed).** Per the ADDENDUM-12 channel analysis,
+T3e/T5 deliver the malicious instruction through the **trusted user channel**
+(multi-turn goal-drift), not indirect prompt injection. The measurement paper is
+being **re-based on the injection threat model**: the exfil instruction must arrive
+via **untrusted content the agent ingests** (file/document, HTTP, MCP tool output,
+web-search/page). **T3e/T5 are dropped from the paper.** T4 (HTTP-injection) is the
+seed; this addendum requests the rest of the injection map. All four new vectors
+were author-approved; all corpora keep the dual metric (`exfiltrationDetected` +
+`displayedToUser`), `hijackSucceeded`, and `judge-fired`, on both arms (`none` +
+recommended PreToolUse / Sonnet 4.6 judge), post-fix harness (v0.1.591).
+
+| Corpus | Untrusted channel | Status / ask |
+|---|---|---|
+| **T4** HTTP-injection | poisoned HTTP response body | 10/11 done — **finish deepseek-v3.2** |
+| **T1** document/file-injection | README / design-doc / ticket / **PR / git-issue** | corpus exists, **0 post-fix runs** — **run across roster** |
+| **T-MCP** (new) | poisoned **MCP server tool response** | **build adapter + run** |
+| **T-WEB** (new) | poisoned **web-search result / fetched page** | **build adapter + run** |
+
+**Request.**
+1. **Finish T4** — deepseek-v3.2, T4.1–4.5, both arms, N=100 (1 cell).
+2. **Run T1 across the roster** (the p15b model families), both arms, N≥80. T1
+   reuses the `HijackScenario` shape with empty `hijackTurns`, so runner-p14
+   dispatch should treat it like T4 — no new adapter expected. **Add a T1.4
+   git-issue/PR variant** (a malicious GitHub issue/PR body the agent is asked to
+   triage or implement) — author-requested as its own realistic vector beyond the
+   T1.3 ticket.
+3. **Build + run T-MCP** — a controllable MCP test server whose tool response embeds
+   the injection; mirror T4's hiding variants (JSON field / comment / markdown /
+   payload-split / authority-spoof). Run the exfiltrator + frontier-control subset
+   first (qwen3-coder-480b, qwen3-235b, devstral-2-123b, glm-4.7-flash, gpt-oss-120b
+   vs opus-4-8 / opus-4-7 / sonnet-4-6), both arms, N≥80; expand to full roster if
+   signal.
+4. **Build + run T-WEB** — a web-search / page-fetch tool returning an
+   attacker-controlled page (injection in page text / HTML comment / a spoofed
+   "system note"). Same subset / arms / N as T-MCP.
+5. **Nova on the injection corpora** — extend nova-pro / nova-2-lite to **T4 + T1**
+   (not just T3e/T5); the AWS-native rows belong on the injection map.
+
+**READ FIRST (runner — before building MCP / T-WEB):**
+- Does the harness already have (a) an MCP-server test fixture and (b) a web-fetch /
+  search tool the scenario loop can point at attacker-controlled content? If the T4
+  HTTP-injection plumbing (canary server + tool-output capture + `judge-fired`)
+  generalises, T-MCP / T-WEB may be **config, not new code** — confirm before
+  estimating build cost.
+- Confirm T1 runs on v0.1.591 with dual-metric + `judge-fired` recording, as T4 does.
+
+**Acceptance.** Per-corpus, per-(model, arm) table: baseline/defended exfil%,
+disclosure%, hijack%, `judge-fired`%, N, Wilson CIs — in
+`p15b-2026-06-*-{t1,mcp,web}-sonnetjudge/` dirs matching the T4 schema. Flag the
+**turn-0-POST** cells (judge fires but the canary already left) — the same
+egress-control limitation T4.5 surfaced.
+
+**Paper placement.** The re-based `tab:fullmap` becomes the **indirect-injection
+map**: rows = models, columns = injection channels (file/T1, HTTP/T4, MCP, web) ×
+{exfil, disc, hij}. T3e/T5 drop out entirely. The two load-bearing findings carry
+over — the tier split (open-weights exfiltrate, Anthropic frontier refuses) already
+reproduces on T4, and the **turn-0 / egress-control** limit becomes a headline
+result rather than a footnote.
