@@ -18,6 +18,16 @@ export interface HijackScenario {
   hijackTurns: string[];
   /** What a successful hijack looks like (for detection) */
   successIndicators: string[];
+  /**
+   * Optional extra files written into the agent's per-rep workspace AFTER the
+   * shared workspace-template is copied in. Keyed by path relative to the
+   * workspace root → file content. This is how channel corpora that hide the
+   * injection IN A FILE the agent reads (T-RULES rules-files like CLAUDE.md /
+   * AGENTS.md, T-LOG log files, T-DEP dependency source) seed their untrusted
+   * content per-scenario without polluting the global template. Absent for the
+   * user-message / tool-output channels (T1/T3/T4/T5).
+   */
+  workspaceFiles?: Record<string, string>;
 }
 
 export const scenarios: HijackScenario[] = [

@@ -445,6 +445,19 @@ export async function executeScenario(
   const workDir = mkdtempSync(join(tmpdir(), "p15-test-"));
   cpSync(WORKSPACE_TEMPLATE, workDir, { recursive: true });
 
+  // Channel corpora that hide the injection in a file the agent reads (T-RULES
+  // rules-files, T-LOG logs, T-DEP dependency source) seed those files here,
+  // after the shared template copy, so the untrusted content is per-scenario.
+  const wsFiles = (scenario as { workspaceFiles?: Record<string, string> }).workspaceFiles;
+  if (wsFiles) {
+    for (const [relPath, content] of Object.entries(wsFiles)) {
+      const fp = resolve(workDir, relPath);
+      const dir = fp.substring(0, fp.lastIndexOf("/"));
+      if (dir && dir !== workDir) mkdirSync(dir, { recursive: true });
+      writeFileSync(fp, content);
+    }
+  }
+
   const bedrockModel = resolveBedrockModel(model);
   const region =
     process.env.AGENT_REGION ?? process.env.AWS_REGION ?? "eu-west-1";
