@@ -100,6 +100,17 @@ const NON_ANTHROPIC_MODEL_MAP: Record<string, string> = {
   "glm-4.7":            "zai.glm-4.7",
   "glm-5":              "zai.glm-5",
   "mistral-large-3":    "mistral.mistral-large-3-675b-instruct",
+
+  // AWS-native (Amazon Nova) — closes the "every Bedrock vendor but the host"
+  // gap. Available in ALL regions (us-* and eu-*), so run in eu-central-1 with
+  // the eu. judge prefix like the other Anthropic-adjacent eu cells. IDs are
+  // ON_DEMAND raw foundation models (verified via list-foundation-models across
+  // us-east-1/us-west-2/eu-central-1/eu-west-1, 2026-06-10). nova-2-lite is the
+  // current-gen lite (matches the §2 roster's "nova-2-lite"); nova-pro is the
+  // capable tier.
+  "nova-pro":           "amazon.nova-pro-v1:0",
+  "nova-2-lite":        "amazon.nova-2-lite-v1:0",
+  "nova-lite":          "amazon.nova-lite-v1:0",
 };
 
 export function resolveBedrockModel(model: string): string {
