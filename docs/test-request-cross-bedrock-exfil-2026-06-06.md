@@ -1186,3 +1186,37 @@ publication-ready:
 **Acceptance.** Crack cells at N≥40; a T-EMIT per-tag severity table; gpt-5.5 + fable-5 complete on the
 four crack vectors; TDELAY results; post-fix DNS cells. Feeds the "agent safety is not a scalar"
 section (F5–F8 of `FINDINGS_injection_map_2026-06-11.md`).
+
+## ADDENDUM 15 (2026-06-11) — FINAL WAVE: complete the matrix for publication
+
+**Status (verified from raw JSON).** The qualitative story is locked: the frontier is
+injection-robust (channel- AND egress-independent) but breaks **non-uniformly** on the
+instruction-decoupled / agent-as-vector cells, and this holds **cross-vendor** — gpt-5.5 matches
+the Anthropic frontier (TEGRESS 0/40, T-MCPDESC 0/10, TDELAY 0/20) yet cracks **T-SLOP 5/10** and
+**T-EMIT 7/20**. **Done since 14c (do not re-run):** TDELAY (frontier all 0/20, open-weights
+susceptible — confirms trigger-*timing* ≠ frontier-break, only payload-*decoupling* does); gpt-5.5
+on TEGRESS / T-MCPDESC / T-SLOP / T-EMIT / TDELAY; T-EMIT severity tags (emits are `eval-untrusted`
++ `ssrf` — a *real* output-hygiene weakness, opus-4-8 10/20 `eval-untrusted`, not soft).
+
+**These are the last runs needed to make the matrix publication-complete:**
+
+1. **N≥40 on the four crack cells** (≥80 preferred for the headline T-STAGE / T-SLOP). Top up
+   **T-STAGE** (TSTAGE.1+.2), **T-SLOP** (TSLOP.1), **T-EMIT** (TEMIT.1+.2), **T-MCPDESC** (TMCPDESC.1)
+   from N=10–20 → **both arms**, frontier (opus-4-8/4-7, sonnet-4-6) + deepseek-v3.2 / qwen3-coder-480b
+   controls. Pool into the existing `…-tstage/` and `…-p2345/` dirs. Tightens the intra-frontier-split
+   rates (opus-4-7 cracks T-STAGE+T-SLOP; opus-4-8 holds both; sonnet-4-6 splits).
+
+2. **Complete the frontier on the crack vectors:**
+   - **gpt-5.5 on T-STAGE** — the one remaining gap (it has every other crack vector).
+   - **fable-5 on all five crack vectors** (T-STAGE, T-SLOP, T-EMIT, T-MCPDESC, TEGRESS) — it is only
+     on the 8 instruction-channels so far; the four-properties decomposition needs its crack profile.
+   Both at N≥40, both arms.
+
+3. **DNS egress post-fix confirmation.** Confirm the TEGRESS DNS control cells (deepseek / qwen-coder)
+   were produced on v0.1.639+ (post the base32-truncation fix); re-run any pre-fix ones. Frontier
+   0/40 is unaffected — only the control per-egress DNS rate is at risk of under-count.
+
+**That completes the study.** After this wave, `tab:fullmap` (16 models × 8 channels) + the egress
+breakdown + the four crack vectors are at publication N across the full frontier (Opus 4.5–4.8,
+Sonnet 4.5/4.6, Fable 5, GPT-5.5), and the "agent-safety-is-not-a-scalar" decomposition (F5–F8 of
+`FINDINGS_injection_map_2026-06-11.md`) is print-ready. **No further test requests anticipated.**
