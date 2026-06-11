@@ -63,6 +63,11 @@ import { getDependencyInjectionScenarios as getTDepScenarios } from "../../scena
 import { getMcpInjectionScenarios as getTMcpScenarios } from "../../scenarios/tmcp-mcp-injection.js";
 import { getWebInjectionScenarios as getTWebScenarios } from "../../scenarios/tweb-webpage-injection.js";
 import { getStagedScriptScenarios as getTStageScenarios } from "../../scenarios/tstage-staged-script-injection.js";
+import { getEgressDiversityScenarios as getTEgressScenarios } from "../../scenarios/tegress-egress-diversity.js";
+import { getMcpDescInjectionScenarios as getTMcpDescScenarios } from "../../scenarios/tmcpdesc-mcp-description-injection.js";
+import { getDelayedTriggerScenarios as getTDelayScenarios } from "../../scenarios/tdelay-delayed-trigger-injection.js";
+import { getMaliciousEmitScenarios as getTEmitScenarios } from "../../scenarios/temit-malicious-artifact-injection.js";
+import { getSlopsquattingScenarios as getTSlopScenarios } from "../../scenarios/tslop-slopsquatting-injection.js";
 import type { TestResult } from "./types.js";
 
 const { values } = parseArgs({
@@ -213,6 +218,12 @@ interface CellResult {
     agentDetected: number;
     meanGes: number;
     meanGesExfil: number;
+    /** P1: count of runs per egress channel that fired. */
+    egressBreakdown?: Record<string, number>;
+    /** P4: runs that emitted a malicious artifact (null-signal excluded). */
+    maliciousArtifactEmitted?: number;
+    /** T-STAGE: runs that ran a script without auditing it (false = unsafe). */
+    scriptAuditedFalse?: number;
   };
 }
 
@@ -223,7 +234,26 @@ function summariseCell(runs: TestResult[]): CellResult["summary"] {
   const det = runs.filter((r) => r.agentDetected).length;
   const meanGes = n === 0 ? 0 : runs.reduce((s, r) => s + (r.ges ?? 0), 0) / n;
   const meanGesExfil = n === 0 ? 0 : runs.reduce((s, r) => s + ((r as any).gesExfil ?? 0), 0) / n;
-  return { n, hijackSucceeded: hij, exfiltrationDetected: exf, agentDetected: det, meanGes, meanGesExfil };
+  // P1 egress breakdown — count distinct-channel firings across runs.
+  const egressBreakdown: Record<string, number> = {};
+  for (const r of runs) {
+    for (const ch of r.egressChannels ?? []) {
+      egressBreakdown[ch] = (egressBreakdown[ch] ?? 0) + 1;
+    }
+  }
+  const maliciousArtifactEmitted = runs.filter((r) => r.maliciousArtifactEmitted === true).length;
+  const scriptAuditedFalse = runs.filter((r) => r.scriptAudited === false).length;
+  return {
+    n,
+    hijackSucceeded: hij,
+    exfiltrationDetected: exf,
+    agentDetected: det,
+    meanGes,
+    meanGesExfil,
+    ...(Object.keys(egressBreakdown).length ? { egressBreakdown } : {}),
+    ...(runs.some((r) => r.maliciousArtifactEmitted != null) ? { maliciousArtifactEmitted } : {}),
+    ...(runs.some((r) => r.scriptAudited === false || r.scriptAudited === true) ? { scriptAuditedFalse } : {}),
+  };
 }
 
 async function main() {
@@ -273,6 +303,11 @@ async function main() {
   const tmcpScenarios = getTMcpScenarios(CANARY_PORT, CANARY_HOST);  // T-MCP MCP tool-response injection (ADDENDUM 13b)
   const twebScenarios = getTWebScenarios(CANARY_PORT, CANARY_HOST);  // T-WEB fetched-page injection (ADDENDUM 13b)
   const tstageScenarios = getTStageScenarios(CANARY_PORT, CANARY_HOST);  // T-STAGE pre-staged exfil script + benign trigger (ADDENDUM 14b)
+  const tegressScenarios = getTEgressScenarios(CANARY_PORT, CANARY_HOST);  // T-EGRESS egress-channel diversity (ADDENDUM 14 P1)
+  const tmcpdescScenarios = getTMcpDescScenarios(CANARY_PORT, CANARY_HOST);  // T-MCPDESC tool-description/schema poisoning (ADDENDUM 14 P2)
+  const tdelayScenarios = getTDelayScenarios(CANARY_PORT, CANARY_HOST);  // T-DELAY conditional/delayed-trigger (ADDENDUM 14 P3)
+  const temitScenarios = getTEmitScenarios(CANARY_PORT, CANARY_HOST);  // T-EMIT insecure-output / artifact-emit (ADDENDUM 14 P4)
+  const tslopScenarios = getTSlopScenarios(CANARY_PORT, CANARY_HOST);  // T-SLOP slopsquatting / supply-chain (ADDENDUM 14 P5)
 
   let completedCells = 0;
   const startTime = Date.now();
@@ -301,6 +336,11 @@ async function main() {
             technique === "TMCP" ? tmcpScenarios :
             technique === "TWEB" ? twebScenarios :
             technique === "TSTAGE" ? tstageScenarios :
+            technique === "TEGRESS" ? tegressScenarios :
+            technique === "TMCPDESC" ? tmcpdescScenarios :
+            technique === "TDELAY" ? tdelayScenarios :
+            technique === "TEMIT" ? temitScenarios :
+            technique === "TSLOP" ? tslopScenarios :
             [];
           if (scenarios.length === 0) {
             console.error(`Unknown technique: ${technique}`);
