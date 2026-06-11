@@ -62,6 +62,7 @@ import { getLogFileInjectionScenarios as getTLogScenarios } from "../../scenario
 import { getDependencyInjectionScenarios as getTDepScenarios } from "../../scenarios/tdep-dependency-injection.js";
 import { getMcpInjectionScenarios as getTMcpScenarios } from "../../scenarios/tmcp-mcp-injection.js";
 import { getWebInjectionScenarios as getTWebScenarios } from "../../scenarios/tweb-webpage-injection.js";
+import { getStagedScriptScenarios as getTStageScenarios } from "../../scenarios/tstage-staged-script-injection.js";
 import type { TestResult } from "./types.js";
 
 const { values } = parseArgs({
@@ -271,6 +272,7 @@ async function main() {
   const tdepScenarios = getTDepScenarios(CANARY_PORT, CANARY_HOST);  // T-DEP dependency-source injection (ADDENDUM 13b)
   const tmcpScenarios = getTMcpScenarios(CANARY_PORT, CANARY_HOST);  // T-MCP MCP tool-response injection (ADDENDUM 13b)
   const twebScenarios = getTWebScenarios(CANARY_PORT, CANARY_HOST);  // T-WEB fetched-page injection (ADDENDUM 13b)
+  const tstageScenarios = getTStageScenarios(CANARY_PORT, CANARY_HOST);  // T-STAGE pre-staged exfil script + benign trigger (ADDENDUM 14b)
 
   let completedCells = 0;
   const startTime = Date.now();
@@ -298,6 +300,7 @@ async function main() {
             technique === "TDEP" ? tdepScenarios :
             technique === "TMCP" ? tmcpScenarios :
             technique === "TWEB" ? twebScenarios :
+            technique === "TSTAGE" ? tstageScenarios :
             [];
           if (scenarios.length === 0) {
             console.error(`Unknown technique: ${technique}`);
