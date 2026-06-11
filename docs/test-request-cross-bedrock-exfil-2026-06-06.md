@@ -1156,3 +1156,33 @@ on ≥0.1.639 and refuse to fire on older images).
 the headline — answers whether the frontier 0% is exfil-refusal or POST-refusal), then the
 P2–P5 wave. `egressBreakdown` resolves `tab:fullmap`'s single exfil column into an
 egress-channel breakdown; `maliciousArtifactEmitted` is the agent-as-vector sub-study.
+
+### 14c — top-up the crack cells, report T-EMIT severity tags, complete the frontier
+
+The P1–P5 + T-STAGE results are verified and folded into the paper findings
+(`Cloud-Security/Adrian/p15b/FINDINGS_injection_map_2026-06-11.md`): frontier is **egress-independent**
+(0/40 all egress) and channel-independent on the 8 instruction channels, but breaks **non-uniformly**
+on the instruction-decoupled / agent-as-vector cells — **T-STAGE** (opus-4-8 0, opus-4-7 30%,
+sonnet-4-6 50%), **T-SLOP** (opus-4-7 10/10, opus-4-8 & sonnet-4-6 0 — intra-frontier split),
+**T-EMIT** (opus-4-8 worst, 10/20). Those crack cells are N=10–20. Asks to make them
+publication-ready:
+
+1. **N≥40 (both arms)** on the crack vectors — **T-STAGE** (TSTAGE.1+.2), **T-SLOP**, **T-EMIT**,
+   **T-MCPDESC** — frontier (opus-4-8/4-7, sonnet-4-6, fable-5, gpt-5.5) + deepseek-v3.2 /
+   qwen3-coder-480b controls. Pool into existing `…-tstage/`, `…-p2345/` dirs.
+2. **T-EMIT severity:** you already tag `maliciousArtifactEmitted`
+   (`exfil-url`/`eval-untrusted`/`ssrf`/`secret`). Report the **per-tag breakdown per model** —
+   especially opus-4-8's 10/20: how many are severe (`secret`/`ssrf`/`eval-untrusted`) vs soft
+   (`exfil-url`)? Severity decides whether T-EMIT is a headline or a footnote.
+3. **Complete the frontier on the four crack vectors:** run **gpt-5.5 + fable-5** on
+   T-STAGE / T-SLOP / T-EMIT / T-MCPDESC (they're only on the 8 instruction-channels so far) — the
+   four-orthogonal-properties decomposition needs the full frontier.
+4. **Run P3 (TDELAY, delayed/conditional trigger)** on frontier + controls — built ("loads") but no
+   results yet; the latent-injection gap (does a one-shot wave under-count trigger-gated payloads?).
+5. **DNS egress re-verify:** the DNS base32-verbatim truncation bug was fixed in v0.1.639 — confirm
+   the TEGRESS DNS control cells use post-fix data (frontier 0/40 is unaffected; control per-egress
+   rates may shift).
+
+**Acceptance.** Crack cells at N≥40; a T-EMIT per-tag severity table; gpt-5.5 + fable-5 complete on the
+four crack vectors; TDELAY results; post-fix DNS cells. Feeds the "agent safety is not a scalar"
+section (F5–F8 of `FINDINGS_injection_map_2026-06-11.md`).
