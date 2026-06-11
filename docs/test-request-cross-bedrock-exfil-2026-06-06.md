@@ -978,3 +978,29 @@ capture; T-LOG = a file read) vs need new harness work? T-RAG/T-MEM need the
 retrieval/memory configs; T-IMG needs a vision agent. Flag build cost per corpus
 before the wave; T-RULES on the three Anthropic frontier cells is the one to run
 first regardless.
+
+### 13c — power top-up: WEB + MCP to N≥80, and the one missing cell
+
+The injection map (13b RESULTS) is well-powered on FILE (N=80), HTTP (N=100), and
+LOG/CMD/RULES (N=40), but **T-WEB and T-MCP were run at N=20** — Wilson half-width
+≈ ±20 pp, too wide to stand alone in the paper. One cell is also blank.
+
+**Request.**
+1. **Top up T-WEB and T-MCP to N≥80** (≈60 more reps/cell) across the same subset
+   already run — opus-4-8/4-7, sonnet-4-6, nova-pro/2-lite, gpt-oss-20b/120b,
+   glm-4.7-flash, mistral-large-3, nemotron, qwen3-235b, devstral-2-123b,
+   qwen3-coder-480b, deepseek-v3.2 — **both arms**, dual metric + `judge-fired`,
+   Sonnet 4.6 judge, v0.1.591. Brings WEB/MCP to ±11 pp, matching FILE. Pooling with
+   the existing N=20 is fine (same harness/judge/config) — continue into the
+   existing `…-tweb-sonnetjudge/` and `…-tmcp-sonnetjudge/` dirs.
+2. **Fill devstral-2-123b on T-RULES** (TRULES.1 CLAUDE.md + TRULES.2 AGENTS.md,
+   N=40, both arms) — the one blank cell in the map.
+
+**Acceptance.** No injection-map cell left at N=20: WEB/MCP at N≥80, devstral RULES
+at N=40; Wilson CIs recomputed per (model, channel).
+
+**(Optional, lower priority) full-roster.** The map currently covers the 14-model
+exfiltrator + frontier-control + Nova subset. Extending the injection corpora to the
+remaining p15b families (other Anthropic tiers, GPT-5.x, Gemini, the rest of
+Qwen/GLM/Kimi/DeepSeek-V3.1) would restore the old 29-agent breadth — flag if cheap,
+but the subset already covers every tier.
