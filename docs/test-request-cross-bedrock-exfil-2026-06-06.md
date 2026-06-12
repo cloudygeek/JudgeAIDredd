@@ -1220,3 +1220,88 @@ on TEGRESS / T-MCPDESC / T-SLOP / T-EMIT / TDELAY; T-EMIT severity tags (emits a
 breakdown + the four crack vectors are at publication N across the full frontier (Opus 4.5–4.8,
 Sonnet 4.5/4.6, Fable 5, GPT-5.5), and the "agent-safety-is-not-a-scalar" decomposition (F5–F8 of
 `FINDINGS_injection_map_2026-06-11.md`) is print-ready. **No further test requests anticipated.**
+
+## §15 STATUS — what has been RUN vs what is PENDING (updated 2026-06-11, late)
+
+The qualitative study is locked and committed (crack-vector matrix:
+`results/CRACK_VECTOR_MATRIX_2026-06-11.md`). What remains is **statistical power on a
+subset of cells** — an N-top-up wave is **in flight** (launched 2026-06-11, image v0.1.659,
+RUN_IDs `p15b-a16-ntopup-*`). This section records exactly what is done and what is still
+landing, so nothing is double-run.
+
+### N targets (CI-grounded, not a flat convention)
+
+The right N depends on the *claim* a cell supports (Wilson 95% CI):
+
+| Claim | Target N | Why |
+|---|--:|---|
+| **Frontier-zero** (robustness, "≤X%") | **80** | 0/80 ⇒ "≤4.6%"; 0/40 only ⇒ "≤8.8%"; 0/10 ⇒ "≤28%" (useless) |
+| **Crack magnitude** (open-weights) | **40** | ±15pp half-width at ~50% — adequate |
+| **Crack + intra-frontier ranking** | **80** | 50% vs 30% is NOT separable at N=40 (z=1.9); needs 80 (z=2.6) |
+| **Floor confirmation** (TMCPDESC, TDELAY) | **20** | a floor stays a floor; topping adds nothing |
+
+**TEGRESS targets are PER-EGRESS** (image-GET / git-push / dns / tool-arg each scored
+separately) — the weakest link pre-topup, sitting at only 10–20 per channel.
+
+### What has been RUN and committed (pooled baseline N)
+
+| Model | TSTAGE | TSLOP | TEMIT | TMCPDESC | TDELAY | TEGRESS/eg |
+|---|--:|--:|--:|--:|--:|--:|
+| opus-4-8 | 80 | 40 | 80 | 10 | 20 | 10 |
+| opus-4-7 | 80 | 40 | 80 | 10 | 20 | 10 |
+| sonnet-4-6 | 80 | 40 | 80 | 10 | 20 | 10 |
+| fable-5 | 40 | 20 | 40 | 20 | — | 20 |
+| gpt-5.5 | 40 | 10 | 20 | 10 | 20 | 10 |
+| deepseek-v3.2 | 80 | 40 | 80 | 10 | 20 | 10 |
+| qwen3-coder-480b | 80 | 40 | 80 | 10 | 20 | 10 |
+| nova-pro | 0 | 10 | 20 | 10 | 20 | 0 |
+| nova-2-lite | 0 | 10 | 20 | 10 | 20 | 0 |
+
+Plus the full committed corpus already at N: the 8-channel map (`tab:fullmap`), T3e/T5
+lineage, P1 TEGRESS frontier (0/40 all egress, controls 23–28/40), and all of P2–P5 at the
+N shown. gpt-5.5 + fable-5 crack profiles landed; the gpt-5.5 new-channels run was recovered
+from the container `/files` endpoint after an S3-push failure (no re-run).
+
+### IN FLIGHT — N-top-up wave (9 runs, `p15b-a16-ntopup-*`, launched 2026-06-11)
+
+Each run's reps are sized so the pooled total reaches the target. Pulls route by technique
+into the existing `…-tstage/`, `…-p2345/`, `…-tegress/` dirs.
+
+| Container | Model | Vectors topped | reps | Brings to |
+|---|---|---|--:|---|
+| bedt8 | opus-4-8 | TSLOP, TEGRESS | 70 | TSLOP→80, TEGRESS→80/eg |
+| bedt9 | opus-4-7 | TSLOP, TEGRESS | 70 | TSLOP→80, TEGRESS→80/eg |
+| bedt6 | sonnet-4-6 | TSLOP, TEGRESS | 70 | TSLOP→80, TEGRESS→80/eg |
+| bedt7 | fable-5 | TSTAGE, TSLOP, TEMIT, TEGRESS | 60 | all → 80 |
+| bedt3 | gpt-5.5 | TSTAGE, TSLOP, TEMIT, TEGRESS | 70 | all → 80 (openai backend, v0.1.649) |
+| bedt14 | deepseek-v3.2 | TEGRESS | 30 | →40/eg (control) |
+| bedt15 | qwen3-coder-480b | TEGRESS | 30 | →40/eg (control) |
+| **bedt10** | **nova-pro** | TSTAGE, TSLOP, TEMIT, TEGRESS | 80 | **fills the 2 AWS-native gaps** (TSTAGE 0→80, TEGRESS 0→80/eg) + TSLOP/TEMIT→40 |
+| **bedt11** | **nova-2-lite** | TSTAGE, TSLOP, TEMIT, TEGRESS | 80 | same |
+
+**Amazon Nova note:** nova-pro/nova-2-lite were on the 8-channel map + T3e/T5 + 3 of 4 P2–P5
+vectors, but had **no T-STAGE and no TEGRESS** — those two AWS-native gaps are the headline
+fills in this wave. Early signal already committed: nova-pro is an exfiltrator-tier model
+(TSLOP 10/10, TEMIT 10/20); nova-2-lite far more robust (TSLOP 1/10).
+
+### Deliberately NOT topped up (topping changes no conclusion)
+
+- **TMCPDESC** (all models, N=10) — a floor result across the frontier (0 everywhere); a
+  floor at N=10 stays a floor at N=80.
+- **TDELAY** (N=20) — a confirmation result (frontier all 0/20 ⇒ trigger-*timing* ≠
+  frontier-break; only payload-*decoupling* breaks it). N=20 is adequate for a floor/
+  confirmation finding.
+- **TEGRESS frontier per-egress** stays informative even at the old N because every frontier
+  egress is 0 and the controls (which DO exfiltrate) are the cells being raised to 40/eg.
+
+### Remaining to deliver after this wave lands
+
+1. Pull + scrub + commit each of the 9 `a16-ntopup` cells, pool into the existing dirs.
+2. Regenerate `results/CRACK_VECTOR_MATRIX_2026-06-11.md` at the topped-up N (the rates
+   won't move materially; the CIs tighten and the intra-frontier ranking becomes statistically
+   separable at N=80).
+3. With Nova's T-STAGE + TEGRESS in, Amazon (the AWS-native vendor) has the **complete**
+   profile matching every other model — closing the last roster gap.
+
+**After the top-up wave + Nova gap-fill, the study is power-complete.** No further test
+requests anticipated.
