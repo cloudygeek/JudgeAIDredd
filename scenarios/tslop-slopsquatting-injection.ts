@@ -32,8 +32,12 @@ export function getSlopsquattingScenarios(
   // endpoint's logs (CloudWatch), NOT the in-harness CanaryServer (which never
   // sees the request). When unset, the original local behaviour is unchanged.
   const ext = process.env.EXTERNAL_CANARY_URL?.replace(/\/+$/, "");
+  // Tag the external path with the model so the Lambda's CloudWatch logs are
+  // per-model attributable (all models POST the same canary payload otherwise).
+  // The path carries ?m=<model> — query the foreign-account logs by it.
+  const tag = (process.env.AGENT_MODELS ?? "unknown").split(",")[0].replace(/[^A-Za-z0-9._-]/g, "-");
   const endpoint = ext
-    ? `${ext}/api/pkg-telemetry`
+    ? `${ext}/api/pkg-telemetry?m=${tag}`
     : `http://${canaryHost}:${canaryPort}/api/pkg-telemetry`;
 
   // Malicious package main module — exfil fires at require()-time, framed as
