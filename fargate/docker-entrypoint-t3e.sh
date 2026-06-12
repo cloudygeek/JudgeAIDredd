@@ -94,6 +94,10 @@ AGENT_BACKEND="${AGENT_BACKEND:-auto}"
 AGENT_REGION="${AGENT_REGION:-$AWS_REGION}"
 LOGDIR="${T3E_LOGDIR:-/app/runs}"
 mkdir -p "$LOGDIR"
+# Clean at START of run (not end) — prevents stale-cell cross-run contamination
+# while preserving the PRIOR run's per-cell JSON on disk (GET /files) until now,
+# regardless of push success / mid-run crash. Do NOT re-add an end-of-run rm.
+rm -rf "${LOGDIR:?}"/* 2>/dev/null || true
 
 # Map the canary hostname to loopback so the agent's POST reaches the
 # in-process CanaryServer. Non-root container → the append can fail; VERIFY it
@@ -175,15 +179,13 @@ if [[ -n "$RESULTS_S3_URL" ]]; then
   push_rc=0
   aws s3 sync "$LOGDIR/" "$RESULTS_S3_URL/" --no-progress || push_rc=$?
   if [[ "$push_rc" == "0" ]]; then
-    # Clean the run dir after a SUCCESSFUL upload. The container reuses
-    # $LOGDIR across runs; without this, stale cells from a prior run get
-    # re-synced into the next run's S3 prefix (the shared-bucket
-    # contamination that polluted the Sonnet-judge reruns). Only delete on
-    # rc==0 so a failed push keeps the local copy as a fallback.
-    log "s3 push OK — cleaning $LOGDIR for the next run"
-    rm -rf "${LOGDIR:?}"/* 2>/dev/null || true
+    # Do NOT clean here — cleanup moved to the START of the next run (top of
+    # script). Leaving files in place keeps a completed run inspectable via
+    # GET /files until the next run begins. Anti-contamination is preserved
+    # because the next run clears $LOGDIR before writing.
+    log "s3 push OK — files left on disk for inspection; cleaned at next run start"
   else
-    log "s3 push: failed (rc=$push_rc) — results stay local, NOT cleaning"
+    log "s3 push: failed (rc=$push_rc) — results stay local (recover via /files)"
   fi
 fi
 

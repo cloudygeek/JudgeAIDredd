@@ -68,6 +68,18 @@ AGENT_REGION="${AGENT_REGION:-$AWS_REGION}"
 LOGDIR="${T5_LOGDIR:-/app/runs}"
 mkdir -p "$LOGDIR"
 
+# Clean the run dir at the START of a run, not the end. The container reuses
+# $LOGDIR across runs; clearing it here (before the runner writes anything)
+# prevents stale cells from a prior run being re-synced into THIS run's prefix
+# (shared-bucket contamination) — the same guarantee the old end-of-run clean
+# gave. The difference: the PREVIOUS run's per-cell JSON now survives on disk
+# (inspectable via GET /files) until the next run starts — regardless of whether
+# its S3 push succeeded, failed, or the container died mid-run. This is the
+# recovery path used when a push fails (see the gpt-5.5 /files recovery,
+# 2026-06-11). Do NOT re-add an end-of-run rm.
+log "cleaning $LOGDIR at run start (prior run's files were preserved until now)"
+rm -rf "${LOGDIR:?}"/* 2>/dev/null || true
+
 # Map the canary hostname to loopback. The container runs as non-root, so the
 # /etc/hosts append can fail (Permission denied) — and a failed mapping would
 # make the agent's exfil POST unresolvable, silently breaking exfil detection.
@@ -154,13 +166,13 @@ if [[ -n "$RESULTS_S3_URL" ]]; then
   push_rc=0
   aws s3 sync "$LOGDIR/" "$RESULTS_S3_URL/" --no-progress || push_rc=$?
   if [[ "$push_rc" == "0" ]]; then
-    # Clean the run dir after a SUCCESSFUL upload — the container reuses
-    # $LOGDIR across runs and would otherwise re-sync stale cells into the
-    # next run's prefix (shared-bucket contamination). Only on rc==0.
-    log "s3 push OK — cleaning $LOGDIR for the next run"
-    rm -rf "${LOGDIR:?}"/* 2>/dev/null || true
+    # Do NOT clean here. The run dir is now cleaned at the START of the next run
+    # (see top of script). Leaving the files in place means a completed run's
+    # per-cell JSON stays inspectable via GET /files until the next run begins —
+    # the recovery path when an S3 push fails (or the dashboard never pulled).
+    log "s3 push OK — files left on disk for inspection; cleaned at next run start"
   else
-    log "s3 push: failed (rc=$push_rc) — results stay local, NOT cleaning"
+    log "s3 push: failed (rc=$push_rc) — results stay local (recover via /files)"
   fi
 fi
 

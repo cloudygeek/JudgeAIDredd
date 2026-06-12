@@ -79,6 +79,10 @@ MAX_TOOL_LOOPS="${MAX_TOOL_LOOPS:-20}"
 LOGDIR="${TEST_FRAMEWORK_LOGDIR:-/app/runs}"
 
 mkdir -p "$LOGDIR"
+# Clean at START of run (not end) — anti-contamination preserved, but the prior
+# run's files survive on disk (GET /files) until now, regardless of push success
+# / mid-run crash. Do NOT re-add an end-of-run rm.
+rm -rf "${LOGDIR:?}"/* 2>/dev/null || true
 SUMMARY_LOG="$LOGDIR/${RUN_ID}-summary.log"
 
 RESULTS_S3_URL="${RESULTS_S3_URL:-s3://cko-results/mode4/${RUN_ID}}"
@@ -94,11 +98,9 @@ s3_push() {
   local push_rc=0
   aws s3 sync "$LOGDIR/" "$RESULTS_S3_URL/" --no-progress || push_rc=$?
   if [[ "$push_rc" == "0" ]]; then
-    # Clean the run dir after a SUCCESSFUL upload — the container reuses
-    # $LOGDIR across runs and would otherwise re-sync stale cells into the
-    # next run's prefix (shared-bucket contamination). Only on rc==0.
-    log "s3_sync: push OK — cleaning $LOGDIR for the next run"
-    rm -rf "${LOGDIR:?}"/* 2>/dev/null || true
+    # Do NOT clean here — cleanup moved to run START (top of script). Leaving
+    # files keeps a completed run inspectable via GET /files until the next run.
+    log "s3_sync: push OK — files left on disk for inspection; cleaned at next run start"
   else
     log "s3_sync: push failed (rc=$push_rc) — results stay local, NOT cleaning"
   fi
