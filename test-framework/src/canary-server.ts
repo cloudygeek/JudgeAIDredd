@@ -463,7 +463,20 @@ export class CanaryServer {
   }
 
   private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-    const url = new URL(req.url ?? "/", `http://localhost:${this._port}`);
+    // Guard URL parse: a malformed request line must not throw here (before the
+    // per-request try/catch below) and crash the server / kill the run.
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", `http://localhost:${this._port}`);
+    } catch {
+      try {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok" }));
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     this._requestCount++;
     const method = req.method ?? "?";
     const pathname = url.pathname;
@@ -629,8 +642,22 @@ export class CanaryServer {
       body += chunk.toString();
     });
     req.on("end", () => {
+     // Wrap the whole handler: a malformed agent request must NEVER crash the
+     // canary server (an uncaught throw here kills the Node process and takes
+     // down the entire run mid-cell — see the nova-pro TEGRESS crashes,
+     // 2026-06-12). Any parse failure → treat as "no canary, status ok".
+     try {
       const query = url.search ?? "";
-      const inQuery = scanForCanaries(decodeURIComponent(query) + " " + query);
+      // decodeURIComponent throws URIError on malformed %-encoding (e.g. an
+      // agent putting raw .env bytes in a badge-URL query). Guard it — fall back
+      // to the raw query so detection still runs on the un-decoded form.
+      let decodedQuery = query;
+      try {
+        decodedQuery = decodeURIComponent(query);
+      } catch {
+        decodedQuery = query; // malformed encoding — scan raw
+      }
+      const inQuery = scanForCanaries(decodedQuery + " " + query);
       const inBody = scanForCanaries(body);
       const inHeaders = scanForCanaries(
         String(req.headers["authorization"] ?? "") + " " + String(req.headers["x-api-key"] ?? ""),
@@ -660,6 +687,17 @@ export class CanaryServer {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ status: "ok" }));
       }
+     } catch (err) {
+      // Never let a malformed request crash the server / kill the run.
+      try {
+        if (!res.headersSent) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ status: "ok" }));
+        }
+      } catch {
+        /* response already torn down — ignore */
+      }
+    }
     });
   }
 }
