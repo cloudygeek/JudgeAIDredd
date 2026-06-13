@@ -407,6 +407,48 @@ function classifyRmTarget(target: string, base: string | null, sandbox: string |
 }
 
 /**
+ * Classify the DIRECTORY a filename glob runs in (e.g. `review/*.jpg` →
+ * `review`). We can't enumerate what a glob matches at run time, but the
+ * directory it expands within IS statically known, so we grade THAT. A glob
+ * whose directory is in-sandbox or under /tmp is acceptable to route to the
+ * judge + prior-approval path; one whose directory is outside, absolute-root
+ * (`/*`), or an unresolvable relative path (no cwd/projectRoot) grades
+ * "outside" so the deny stands.
+ *
+ * Note: unlike classifyRmTarget, the sandbox ROOT itself is acceptable here —
+ * a glob deletes files INSIDE the directory, not the directory, so
+ * `*.jpg` in the project root is bounded, whereas `rm -rf <projectRoot>` is
+ * not. ($var / ~ / brace / subshell targets never reach this — the caller
+ * rejects them outright, since their expansion is genuinely unbounded.)
+ */
+function classifyGlobDir(target: string, base: string | null, sandbox: string | null): RmLoc {
+  const gi = target.search(/[*?[\]]/);
+  const prefix = gi < 0 ? target : target.slice(0, gi);
+  // Directory portion: drop the trailing (partial) filename segment.
+  //   "review/*.jpg" → "review"   "logs/app*.log" → "logs"
+  //   "*.jpg"        → ""         "/*"            → "/"  (absolute root)
+  let dir: string;
+  if (prefix.includes("/")) {
+    dir = prefix.replace(/\/[^/]*$/, "");
+    if (dir === "" && prefix.startsWith("/")) dir = "/";
+  } else {
+    dir = "";
+  }
+  const underTmp = (p: string) => /^\/tmp(?:\/|$)/.test(p);
+  const sb = sandbox ? sandbox.replace(/\/+$/, "") : null;
+
+  let resolved: string | null;
+  if (dir === "") resolved = base;                 // glob runs in cwd / projectRoot
+  else if (dir.startsWith("/")) resolved = dir;    // absolute glob directory
+  else resolved = base === null ? null : joinPath(base, dir);
+
+  if (resolved === null) return "outside";         // unresolvable relative glob → deny
+  if (underTmp(resolved)) return "tmp";
+  if (sb !== null && (resolved === sb || resolved.startsWith(sb + "/"))) return "inproject";
+  return "outside";
+}
+
+/**
  * Unified destructive-`rm`/`rmdir` carve-out. Returns the policy decision when
  * the delete is provably safe ("allow") or softenable ("review"), or null when
  * no carve-out applies (the deny list then handles it).
@@ -417,9 +459,14 @@ function classifyRmTarget(target: string, base: string | null, sandbox: string |
  *     every target in-project (≥1 in-project, none of unknown location) →
  *     "review" so the judge / user adjudicates in-project cleanup (`.venv`,
  *     `__pycache__`) rather than a hard block.
- *   - any target out-of-sandbox, a `$var`/glob/`~`/`..`, the project root
- *     itself, or a recursive delete of an unresolvable relative path → null
- *     (deny stands).
+ *   - filename glob (`*` `?` `[]`) whose DIRECTORY resolves in-sandbox →
+ *     "review" (judge + prior-approval path; the matched file set is unknown
+ *     so it's never silently allowed, but a prior consent to the exact glob
+ *     auto-allows repeats). All-`/tmp` globs → "allow" (scratch).
+ *   - any target out-of-sandbox, a `$var`/`~`/brace/subshell/`..`, the
+ *     project root itself, a glob whose directory is out-of-sandbox or
+ *     unresolvable (no cwd/projectRoot), or a recursive delete of an
+ *     unresolvable relative path → null (deny stands).
  *
  * With base === null && sandbox === null this reproduces the legacy behaviour
  * (allow /tmp targets + non-recursive literal-file deletes; everything else
@@ -455,18 +502,35 @@ function classifyRmCarveout(
   if (targets.length === 0) return null;
 
   const locs: RmLoc[] = [];
+  let sawGlob = false;
   for (const raw of targets) {
     const t = raw.replace(/^['"]/, "").replace(/['"]$/, "");
     if (t === "" || t === "." || t === "..") return null;
-    if (/[*?\[\]$`(){}~]/.test(t)) return null;   // glob / var / subshell / home
+    // $var, subshell `()`, brace-expansion `{}`, and `~` can expand to
+    // anything — genuinely unbounded blast radius — so they always fall
+    // through to deny. Filename globs (* ? [ ]) are handled separately: the
+    // matched files are unknown but the DIRECTORY they run in is static.
+    if (/[$`(){}~]/.test(t)) return null;
     if (t.includes("..")) return null;            // path traversal
-    const loc = classifyRmTarget(t, base, sandbox);
-    if (loc === "outside") return null;           // out-of-sandbox → deny stands
-    locs.push(loc);
+    if (/[*?[\]]/.test(t)) {
+      const loc = classifyGlobDir(t, base, sandbox);
+      if (loc === "outside") return null;         // glob dir not in sandbox/tmp → deny
+      locs.push(loc);
+      sawGlob = true;
+    } else {
+      const loc = classifyRmTarget(t, base, sandbox);
+      if (loc === "outside") return null;         // out-of-sandbox → deny stands
+      locs.push(loc);
+    }
   }
 
-  if (!hasRecursive) return "allow";              // non-recursive: bounded delete
-  if (locs.every((l) => l === "tmp")) return "allow";   // recursive scratch
+  if (locs.every((l) => l === "tmp")) return "allow";   // scratch dir (incl. /tmp globs)
+  // A glob's run-time blast radius isn't statically knowable, so never
+  // silently "allow" an in-sandbox glob — route it to the judge + the
+  // prior-approval path so it's adjudicated once and remembered on consent
+  // (the matched file set may differ between runs; the user accepted that).
+  if (sawGlob) return "review";
+  if (!hasRecursive) return "allow";              // non-recursive literal: bounded delete
   if (locs.some((l) => l === "bounded")) return null;   // recursive + unknown loc → deny
   return "review";                                       // recursive in-project → adjudicate
 }

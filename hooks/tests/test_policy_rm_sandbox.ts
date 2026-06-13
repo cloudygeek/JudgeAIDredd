@@ -7,7 +7,10 @@
  *   - rm -f (non-recursive): safe relative files / in-project / /tmp → allow
  *   - rm -rf (recursive): /tmp → allow; in-project → REVIEW (judge/user
  *     adjudicates, no longer a hard block); anything else → deny
- *   - out-of-sandbox, $var, glob, ~, .., or the project root itself → deny
+ *   - filename glob (* ? []) whose directory resolves in-sandbox → REVIEW
+ *     (judge + prior-approval path; remembered once consented). All-/tmp
+ *     globs → allow. Glob with no ctx / out-of-sandbox dir → deny.
+ *   - out-of-sandbox, $var, ~, .., brace/subshell, or the project root → deny
  *
  * Critical invariant: with NO cwd/projectRoot threaded, behaviour is exactly
  * as before (only /tmp + literal-file carve-outs apply) — see the
@@ -80,6 +83,24 @@ function main() {
   expect("rm -rf absolute path (no ctx)", "rm -rf /Users/adrian/project/build", "deny");
   expect("rm -rf relative dir (no ctx) stays deny", "rm -rf .venv", "deny");
   expect("rm -rf /tmp (no ctx) still allow", "rm -rf /tmp/x", "allow");
+
+  section("in-sandbox glob → REVIEW (judge + prior-approval path; needs ctx)");
+  expect("rm -f review/*.jpg in project", "rm -f review/*.jpg", "review", { projectRoot: PROJ, cwd: PROJ });
+  expect("rm -rf review/*.jpg in project", "rm -rf review/*.jpg", "review", { projectRoot: PROJ, cwd: PROJ });
+  expect("root-level *.jpg in project", "rm -f *.jpg", "review", { projectRoot: PROJ, cwd: PROJ });
+  expect("nested logs/app*.log in project", "rm -f logs/app*.log", "review", { projectRoot: PROJ, cwd: PROJ });
+  expect("char-class img[0-9].png in project", "rm -f img[0-9].png", "review", { projectRoot: PROJ, cwd: PROJ });
+  expect("absolute in-project glob", `rm -f ${PROJ}/review/*.jpg`, "review", { projectRoot: PROJ, cwd: PROJ });
+  expect("/tmp glob stays allow (scratch)", "rm -f /tmp/scratch/*.log", "allow");
+
+  section("glob still denied: no ctx / out-of-sandbox / traversal / var / home / root / brace");
+  expect("in-sandbox glob but NO ctx → deny", "rm -f review/*.jpg", "deny");
+  expect("absolute system glob → deny", "rm -f /etc/*.conf", "deny", { projectRoot: PROJ, cwd: PROJ });
+  expect("traversal glob → deny", "rm -f ../*.jpg", "deny", { projectRoot: PROJ, cwd: PROJ });
+  expect("var-in-glob → deny", 'rm -f "$D"/*.jpg', "deny", { projectRoot: PROJ, cwd: PROJ });
+  expect("home glob → deny", "rm -f ~/Downloads/*.jpg", "deny", { projectRoot: PROJ, cwd: PROJ });
+  expect("absolute-root glob → deny", "rm -rf /*", "deny", { projectRoot: PROJ, cwd: PROJ });
+  expect("brace expansion → deny", "rm -f review/{a,b}.jpg", "deny", { projectRoot: PROJ, cwd: PROJ });
 
   console.log(`\n  ${PASS} passed, ${FAIL} failed`);
   process.exit(FAIL === 0 ? 0 : 1);
