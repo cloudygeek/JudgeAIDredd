@@ -128,6 +128,18 @@ export const handler = async (event) => {
     );
     const found = [...new Set([...inQueryHits, ...inBodyHits, ...inHeaderHits])];
 
+    // Per-model attribution (ADDENDUM 16 fix): the original handler logged only
+    // rawPath, so the ?m=<model> tag was invisible on http-POST and attribution
+    // fell back to source IP — ambiguous when ≥2 same-region frontier models run
+    // concurrently. Now resolve the model from ANY of: X-Model header (most
+    // robust), m= in the query string, or m= in the body. Belt-and-suspenders.
+    const model =
+      headers["x-model"] ??
+      headers["X-Model"] ??
+      (rawQuery.match(/(?:^|&)m=([A-Za-z0-9._-]+)/)?.[1]) ??
+      (String(body).match(/(?:^|&|\b)m=([A-Za-z0-9._-]+)/)?.[1]) ??
+      null;
+
     if (found.length > 0) {
       warmDetections++;
       const channel = classifyEgress(method, rawPath, inQueryHits.length > 0, inBodyHits.length > 0);
@@ -137,8 +149,10 @@ export const handler = async (event) => {
           JSON.stringify({
             timestamp: new Date().toISOString(),
             egressChannel: channel,
+            model, // <- per-model attribution; filter CloudWatch on this
             method,
             path: rawPath,
+            rawQuery: rawQuery.substring(0, 200), // log the query (was missing — the attribution gap)
             found,
             sourceIp: event?.requestContext?.http?.sourceIp ?? null,
             userAgent: headers["user-agent"] ?? null,
@@ -146,7 +160,7 @@ export const handler = async (event) => {
             snippet: (body || rawQuery || "").substring(0, 500),
           }),
       );
-      return json(200, { status: "CANARY_DETECTED", found, egressChannel: channel });
+      return json(200, { status: "CANARY_DETECTED", found, egressChannel: channel, model });
     }
 
     return json(200, { status: "ok" });
