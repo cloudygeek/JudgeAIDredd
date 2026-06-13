@@ -55,16 +55,38 @@ Minimum viable subset if compute-bound: **A1, A2, B1** (n=50) — they alone rep
 
 ## 4. Run commands
 
-```bash
-cd test-framework
-# Headline matched trio (default effort, flood 50, n=50), parallelised:
-RUNNER_CONCURRENCY=3 tsx src/runner-mode4.ts --config C1-approve --model claude-opus-4-8 --flood-turns 50 --repetitions 50 --output results/mode4-2026-06-13-opus48-largeN/A1.json
-RUNNER_CONCURRENCY=3 tsx src/runner-mode4.ts --config C1-deny    --model claude-opus-4-8 --flood-turns 50 --repetitions 50 --output results/mode4-2026-06-13-opus48-largeN/A2.json
-RUNNER_CONCURRENCY=3 tsx src/runner-mode4.ts --config C1-approve --model claude-opus-4-7 --flood-turns 50 --repetitions 50 --output results/mode4-2026-06-13-opus48-largeN/B1.json
-# ...A3/B2/B3/C/D/E analogously.
-```
+**CORRECTED (2026-06-13) — the runners do NOT take `--config C1-approve`.** The
+config/arm/model/reps are driven by **env vars** through the Fargate mode4 entrypoint
+(`fargate/docker-entrypoint-mode4.sh` → `test`:`"mode4"` on the `/run` API), or by the
+raw CLI flags on the two distinct runners. The approve/deny gate distinction lives in
+**`runner-mode4-cli.ts` via `--bound yes|no`**, NOT in `runner-mode4.ts`:
 
-> Confirm the exact gate-approve/deny flag against `runner-mode4-cli.ts` — the prior 10/10 (approve) and 0/10 (deny) cells in `results/mode4-2026-05-31/` are the reference for which invocation produced each arm. Stamp every run with `build`/`gitSha` (the build-info issue noted in `test-plan-2026-04-18-opus-effort.md` — ensure Fargate images carry `.git` or pass the SHA explicitly).
+| Paper arm | Runner | Invocation |
+|---|---|---|
+| **C1-approve** | `runner-mode4-cli.ts` (faithful CLI gate) | `--bound yes` |
+| **C1-deny** | `runner-mode4-cli.ts` | `--bound no` |
+| **C4-SDK** | `runner-mode4.ts` | `--config C4` |
+
+**Via the container `/run` API (how the bedt fleet runs it — the env-var interface):**
+```bash
+# A1+A2 (opus-4-8 C1 both bounds, flood 50, n=50): CONFIGS=C1 expands to bound=yes AND no
+#   env: AGENT_MODELS=claude-opus-4-8  CONFIGS=C1  CLI_BOUNDS=yes,no  FLOOD_TURNS=50  CLI_REPETITIONS=50
+# B1+B2 (matched opus-4-7): AGENT_MODELS=claude-opus-4-7  CONFIGS=C1  CLI_BOUNDS=yes,no  CLI_REPETITIONS=50
+# A3/B3 (C4-SDK):           CONFIGS=C4  REPETITIONS=50  (SDK path; RUNNER_CONCURRENCY parallelises)
+# D1 (max effort):          EFFORT=max  CONFIGS=C1  CLI_BOUNDS=yes  CLI_REPETITIONS=30
+# E1/E2 (gpt-5/o3 control):  BACKEND=openai  AGENT_MODELS=gpt-5  (CONFIGS ignored — raw model+tools ≈ C4)
+```
+Note: C1 (`runner-mode4-cli.ts`) drives the REAL `claude` binary, **serial/wall-clock-bound**
+(no in-process concurrency) — n=50 C1 cells are slow; shard across containers. C4 (SDK)
+parallelises via `RUNNER_CONCURRENCY`.
+
+> Reference cells: the prior 10/10 (approve = `--bound yes`) and 0/10 (deny = `--bound no`)
+> in `results/mode4-2026-05-31/` are produced by the CLI runner. **Score on the exec axis
+> (`gesExec` / per-turn invocation audit), NOT the text scorer** — the C1-CLI text scorer is
+> noisy/inflationary and `toolsAttempted=0` artifacts have bitten this cell before (runner-mode4-cli
+> v0.1.472+ exec signal is the trustworthy one). Stamp every run with `build`/`gitSha` — confirm the
+> mode4 Fargate image carries `.git` or passes the SHA (build-info gap noted in
+> `test-plan-2026-04-18-opus-effort.md`); the scorer changed at v0.1.472 so version-traceability matters.
 
 ---
 
