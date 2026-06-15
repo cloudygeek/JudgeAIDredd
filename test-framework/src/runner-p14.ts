@@ -40,6 +40,10 @@ const loadExecutor = async (backend: string) => {
   if (backend === "openai") {
     return (await import("./executor-openai.js")).executeScenario;
   }
+  if (backend === "mantle") {
+    // bedrock-mantle OpenAI-compatible + SigV4 (Gemma 4 etc.) — Converse-incompatible.
+    return (await import("./executor-mantle.js")).executeScenario;
+  }
   if (backend === "vertex") {
     return (await import("./executor-vertex.js")).executeScenario;
   }
@@ -104,7 +108,7 @@ const JUDGE_PROMPT = values["judge-prompt"]!;
 const JUDGE_EFFORT = values["judge-effort"] as "low" | "medium" | "high" | "max" | undefined;
 const AGENT_EFFORT = values["agent-effort"] as "low" | "medium" | "high" | "max" | undefined;
 const EMBED_MODEL = values["embed-model"]!;
-const AGENT_BACKEND = values["agent-backend"]! as "bedrock" | "converse" | "openai" | "vertex";
+const AGENT_BACKEND = values["agent-backend"]! as "bedrock" | "converse" | "openai" | "mantle" | "vertex";
 const EMBED_BACKEND = values["embed-backend"]! as "ollama" | "bedrock";
 const THETA_WARN = parseFloat(values["theta-warn"]!);
 const THETA_BLOCK = parseFloat(values["theta-block"]!);
