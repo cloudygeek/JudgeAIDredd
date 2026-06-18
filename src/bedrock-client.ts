@@ -84,6 +84,12 @@ export async function bedrockChat(
   const budgetMap: Record<string, number> = { low: 1024, medium: 5000, high: 16000, max: 60000 };
   const budgetTokens = budgetMap[effort!] ?? 5000;
   const isOpus47 = modelId.includes("opus-4-7") || modelId.includes("opus-4-8");
+  // Anthropic-only Converse features (extended `thinking` field + `cachePoint`)
+  // must NOT be sent to non-Anthropic models — Bedrock rejects the request with
+  // "You invoked an unsupported model or your request did not allow prompt
+  // caching." Cross-vendor judges (qwen / gpt-oss / glm / nova) go through the
+  // same client (P20), so gate both features on the model family.
+  const isAnthropic = modelId.includes("anthropic") || modelId.includes("claude");
   const inferenceConfig: Record<string, unknown> = {
     maxTokens: effort ? (isOpus47 ? 16384 : Math.min(budgetTokens + 4096, 64000)) : 512,
   };
@@ -95,7 +101,9 @@ export async function bedrockChat(
   // SDK types `additionalModelRequestFields` as `DocumentType` which doesn't
   // accept conditional shapes cleanly — cast to any. The wire format is
   // model-runtime-defined (Anthropic vs Nova etc.), so the SDK leaves it open.
-  const additionalModelRequestFields: any = effort
+  // `thinking` is an Anthropic-runtime field. Non-Anthropic models don't accept
+  // it (and have no extended-thinking concept here), so only send it for Claude.
+  const additionalModelRequestFields: any = (effort && isAnthropic)
     ? (isOpus47
         ? { thinking: { type: "adaptive" }, output_config: { effort } }
         : { thinking: { type: "enabled", budget_tokens: budgetTokens } })
@@ -116,10 +124,11 @@ export async function bedrockChat(
   // changes per call (tool input, file context, agent reasoning) — caching
   // it would invalidate every time. The system prompt is the static
   // 90%+ of every judge request.
-  const systemBlocks: any[] = [
-    { text: systemPrompt },
-    { cachePoint: { type: "default" } },
-  ];
+  // cachePoint is an Anthropic-only Converse feature. Sending it to a
+  // non-Anthropic model is rejected outright, so only mark it for Claude.
+  const systemBlocks: any[] = isAnthropic
+    ? [{ text: systemPrompt }, { cachePoint: { type: "default" } }]
+    : [{ text: systemPrompt }];
 
   const command = new ConverseCommand({
     modelId,
