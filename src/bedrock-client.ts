@@ -49,7 +49,12 @@ export async function bedrockChat(
   userMessage: string,
   modelId = MODEL_ID,
   effort?: EffortLevel,
-  images?: BedrockImageBlock[]
+  images?: BedrockImageBlock[],
+  /** Optional explicit sampling temperature (P20 temperature study).
+   *  When provided, overrides the effort-derived `effort ? 1 : 0.1`
+   *  default. Still suppressed for Opus 4.7/4.8, which reject the param.
+   *  Undefined = unchanged behaviour. */
+  temperature?: number
 ): Promise<{
   content: string;
   thinking: string;
@@ -82,7 +87,10 @@ export async function bedrockChat(
   const inferenceConfig: Record<string, unknown> = {
     maxTokens: effort ? (isOpus47 ? 16384 : Math.min(budgetTokens + 4096, 64000)) : 512,
   };
-  if (!isOpus47) inferenceConfig.temperature = effort ? 1 : 0.1;
+  // Opus 4.7/4.8 reject the temperature param entirely, so it's never set
+  // for them. Otherwise: an explicit `temperature` (P20) wins; absent that,
+  // the legacy effort-derived default (T=1 thinking-on, T=0.1 thinking-off).
+  if (!isOpus47) inferenceConfig.temperature = temperature ?? (effort ? 1 : 0.1);
 
   // SDK types `additionalModelRequestFields` as `DocumentType` which doesn't
   // accept conditional shapes cleanly — cast to any. The wire format is

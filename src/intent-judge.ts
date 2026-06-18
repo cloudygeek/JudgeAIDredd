@@ -13,6 +13,7 @@
 
 import { chat, type ChatMessage } from "./ollama-client.js";
 import { bedrockChat, type BedrockImageBlock } from "./bedrock-client.js";
+import { openaiChat } from "./openai-client.js";
 import type { ImageBlock } from "./session-tracker.js";
 
 /**
@@ -29,7 +30,7 @@ function scrubFenceTags(text: string): string {
   return text.replace(FENCE_TAG_RE, "[REDACTED:fence-tag]");
 }
 
-export type JudgeBackend = "ollama" | "bedrock";
+export type JudgeBackend = "ollama" | "bedrock" | "openai";
 
 /**
  * Richer goal-list entry for the history-active model. Carries
@@ -306,11 +307,28 @@ export class IntentJudge {
   private effort?: EffortLevel;
   private hardened: boolean;
   private promptVariant: PromptVariant;
+  /** Optional explicit sampling temperature. When set, overrides the
+   *  backend's effort-derived default (bedrock: effort?1:0.1). Used by
+   *  the P20 temperature-vs-reasoning study to reach controlled T values
+   *  the effort rule can't express. Undefined = unchanged behaviour. */
+  private temperature?: number;
+  /** Optional role frame prepended to the (already-untrusted-directive'd)
+   *  system prompt. Kept generic so research personas (P20) live in the
+   *  caller, not in the production PromptVariant enum. Undefined = no frame. */
+  private systemPromptPrefix?: string;
 
-  constructor(chatModel = "llama3.2", backend: JudgeBackend = "ollama", effort?: EffortLevel, hardened: boolean | PromptVariant = false) {
+  constructor(
+    chatModel = "llama3.2",
+    backend: JudgeBackend = "ollama",
+    effort?: EffortLevel,
+    hardened: boolean | PromptVariant = false,
+    opts?: { temperature?: number; systemPromptPrefix?: string },
+  ) {
     this.chatModel = chatModel;
     this.backend = backend;
     this.effort = effort;
+    this.temperature = opts?.temperature;
+    this.systemPromptPrefix = opts?.systemPromptPrefix;
     if (typeof hardened === "string") {
       this.promptVariant = hardened;
       this.hardened = hardened !== "standard";
@@ -555,14 +573,18 @@ ${lines}
 `;
       }
 
-      const systemPrompt = UNTRUSTED_DIRECTIVE + priorApprovalsBlock + baseSystemPrompt;
+      // Persona role frame (P20) is a trusted, operator-supplied prefix —
+      // it goes ahead of the UNTRUSTED_DIRECTIVE so the frame is read as a
+      // system directive, not as bracketed data. No-op when unset.
+      const personaPrefix = this.systemPromptPrefix ? this.systemPromptPrefix + "\n\n" : "";
+      const systemPrompt = personaPrefix + UNTRUSTED_DIRECTIVE + priorApprovalsBlock + baseSystemPrompt;
 
       if (this.backend === "bedrock") {
         const bedrockImages: BedrockImageBlock[] | undefined = images?.map((img) => ({
           data: img.data,
           mediaType: img.mediaType,
         }));
-        const response = await bedrockChat(systemPrompt, userPrompt, this.chatModel, this.effort, bedrockImages);
+        const response = await bedrockChat(systemPrompt, userPrompt, this.chatModel, this.effort, bedrockImages, this.temperature);
         content = response.content;
         thinking = response.thinking || undefined;
         durationMs = response.durationMs;
@@ -571,6 +593,21 @@ ${lines}
         totalTokens = response.totalTokens;
         cacheReadInputTokens = response.cacheReadInputTokens;
         cacheWriteInputTokens = response.cacheWriteInputTokens;
+      } else if (this.backend === "openai") {
+        // OpenAI judge backend (P20 cross-vendor panel). No image support
+        // here — the chat-completions wrapper is text-only and the judge
+        // is invoked text-only by the adversarial/injection decks. A
+        // larger maxTokens than the detector default leaves room for the
+        // verdict JSON + reasoning the parser expects.
+        const response = await openaiChat(systemPrompt, userPrompt, this.chatModel, {
+          temperature: this.temperature ?? (this.effort ? 1 : 0),
+          maxTokens: 1024,
+        });
+        content = response.content;
+        durationMs = response.durationMs;
+        inputTokens = response.inputTokens;
+        outputTokens = response.outputTokens;
+        totalTokens = response.totalTokens;
       } else {
         const ollamaImages = images?.map((img) => img.data);
         const messages: ChatMessage[] = [
