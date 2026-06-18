@@ -28,7 +28,11 @@ const ENTRYPOINTS = {
   "3a": "/docker-entrypoint-test3a.sh",
   "4": "/docker-entrypoint-test4.sh",
   "7": "/docker-entrypoint.sh",
-  "8": "/docker-entrypoint-test8.sh",
+  // "8" was historically the adversarial-judge test; its entrypoint was purged
+  // with the rest of the research scaffolding. The P20 runner (cross-vendor /
+  // accuracy / temperature) is its successor, so both ids resolve to it.
+  "8": "/docker-entrypoint-p20.sh",
+  "p20": "/docker-entrypoint-p20.sh",
   "9": "/docker-entrypoint-test9.sh",
   "9a": "/docker-entrypoint-test9a.sh",
   "8b6": "/docker-entrypoint-test8b6.sh",

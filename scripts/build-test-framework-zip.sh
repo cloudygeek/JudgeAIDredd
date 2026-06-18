@@ -61,6 +61,8 @@ cp "$PROJECT_ROOT/fargate/docker-entrypoint-t3e.sh" \
    "$STAGING/docker-entrypoint-t3e.sh"
 cp "$PROJECT_ROOT/fargate/docker-entrypoint-t5.sh" \
    "$STAGING/docker-entrypoint-t5.sh"
+cp "$PROJECT_ROOT/fargate/docker-entrypoint-p20.sh" \
+   "$STAGING/docker-entrypoint-p20.sh"
 cp "$PROJECT_ROOT/fargate/tests/docker-entrypoint-test22.sh" \
    "$STAGING/docker-entrypoint-test22.sh"
 cp "$PROJECT_ROOT/fargate/api-server.cjs" "$STAGING/server.js"
@@ -69,13 +71,17 @@ cp "$PROJECT_ROOT/fargate/Dockerfile.test-framework-zip" "$STAGING/Dockerfile"
 # test22 / runner-p14 source — sits outside test-framework/ and is
 # Bedrock-Converse-only (no claude-agent-sdk import), so it dodges the
 # native-binary path that broke earlier test22 corpora.
-mkdir -p "$STAGING/archive" "$STAGING/scenarios" "$STAGING/src"
+mkdir -p "$STAGING/archive" "$STAGING/scenarios" "$STAGING/src" "$STAGING/p20"
 ( cd "$PROJECT_ROOT/archive" \
     && rsync -a --exclude='.DS_Store' ./ "$STAGING/archive/" )
 ( cd "$PROJECT_ROOT/scenarios" \
     && rsync -a --exclude='.DS_Store' ./ "$STAGING/scenarios/" )
 ( cd "$PROJECT_ROOT/src" \
     && rsync -a --exclude='.DS_Store' --exclude='web' ./ "$STAGING/src/" )
+# P20 adversarial-judge runner — standalone tsx script (imports ../src/ in-process).
+# Exclude its local run output (results/) — that's a runtime artifact, not source.
+( cd "$PROJECT_ROOT/p20" \
+    && rsync -a --exclude='.DS_Store' --exclude='results' ./ "$STAGING/p20/" )
 
 # ── Vendor @anthropic-ai/claude-code + linux-x64 native + test-framework deps
 # Re-resolve from the public npm registry (this dev box must have public
@@ -132,7 +138,8 @@ echo "[build] verifying flat layout..."
 for f in Dockerfile server.js docker-entrypoint-test-framework.sh \
          docker-entrypoint-agentlab.sh docker-entrypoint-test22.sh \
          docker-entrypoint-mode4.sh docker-entrypoint-t3e.sh \
-         docker-entrypoint-t5.sh \
+         docker-entrypoint-t5.sh docker-entrypoint-p20.sh \
+         p20/run-adversarial-judge.ts \
          test-framework/src/runner-agentlab.ts \
          test-framework/src/runner-mode4.ts \
          test-framework/src/runner-mode4-cli.ts \
