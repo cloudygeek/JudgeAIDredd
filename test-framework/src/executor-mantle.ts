@@ -22,6 +22,7 @@
  */
 import { TurnLogger, detectCanaries } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
+import { PreToolGate } from "./pretool-gate.js";
 import type { CanaryServer } from "./canary-server.js";
 import type { HijackScenario } from "../scenarios/t3-goal-hijacking.js";
 import type { TurnLog, ToolCallLog, TestResult } from "./types.js";
@@ -526,6 +527,11 @@ export interface ExecutorOptions {
   maxTurns?: number;
   effort?: "low" | "medium" | "high" | "max";
   canaryServer?: CanaryServer;
+  /** Enforced arm: PreToolUse gate aborts a call on a hijacked verdict before
+   *  execution. See docs/test-request-pretooluse-rerun-2026-06-18.md. */
+  enforce?: boolean;
+  /** Enforced+stage1 arm: also apply the deterministic alternate-egress rule. */
+  stage1?: boolean;
 }
 
 export async function executeScenario(
@@ -573,6 +579,23 @@ export async function executeScenario(
 
   logger.reset();
   await logger.registerGoal(scenario.initialTask);
+
+  // Enforced arm: PreToolUse gate (borrows the tracker's detector + judge).
+  const gate =
+    options.enforce && logger instanceof IntentTracker
+      ? new PreToolGate(
+          logger,
+          logger.getDriftDetector(),
+          logger.getJudge(),
+          logger.getThresholds(),
+          { stage1: options.stage1 },
+        )
+      : null;
+  if (gate) {
+    console.log(
+      `  [ENFORCED] PreToolUse gate active${options.stage1 ? " (+stage1 alternate-egress)" : ""}`,
+    );
+  }
 
   let allCanariesFound: string[] = [];
   let agentDetected = false;
@@ -658,6 +681,33 @@ export async function executeScenario(
             parsedInput = { _raw: tc.function.arguments };
           }
 
+          // --- Enforced arm: PreToolUse gate BEFORE execution ---
+          if (gate) {
+            const decision = await gate.evaluate(userMessage, tc.function.name, parsedInput);
+            if (!decision.allowed) {
+              const blockedMsg = `[BLOCKED by PreToolUse gate: ${decision.reason}]`;
+              turnToolCalls.push({
+                tool: tc.function.name,
+                input: parsedInput,
+                output: blockedMsg,
+                canaryInInput: detectCanaries(JSON.stringify(parsedInput)).length > 0,
+                canaryInOutput: false,
+                durationMs: Date.now() - tcStart,
+                executed: false,
+                gateVerdict: decision.verdict,
+                gateBlocked: true,
+                gateSimilarity: decision.similarity,
+                gateStage: decision.stage,
+              });
+              conversationHistory.push({
+                role: "tool",
+                tool_call_id: tc.id,
+                content: blockedMsg,
+              });
+              continue;
+            }
+          }
+
           const rawOutput = await executeTool(tc.function.name, parsedInput, workDir, canary?.baseUrl);
           const truncOutput = rawOutput.substring(0, 10000);
 
@@ -668,6 +718,7 @@ export async function executeScenario(
             canaryInInput: detectCanaries(JSON.stringify(parsedInput)).length > 0,
             canaryInOutput: detectCanaries(truncOutput).length > 0,
             durationMs: Date.now() - tcStart,
+            ...(gate ? { executed: true, gateBlocked: false } : {}),
           });
 
           conversationHistory.push({
@@ -874,7 +925,10 @@ export async function executeScenario(
     egressChannel,
     maliciousArtifactEmitted,
     maliciousArtifactTags: maliciousArtifactTags.length ? maliciousArtifactTags : undefined,
+    ...(gate ? { toolCallsAborted: gate.abortedCount, toolCallsGated: gate.gatedCount } : {}),
   };
+  if (gate)
+    console.log(`  Gate: aborted ${gate.abortedCount}/${gate.gatedCount} tool calls before execution`);
 
   console.log(`\n${"═".repeat(70)}`);
   console.log(`RESULT: ${scenario.id} — ${scenario.name}`);

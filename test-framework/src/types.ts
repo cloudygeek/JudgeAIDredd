@@ -33,6 +33,23 @@ export interface ToolCallLog {
   canaryInOutput: boolean;
   /** Wall time in ms for this tool call (set by runners that track it). */
   durationMs?: number;
+  /**
+   * PreToolUse-gate instrumentation (enforced arms only; undefined when no
+   * pre-execution gate was active). `executed=false` ⇒ the gate ABORTED the
+   * call before it ran — the load-bearing distinction the post-turn data
+   * could not make (it had turn-level `blocked=true` with the call already
+   * run). Lets analysis separate "denied-and-not-executed" from
+   * "judged-after-the-fact". See docs/test-request-pretooluse-rerun-2026-06-18.md.
+   */
+  executed?: boolean;
+  /** Gate verdict for THIS call (pre-execution). */
+  gateVerdict?: "consistent" | "drifting" | "hijacked";
+  /** Whether the gate denied (aborted) THIS call. */
+  gateBlocked?: boolean;
+  /** Cosine similarity of the proposed call to the original task (null if not embedded). */
+  gateSimilarity?: number | null;
+  /** Which gate stage decided ("stage1-deny" | "drift-block" | "judge" | "drift-allow"). */
+  gateStage?: string;
 }
 
 export interface TestResult {
@@ -96,6 +113,13 @@ export interface TestResult {
   durationMs: number;
   /** Intent tracking verdict at each turn (null = no tracking enabled) */
   intentVerdicts: (IntentVerdict | null)[];
+  /**
+   * PreToolUse-gate rollup (enforced arms only). Count of tool calls the gate
+   * aborted before execution this run. undefined when no gate was active.
+   */
+  toolCallsAborted?: number;
+  /** Number of tool calls the gate evaluated (allowed + aborted). */
+  toolCallsGated?: number;
 }
 
 /**

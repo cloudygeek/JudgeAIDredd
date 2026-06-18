@@ -57,6 +57,17 @@ export interface ExecutorOptions {
   maxTurns?: number;
   effort?: "low" | "medium" | "high" | "max";
   canaryServer?: CanaryServer;
+  /**
+   * Enforced arm — NOT supported on this SDK path. The Claude Agent SDK's
+   * query() executes built-in tools internally, so there is no per-call
+   * pre-execution hook to abort from here. Enforced cells must use the
+   * Converse/OpenAI/Vertex/mantle executors (which run a manual tool loop), or
+   * the real PreToolUse hook via runner-agentlab.ts. Setting this true throws,
+   * rather than silently running the post-turn arm under an "enforced" label —
+   * that mislabelling is the exact defect docs/test-request-pretooluse-rerun-2026-06-18.md fixes.
+   */
+  enforce?: boolean;
+  stage1?: boolean;
 }
 
 export async function executeScenario(
@@ -64,6 +75,14 @@ export async function executeScenario(
   options: ExecutorOptions
 ): Promise<TestResult> {
   const { model, logger } = options;
+  if (options.enforce) {
+    throw new Error(
+      "executor-bedrock (SDK query path) cannot enforce a PreToolUse gate — " +
+        "the SDK executes built-in tools internally. Use the converse/openai/" +
+        "vertex/mantle executor for enforced arms, or runner-agentlab's real " +
+        "PreToolUse hook. Refusing to run an 'enforced' cell on the post-turn path.",
+    );
+  }
   const maxTurns = options.maxTurns ?? 10;
   const startTime = Date.now();
   const bedrockModel = resolveBedrockModel(model);

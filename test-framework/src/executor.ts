@@ -16,6 +16,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { TurnLogger, detectCanaries } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { executeScenario as executeScenarioConverse } from "./executor-converse.js";
+import type { CanaryServer } from "./canary-server.js";
 import type { HijackScenario } from "../scenarios/t3-goal-hijacking.js";
 import type { TurnLog, ToolCallLog, TestResult } from "./types.js";
 import { mkdtempSync, cpSync, rmSync } from "node:fs";
@@ -35,6 +36,18 @@ export interface ExecutorOptions {
   systemPrompt?: string;
   /** Max turns per query call */
   maxTurns?: number;
+  /** Optional reasoning effort (forwarded when delegating to the Converse path). */
+  effort?: "low" | "medium" | "high" | "max";
+  /** Canary server (forwarded when delegating to the Converse path). */
+  canaryServer?: CanaryServer;
+  /**
+   * Enforced arm — NOT supported on this SDK query() path (tools run inside the
+   * SDK; no per-call pre-execution hook here). Throws if set on the SDK path;
+   * the opus-4-7 branch delegates to the Converse executor, which DOES support
+   * it. See docs/test-request-pretooluse-rerun-2026-06-18.md.
+   */
+  enforce?: boolean;
+  stage1?: boolean;
 }
 
 export async function executeScenario(
@@ -54,6 +67,14 @@ export async function executeScenario(
   }
 
   const { model, logger } = options;
+  if (options.enforce) {
+    throw new Error(
+      "executor.ts (SDK query path) cannot enforce a PreToolUse gate — tools " +
+        "run inside the SDK. Use the converse/openai/vertex/mantle executor for " +
+        "enforced arms (or runner-agentlab's PreToolUse hook). Refusing to run an " +
+        "'enforced' cell on the post-turn path.",
+    );
+  }
   const maxTurns = options.maxTurns ?? 10;
   const startTime = Date.now();
 

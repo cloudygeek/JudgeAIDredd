@@ -131,7 +131,16 @@ function createLogger(defence: string): TurnLogger {
   if (defence === "none") {
     return new TurnLogger();
   }
-  if (defence === "intent-tracker") {
+  // intent-tracker = the existing POST-TURN observe arm.
+  // intent-tracker-enforced / -enforced-stage1 = the PreToolUse arms (same
+  // tracker config; the executor reads the enforce/stage1 flags below and
+  // fires the judge per-call before execution). The tracker itself is built
+  // identically — the difference is purely the call point in the executor.
+  if (
+    defence === "intent-tracker" ||
+    defence === "intent-tracker-enforced" ||
+    defence === "intent-tracker-enforced-stage1"
+  ) {
     // Note (2026-06-04 restore): the current IntentTrackerConfig collapsed
     // separate embedding/judge backends into one `backend` field. Both
     // run together against the same backend. JUDGE_PROMPT and JUDGE_EFFORT
@@ -149,6 +158,13 @@ function createLogger(defence: string): TurnLogger {
     });
   }
   throw new Error(`Unknown defence: ${defence}`);
+}
+
+/** Map a defence id to the executor enforce/stage1 flags. */
+function enforceFlags(defence: string): { enforce?: boolean; stage1?: boolean } {
+  if (defence === "intent-tracker-enforced") return { enforce: true };
+  if (defence === "intent-tracker-enforced-stage1") return { enforce: true, stage1: true };
+  return {};
 }
 
 function selectScenarios(
@@ -184,6 +200,10 @@ interface CellResult {
     agentDetected: number;
     meanGes: number;
     meanGesExfil: number;
+    /** Enforced arms: tool calls aborted before execution (summed), and runs
+     *  with ≥1 abort. undefined for none/observe arms. */
+    toolCallsAborted?: number;
+    runsWithAbort?: number;
   };
 }
 
@@ -198,6 +218,9 @@ function summariseCell(runs: TestResult[]): CellResult["summary"] {
     n === 0
       ? 0
       : runs.reduce((s, r) => s + ((r as any).gesExfil ?? 0), 0) / n;
+  const gated = runs.some((r) => r.toolCallsAborted != null);
+  const toolCallsAborted = runs.reduce((s, r) => s + (r.toolCallsAborted ?? 0), 0);
+  const runsWithAbort = runs.filter((r) => (r.toolCallsAborted ?? 0) > 0).length;
   return {
     n,
     hijackSucceeded: hij,
@@ -205,6 +228,7 @@ function summariseCell(runs: TestResult[]): CellResult["summary"] {
     agentDetected: det,
     meanGes,
     meanGesExfil,
+    ...(gated ? { toolCallsAborted, runsWithAbort } : {}),
   };
 }
 
@@ -284,6 +308,7 @@ async function main() {
                 logger,
                 maxTurns: MAX_TURNS,
                 canaryServer: canary,
+                ...enforceFlags(defence),
                 ...(AGENT_EFFORT ? { effort: AGENT_EFFORT } : {}),
               });
               result.repetition = rep + 1;

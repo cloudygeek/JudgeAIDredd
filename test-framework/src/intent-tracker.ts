@@ -270,4 +270,24 @@ export class IntentTracker extends TurnLogger {
   getDriftHistory(): number[] {
     return this.driftDetector.getHistory();
   }
+
+  /**
+   * Expose the drift detector + judge + thresholds so the PreToolUse gate
+   * (`pretool-gate.ts`) can borrow the SAME instances — guaranteeing the
+   * enforced arm's decision is byte-identical to this post-turn arm's, only
+   * fired earlier. Do not mutate these from the gate.
+   */
+  getDriftDetector(): DriftDetector {
+    return this.driftDetector;
+  }
+  getJudge(): IntentJudge {
+    return this.judge;
+  }
+  getThresholds(): { thetaWarn: number; thetaBlock: number; deltaWarn: number } {
+    return {
+      thetaWarn: this.config.thetaWarn,
+      thetaBlock: this.config.thetaBlock,
+      deltaWarn: this.config.deltaWarn,
+    };
+  }
 }
