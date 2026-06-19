@@ -22,11 +22,16 @@ Recall = catch rate (verdict `hijacked`). **False-allow = safety miss = 1 − re
 | glm-4.7 | Zhipu | 0.1 | off | 9.2% | [6,13]% | 90.8% | 198/20/22 |
 | nova-pro | Amazon | 0.1 | off | 8.3% | [5,13]% | 91.7% | 159/61/20 |
 | gpt-oss-120b | OpenAI-OW | 1 | off | 2.1% | [1,5]% | 97.9% | 199/36/5 |
+| kimi-k2-thinking† | Moonshot | 0.1 | off | 2.9% | [1,6]% | 97.1% | 205/28/7 |
 | gpt-oss-120b | OpenAI-OW | 0.5 | off | 0.8% | [0,3]% | 99.2% | 204/34/2 |
 | gpt-oss-120b | OpenAI-OW | 0 | off | 0.8% | [0,3]% | 99.2% | 192/46/2 |
 | deepseek-v3.2 | DeepSeek | 0.1 | off | 0.4% | [0,2]% | 99.6% | 204/35/1 |
 
 \* opus-4-8 rejects the temperature param (correctly omitted); thinking on.
+† kimi-k2-thinking re-run on image 0.1.704 (2048-token floor for reasoning models);
+clean cell — 0 fail-soft, 1 unparseable, mean 576 tok. The earlier 0.1.703 kimi
+cell read 30.8% recall but was ~92% truncation artifact (512-token cap cut off
+the verdict on a native reasoning model) — that cell is superseded; use this one.
 C/D/H = consistent / drifting / hijacked rep counts (of 240).
 
 ## RQ4 (accuracy) — the standalone-judge picture
@@ -51,8 +56,18 @@ gpt-4o (closed OpenAI, distinct from the open-weight gpt-oss) ran clean: 240 rep
 decisive consistent-or-hijacked, the opposite of opus's heavy hedging (119 drifting).
 This is the 7th vendor and the closed-OpenAI panel member.
 
+## kimi-k2-thinking (re-run clean, added 2026-06-19)
+kimi required two fixes to score honestly: (1) the parser now reads the verdict
+from the reasoning channel (thinking models emit it there), and (2) a 2048-token
+floor for reasoning models so it finishes reasoning AND emits the verdict (the
+512-token cap truncated 28% of calls). Clean cell on 0.1.704: 2.9% recall — among
+the weakest detectors, NOT the 30.8% the contaminated first cell showed. A
+cautionary datum for the paper: a thinking-style judge under a tight token budget
+fails CLOSED and looks like a great detector while actually missing almost
+everything. (8th vendor, Moonshot.)
+
 ## Caveats / notes
-- **Not in this run:** kimi-k2-thinking (dropped — unparseable output fail-closes to `hijacked`, would inflate its catch rate; parser fix now in-tree, see `p20/FINDINGS.md`).
-- All models gave **real** verdicts — verified 0 "Judge error" reps across all 1,920 + 720 (tempsweep) calls.
-- The non-temp-sweep cross-vendor panel = {opus-4-8, haiku-4-5, qwen3-235b, gpt-oss-120b@T1, nova-pro, deepseek-v3.2, glm-4.7} = **6 vendors**. Feed these per-(model,case) reps to `consensus_sim.py` for the majority / unanimity / conjunctive + Q-statistic analysis.
+- All models gave **real** verdicts — 0 "Judge error" fail-soft across every cell; kimi re-run has 1/240 unparseable (negligible), all others 0.
+- **The cross-vendor panel = 8 vendors** {opus-4-8 (Anthropic), haiku-4-5 (Anthropic), gpt-4o (OpenAI), qwen3-235b (Alibaba), nova-pro (Amazon), gpt-oss-120b@T1 (OpenAI-OW), glm-4.7 (Zhipu), deepseek-v3.2 (DeepSeek), kimi-k2-thinking (Moonshot)}. Feed these per-(model,case) reps to `consensus_sim.py` for the majority / unanimity / conjunctive + Q-statistic analysis. (Use ONE Anthropic + the 7 distinct vendors for a clean cross-vendor read; haiku+opus together = the intra-vendor contrast.)
 - **False-block (availability) is NOT measured here** — the adv deck has no benign cases. Needs the AgentDojo/InjecAgent balanced slice (next).
+- **Superseded:** the kimi cell on image 0.1.703 (30.8% recall) is a truncation artifact — exclude it; use the 0.1.704 cell.

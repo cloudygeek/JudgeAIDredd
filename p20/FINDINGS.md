@@ -71,3 +71,15 @@ non-thinking judges; parseable kimi reps averaged 406 tokens, so ~2048 would
 capture nearly all. Decision pending (touches shared client cost + needs a
 rebuild/redeploy). Until then, kimi cell must be filtered to parseable reps (like
 the "Judge error" census filter) before scoring.
+
+## 2026-06-19 — kimi re-run CLEAN on 0.1.704
+
+After the 2048-token floor for reasoning models, kimi re-ran clean: 240 reps,
+0 fail-soft, 1 unparseable (was 68), mean 576 tok. **Honest recall 2.9%** [1,6]% —
+confirms the parseable-subset estimate (3.5%) and ranks kimi among the weakest
+detectors. The contaminated 0.1.703 cell (30.8%, 92% artifact) is superseded and
+deleted locally; SUMMARY uses the 0.1.704 cell. Panel now 8 vendors.
+
+Paper-worthy: a thinking-style judge under a tight output budget fails CLOSED on
+truncation → looks like a strong detector (30.8%) while actually missing ~97% of
+attacks (2.9%). Token budget is a first-class confound for reasoning-model judges.
