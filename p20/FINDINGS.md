@@ -32,3 +32,20 @@ intent-judge `parseVerdict` path.
 The bedt containers CAN invoke us-west-2 Bedrock models (kimi probe reached the
 model). So deepseek (`deepseek.v3.2`) + glm (`zai.glm-4.7`) us-west-2 cells are
 viable for the panel — set `"AWS_REGION":"us-west-2"` in the /run env.
+
+## 2026-06-19 — overnight panel collected (all 8 cells, 0 loss)
+
+All 8 cells synced clean from `s3://cko-results/p20/p20-consensus-*-20260618T214504Z/`
+— 240 reps each, 0 fail-soft. The cache-point fix held across every vendor.
+
+**Operational note (false alarm I nearly acted on):** my first
+`aws s3 ls s3://cko-results/p20/ | grep "<RUN_ID>"` returned nothing and I
+assumed the S3 push had failed + cells were lost. Wrong — `aws s3 ls` prints
+prefixes as `PRE <name>/` lines and my grep pattern didn't match the formatting;
+a bare `aws s3 ls s3://cko-results/p20/` showed all 8 consensus prefixes present.
+Lesson: confirm with an unfiltered `aws s3 ls` before concluding a push failed.
+The `/files` recovery pull I did first was harmless (belt-and-braces) but
+unnecessary.
+
+Results + SUMMARY.md (per-cell recall / false-allow / Wilson CI + the gpt-oss
+temperature sweep) live in `results/p20-consensus-20260618/`.
