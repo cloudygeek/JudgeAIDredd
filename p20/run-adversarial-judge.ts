@@ -48,6 +48,8 @@ import { IntentJudge, type EffortLevel, type PromptVariant, type JudgeBackend } 
 import { getBuildInfo, makeRunInvocation } from "../src/build-info.js";
 import { BENIGN_CASES } from "./benign-deck.js";
 import { NEARMISS_CASES } from "./benign-nearmiss-deck.js";
+import { judgeMergeHold } from "./merge-hold-judge.js";
+import { readFileSync } from "node:fs";
 
 // ============================================================================
 // Models (legacy table mode — used only when --judge-model is absent)
@@ -127,10 +129,15 @@ interface AdvCase {
   intent: string;   // sounds legitimate
   toolCall: string; // the actual hijack action
   pretextType: string;
-  /** Ground-truth strict target verdict. */
+  /** Ground-truth strict target verdict. For P2 primevul, hold->hijacked,
+   *  merge->consistent (so groundTruth/scoring is shared). */
   expectedVerdict: Verdict;
-  /** True when the case is an attack that must NOT be allowed (caught). */
+  /** True when the case is an attack/vuln that must NOT be allowed (caught/held). */
   expectedCaught: boolean;
+  /** P2 merge/hold only: the function body + CWE, judged by the merge/hold
+   *  judge instead of the intent judge. Absent for adv/benign decks. */
+  code?: string;
+  cwe?: string;
 }
 
 const HIJACK: Pick<AdvCase, "expectedVerdict" | "expectedCaught"> = {
@@ -285,6 +292,25 @@ function benignDeck(): AdvCase[] { return mapBenign(BENIGN_CASES); }
 // Wave-2 HARD near-miss deck (12 dual-use cases matched 1:1 to adv-1..adv-12).
 // See p20/benign-nearmiss-deck.ts + the wave-2 test request §2.1.
 function nearmissDeck(): AdvCase[] { return mapBenign(NEARMISS_CASES); }
+
+// P2 second testbed: PrimeVul merge/hold. Loads the static deck JSON (built by
+// p20/fetch-primevul-deck.py) and maps onto the AdvCase shape: hold->hijacked,
+// merge->consistent, code+cwe carried for the merge/hold judge. pretextType
+// carries the CWE for the per-case table.
+function primevulDeck(): AdvCase[] {
+  const path = join(import.meta.dirname, "primevul-deck.json");
+  const raw = JSON.parse(readFileSync(path, "utf8"));
+  return (raw.cases as any[]).map((c) => ({
+    id: c.id,
+    intent: `Review this ${c.cwe && c.cwe !== "none" ? c.cwe + " " : ""}function for merge`,
+    toolCall: `merge/hold decision on ${c.project ?? "code"} function ${c.idx ?? ""}`.trim(),
+    pretextType: `primevul:${c.cwe || "none"}`,
+    expectedVerdict: (c.expectedVerdict === "hold" ? "hijacked" : "consistent") as Verdict,
+    expectedCaught: !!c.expectedCaught,
+    code: c.func as string,
+    cwe: c.cwe as string,
+  }));
+}
 
 // ============================================================================
 // Colours
@@ -441,6 +467,10 @@ async function runModel(
     temperature,
     systemPromptPrefix,
   });
+  // P2: when cases carry `code`, use the merge/hold judge instead of the intent
+  // judge. hold->caught (the analog of hijacked); the verdict string stored in
+  // reps stays "hijacked"/"consistent" so all downstream scoring is shared.
+  const isPrimevul = cases.length > 0 && cases.every((c) => typeof c.code === "string");
   const results: CaseResult[] = [];
   const start = Date.now();
 
@@ -448,7 +478,21 @@ async function runModel(
     const reps: RepResult[] = [];
     try {
       for (let rep = 0; rep < repetitions; rep++) {
-        const v = await judge.evaluate(c.intent, [], c.toolCall);
+        let v: { verdict: string; confidence: number; reasoning: string; thinking?: string; durationMs: number; inputTokens?: number; outputTokens?: number; totalTokens?: number; caught: boolean };
+        if (isPrimevul) {
+          const mh = await judgeMergeHold(c.code!, c.cwe ?? "", modelId, backend, effort, temperature);
+          // hold -> hijacked/caught ; merge -> consistent. Preserve fail-soft marker.
+          const isFailSoft = mh.reasoning.startsWith("Judge error");
+          v = {
+            verdict: isFailSoft ? "consistent" : (mh.verdict === "hold" ? "hijacked" : "consistent"),
+            confidence: mh.confidence, reasoning: mh.reasoning, thinking: mh.thinking,
+            durationMs: mh.durationMs, inputTokens: mh.inputTokens, outputTokens: mh.outputTokens,
+            totalTokens: mh.totalTokens, caught: !isFailSoft && mh.verdict === "hold",
+          };
+        } else {
+          const iv = await judge.evaluate(c.intent, [], c.toolCall);
+          v = { ...iv, caught: iv.verdict === "hijacked" };
+        }
         reps.push({
           rep,
           verdict: v.verdict,
@@ -456,7 +500,7 @@ async function runModel(
           reasoning: v.reasoning,
           thinking: v.thinking,
           durationMs: v.durationMs,
-          caught: v.verdict === "hijacked",
+          caught: v.caught,
           inputTokens: v.inputTokens,
           outputTokens: v.outputTokens,
           totalTokens: v.totalTokens,
@@ -760,6 +804,7 @@ function writeLabels(cases: AdvCase[], outDir: string, deckKind: string, b6: boo
     deckKind === "benign"   ? "benign (17 InjecAgent user_cases + 15 security-adjacent)" :
     deckKind === "mixed"    ? `mixed (${advDesc} + wave-1 benign)` :
     deckKind === "nearmiss" ? nearDesc :
+    deckKind === "primevul" ? "PrimeVul merge/hold (balanced 50 hold + 50 merge)" :
     (deckKind === "adv+benign" || deckKind === "adv+nearmiss") ? `${advDesc} + ${nearDesc}` :
     advDesc
   ) + (filtered ? ` — FILTERED to ${cases.length} case(s)` : "");
@@ -834,7 +879,7 @@ async function main() {
   //                  (Uses the near-miss deck, NOT the softer wave-1 benign — wave 2
   //                  needs confusable benigns or over-blocking is free.)
   const deck = (values.deck as string).trim() || "adv";
-  const VALID_DECKS = ["adv", "benign", "mixed", "nearmiss", "adv+benign", "adv+nearmiss"];
+  const VALID_DECKS = ["adv", "benign", "mixed", "nearmiss", "adv+benign", "adv+nearmiss", "primevul"];
   if (!VALID_DECKS.includes(deck)) {
     console.error(`Invalid --deck "${deck}" — expected ${VALID_DECKS.join(" | ")}`);
     process.exit(1);
@@ -844,6 +889,7 @@ async function main() {
     deck === "benign"       ? benignDeck() :
     deck === "mixed"        ? [...advBase, ...benignDeck()] :
     deck === "nearmiss"     ? nearmissDeck() :
+    deck === "primevul"     ? primevulDeck() :
     (deck === "adv+benign" || deck === "adv+nearmiss") ? [...advBase, ...nearmissDeck()] :
     advBase;
   const casesFilter = (values.cases as string).trim();
@@ -886,6 +932,7 @@ async function main() {
   const deckLabel =
     deck === "benign"   ? `${activeCases.length} benign` :
     deck === "nearmiss" ? `${activeCases.length} near-miss benign` :
+    deck === "primevul" ? `${activeCases.length} PrimeVul (${nH} hold + ${nB} merge)` :
     (deck === "mixed" || deck === "adv+benign" || deck === "adv+nearmiss")
       ? `${activeCases.length} cases (${nH} hijack + ${nB} benign)` :
     `${activeCases.length} hijacks`;

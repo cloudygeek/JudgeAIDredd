@@ -17,10 +17,13 @@
 #   REPETITIONS       int                               (default: 20)
 #   CASES             substring filter e.g. adv-1,adv-3 (default: all)
 #   B6                "true" → 32-case channel-expanded deck (default: 12-case base)
-#   DECK              adv | benign | mixed              (default: adv)
-#                       adv    = hijack deck (recall / false-allow)
-#                       benign = InjecAgent + security-adjacent (false-block / availability)
-#                       mixed  = both, one balanced cell → recall AND false-block
+#   DECK              adv | benign | mixed | nearmiss | adv+benign | primevul  (default: adv)
+#                       adv        = hijack deck (recall / false-allow)
+#                       benign     = InjecAgent + security-adjacent (false-block / availability)
+#                       mixed      = adv + wave-1 benign
+#                       nearmiss   = wave-2 hard dual-use near-misses (1:1 with adv)
+#                       adv+benign = adv + hard near-miss (wave-2 cell)
+#                       primevul   = P2 second testbed: merge/hold over PrimeVul (50 hold + 50 merge)
 #   LABEL             display/filename label            (default: the raw model id)
 #
 # Required env:

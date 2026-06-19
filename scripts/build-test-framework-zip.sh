@@ -140,6 +140,7 @@ for f in Dockerfile server.js docker-entrypoint-test-framework.sh \
          docker-entrypoint-mode4.sh docker-entrypoint-t3e.sh \
          docker-entrypoint-t5.sh docker-entrypoint-p20.sh \
          p20/run-adversarial-judge.ts p20/benign-deck.ts \
+         p20/benign-nearmiss-deck.ts p20/merge-hold-judge.ts p20/primevul-deck.json \
          test-framework/src/runner-agentlab.ts \
          test-framework/src/runner-mode4.ts \
          test-framework/src/runner-mode4-cli.ts \
