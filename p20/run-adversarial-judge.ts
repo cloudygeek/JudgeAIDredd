@@ -312,6 +312,24 @@ function primevulDeck(): AdvCase[] {
   }));
 }
 
+// P3 prompt-perturbation (RQ1b): 12 adv hijacks × 5 semantically-equivalent
+// variants (built by p20/build-perturbation-deck.py). Uses the normal intent
+// judge (these are hijacks). pretextType carries baseCase:perturbation so P20
+// can group reps by baseCase (across-variant flip = input-sensitivity) vs
+// within-variant (non-determinism).
+function perturbationDeck(): AdvCase[] {
+  const path = join(import.meta.dirname, "perturbation-deck.json");
+  const raw = JSON.parse(readFileSync(path, "utf8"));
+  return (raw.cases as any[]).map((c) => ({
+    id: c.id,
+    intent: c.intent as string,
+    toolCall: c.toolCall as string,
+    pretextType: `${c.baseCase}:${c.perturbation}`,
+    expectedVerdict: "hijacked" as Verdict,
+    expectedCaught: true,
+  }));
+}
+
 // ============================================================================
 // Colours
 // ============================================================================
@@ -805,6 +823,7 @@ function writeLabels(cases: AdvCase[], outDir: string, deckKind: string, b6: boo
     deckKind === "mixed"    ? `mixed (${advDesc} + wave-1 benign)` :
     deckKind === "nearmiss" ? nearDesc :
     deckKind === "primevul" ? "PrimeVul merge/hold (balanced 50 hold + 50 merge)" :
+    deckKind === "perturb"  ? "perturbation (12 adv × 5 semantically-equiv variants)" :
     (deckKind === "adv+benign" || deckKind === "adv+nearmiss") ? `${advDesc} + ${nearDesc}` :
     advDesc
   ) + (filtered ? ` — FILTERED to ${cases.length} case(s)` : "");
@@ -879,7 +898,7 @@ async function main() {
   //                  (Uses the near-miss deck, NOT the softer wave-1 benign — wave 2
   //                  needs confusable benigns or over-blocking is free.)
   const deck = (values.deck as string).trim() || "adv";
-  const VALID_DECKS = ["adv", "benign", "mixed", "nearmiss", "adv+benign", "adv+nearmiss", "primevul"];
+  const VALID_DECKS = ["adv", "benign", "mixed", "nearmiss", "adv+benign", "adv+nearmiss", "primevul", "perturb"];
   if (!VALID_DECKS.includes(deck)) {
     console.error(`Invalid --deck "${deck}" — expected ${VALID_DECKS.join(" | ")}`);
     process.exit(1);
@@ -890,6 +909,7 @@ async function main() {
     deck === "mixed"        ? [...advBase, ...benignDeck()] :
     deck === "nearmiss"     ? nearmissDeck() :
     deck === "primevul"     ? primevulDeck() :
+    deck === "perturb"      ? perturbationDeck() :
     (deck === "adv+benign" || deck === "adv+nearmiss") ? [...advBase, ...nearmissDeck()] :
     advBase;
   const casesFilter = (values.cases as string).trim();
@@ -933,6 +953,7 @@ async function main() {
     deck === "benign"   ? `${activeCases.length} benign` :
     deck === "nearmiss" ? `${activeCases.length} near-miss benign` :
     deck === "primevul" ? `${activeCases.length} PrimeVul (${nH} hold + ${nB} merge)` :
+    deck === "perturb"  ? `${activeCases.length} perturbation variants (12 adv × 5)` :
     (deck === "mixed" || deck === "adv+benign" || deck === "adv+nearmiss")
       ? `${activeCases.length} cases (${nH} hijack + ${nB} benign)` :
     `${activeCases.length} hijacks`;

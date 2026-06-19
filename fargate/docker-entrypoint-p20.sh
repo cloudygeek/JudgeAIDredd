@@ -24,6 +24,7 @@
 #                       nearmiss   = wave-2 hard dual-use near-misses (1:1 with adv)
 #                       adv+benign = adv + hard near-miss (wave-2 cell)
 #                       primevul   = P2 second testbed: merge/hold over PrimeVul (50 hold + 50 merge)
+#                       perturb    = P3 prompt perturbation: 12 adv × 5 semantically-equiv variants
 #   LABEL             display/filename label            (default: the raw model id)
 #
 # Required env:
