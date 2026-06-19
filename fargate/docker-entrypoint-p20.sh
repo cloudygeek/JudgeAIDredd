@@ -17,6 +17,10 @@
 #   REPETITIONS       int                               (default: 20)
 #   CASES             substring filter e.g. adv-1,adv-3 (default: all)
 #   B6                "true" → 32-case channel-expanded deck (default: 12-case base)
+#   DECK              adv | benign | mixed              (default: adv)
+#                       adv    = hijack deck (recall / false-allow)
+#                       benign = InjecAgent + security-adjacent (false-block / availability)
+#                       mixed  = both, one balanced cell → recall AND false-block
 #   LABEL             display/filename label            (default: the raw model id)
 #
 # Required env:
@@ -46,6 +50,7 @@ JUDGE_TEMPERATURE="${JUDGE_TEMPERATURE:-}"
 JUDGE_PROMPT="${JUDGE_PROMPT:-persona-neutral}"
 REPETITIONS="${REPETITIONS:-20}"
 CASES="${CASES:-}"
+DECK="${DECK:-adv}"
 LABEL="${LABEL:-}"
 LOGDIR="${P20_LOGDIR:-/app/runs}"
 mkdir -p "$LOGDIR"
@@ -63,7 +68,7 @@ log "RUN_ID=$RUN_ID"
 log "AWS_REGION=$AWS_REGION"
 log "JUDGE_MODEL=$JUDGE_MODEL  JUDGE_BACKEND=$JUDGE_BACKEND"
 log "JUDGE_EFFORT=$JUDGE_EFFORT  JUDGE_TEMPERATURE=${JUDGE_TEMPERATURE:-(backend default)}"
-log "JUDGE_PROMPT=$JUDGE_PROMPT  REPETITIONS=$REPETITIONS  CASES=${CASES:-(all)}  B6=${B6:-false}"
+log "JUDGE_PROMPT=$JUDGE_PROMPT  REPETITIONS=$REPETITIONS  CASES=${CASES:-(all)}  B6=${B6:-false}  DECK=$DECK"
 log "OPENAI_API_KEY=$([[ -n "${OPENAI_API_KEY:-}" ]] && echo set || echo unset)"
 log "LOGDIR=$LOGDIR  RESULTS_S3_URL=${RESULTS_S3_URL:-(disabled)}"
 log "────────────────────────────────────────────────────────────────"
@@ -78,6 +83,7 @@ runner_args=(
   --judge-effort "$JUDGE_EFFORT"
   --prompt "$JUDGE_PROMPT"
   --repetitions "$REPETITIONS"
+  --deck "$DECK"
   --out-dir "$LOGDIR"
 )
 [[ -n "$JUDGE_TEMPERATURE" ]] && runner_args+=( --judge-temperature "$JUDGE_TEMPERATURE" )

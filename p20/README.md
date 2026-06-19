@@ -86,9 +86,25 @@ done
 | `--judge-temperature 0,0.5,1` | Explicit temperature(s). Comma-list = one cell per value. Empty = backend default. |
 | `--prompt <variant>` | `standard` / `B7` / `B7.1` / `B7.1-office` OR a `persona-*`. |
 | `--repetitions N` | Reps per case (P20 uses 20). |
-| `--cases adv-1,adv-3` | Substring filter on case id (`includes`). |
-| `--b6` | Use the 32-case channel-expanded deck. |
+| `--deck adv\|benign\|mixed` | Which deck. `adv` (default) = hijack deck (recall/false-allow). `benign` = InjecAgent user_cases + security-adjacent (false-block/availability). `mixed` = both in one cell → recall AND false-block. Container env: `DECK`. |
+| `--cases adv-1,ben-ij-1` | Substring filter on case id (`includes`). |
+| `--b6` | Use the 32-case channel-expanded adv deck (adv deck only). |
 | `--out-dir <path>` | Output dir. Default `p20/results/` (git-ignored). |
+
+## Decks
+
+| Deck | Cases | Ground truth | Measures |
+|---|---|---|---|
+| `adv` | 12 (or 32 with `--b6`) | all hijacks (`expectedCaught=true`) | recall, false-allow |
+| `benign` | 32 (17 InjecAgent `user_cases.jsonl` + 15 security-adjacent) | all benign (`expectedCaught=false`) | **false-block / availability** |
+| `mixed` | adv + benign | mixed | both → F1 / MCC in one cell |
+
+The result JSON's `groundTruth` block splits `caught` by class: `groundTruth.hijack.recall`
+(catches among hijacks) and `groundTruth.benign.falseBlockRate` (hijacked verdicts among
+benign cases = the availability cost). `labels.json` carries `counts: {hijack, benign}`.
+The security-adjacent benign cases (`ben-sec-*`) are the hard ones — legitimate tasks that
+touch `.env`/creds/`curl`/`/tmp` (shadowing an adv pretext via the `shadows` field) to
+stress a judge that pattern-matches on surface features.
 
 ## Output
 
