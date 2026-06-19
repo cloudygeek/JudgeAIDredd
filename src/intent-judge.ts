@@ -619,7 +619,24 @@ ${lines}
         durationMs = response.durationMs;
       }
 
-      const parsed = this.parseVerdict(content);
+      // Parse the model's text channel first. For thinking-style models
+      // (e.g. moonshot.kimi-k2-thinking) the verdict often never reaches
+      // the `content` channel — the model spends its whole budget in the
+      // reasoning trace, which bedrock-client.ts routes into `thinking`.
+      // When the `content` parse extracts NO usable verdict but a thinking
+      // trace exists, re-run the SAME gated extraction against `thinking`
+      // to recover the verdict (see tryExtractVerdict's THINKING-MODEL
+      // note). This does not weaken fail-closed: extraction from `thinking`
+      // uses the identical leniency layers, and if it also yields nothing
+      // we still fall through to parseVerdict's hijacked default.
+      let parsed = this.parseVerdict(content);
+      if (
+        thinking &&
+        this.tryExtractVerdict(content) === null
+      ) {
+        const fromThinking = this.tryExtractVerdict(thinking);
+        if (fromThinking) parsed = fromThinking;
+      }
 
       return {
         ...parsed,
@@ -660,6 +677,32 @@ ${lines}
    * allowed verdicts and a successful prompt-injection that just makes the
    * judge produce gibberish would silently bypass enforcement.
    *
+   * This is a thin fail-closed wrapper around {@link tryExtractVerdict}.
+   * The wrapper exists so the extraction logic can be reused for the
+   * reasoning-channel fallback in evaluate() (thinking-style models —
+   * see tryExtractVerdict's doc) WITHOUT duplicating the leniency layers
+   * and without weakening the fail-closed guarantee: a null from
+   * tryExtractVerdict still becomes "hijacked" here.
+   */
+  private parseVerdict(
+    raw: string
+  ): Omit<JudgeVerdict, "durationMs"> {
+    const extracted = this.tryExtractVerdict(raw);
+    if (extracted) return extracted;
+    return {
+      verdict: "hijacked",
+      confidence: 0.5,
+      reasoning: `Unparseable judge response — treating as adversarial: ${raw.substring(0, 200)}`,
+    };
+  }
+
+  /**
+   * Attempt to extract a verdict from one text channel. Returns null when
+   * the text yields no usable verdict (the caller is responsible for
+   * failing closed — see parseVerdict). NEVER returns an allow verdict for
+   * garbage: each layer below is gated, and the bare-"consistent" path is
+   * deliberately the strictest.
+   *
    * Three layers of leniency, all gated:
    *  1. Well-formed JSON with verdict ∈ {consistent, drifting, hijacked}: trust it.
    *  2. Truncated JSON with a clear "verdict": "<word>" key-value pair AND
@@ -667,20 +710,32 @@ ${lines}
    *  3. No JSON at all but the response unambiguously contains exactly one
    *     of "hijacked"/"drifting"/"consistent" as a word: trust it (the
    *     model dropped formatting but the verdict is clear).
-   *  4. Anything else: fail closed → "hijacked" with reason
-   *     "unparseable; treating as adversarial".
+   *  4. Anything else: return null (caller fails closed → "hijacked").
+   *
+   * THINKING-MODEL CASE: reasoning/thinking-style models (e.g.
+   * moonshot.kimi-k2-thinking) emit their chain-of-thought into Bedrock's
+   * `reasoningContent` block, which bedrock-client.ts routes into the
+   * separate `thinking` field — NOT into `content`. Such a model often
+   * spends its whole token budget reasoning and never emits a final
+   * `text` block, so `content` (the value normally passed here) is empty
+   * or truncated and fails closed, even though the model clearly answered.
+   * The verdict JSON (often inside a ```json fence in the reasoning, which
+   * Layer 1's `{...}` match handles) lives in the thinking channel.
+   * evaluate() therefore calls this a SECOND time against `thinking` when
+   * the `content` parse produced nothing — recovering the real verdict
+   * without relaxing any layer here. A truncated reasoning trace that
+   * never reaches a verdict still returns null and still fails closed.
    */
-  private parseVerdict(
+  private tryExtractVerdict(
     raw: string
-  ): Omit<JudgeVerdict, "durationMs"> {
+  ): Omit<JudgeVerdict, "durationMs"> | null {
     const VALID = new Set(["consistent", "drifting", "hijacked"]);
-    const failClosed = (reason: string): Omit<JudgeVerdict, "durationMs"> => ({
-      verdict: "hijacked",
-      confidence: 0.5,
-      reasoning: `${reason}: ${raw.substring(0, 200)}`,
-    });
 
-    // Layer 1: well-formed JSON.
+    // Layer 1: well-formed JSON. Greedy first-{ to last-} span. A thinking
+    // trace may contain several intermediate/abandoned JSON drafts ("Wait,
+    // let me reconsider..."); a clean final object parses here, and when it
+    // doesn't, Layer 2 below scans for the LAST "verdict": "<word>" pair so
+    // the model's settled answer wins over an earlier draft.
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
@@ -698,15 +753,21 @@ ${lines}
               : "No reasoning provided",
           };
         }
-        // JSON parsed but verdict missing or outside the valid set — fail closed.
-        return failClosed("JSON parsed but verdict invalid or missing");
+        // JSON parsed but verdict missing or outside the valid set — fail
+        // closed for this channel (return null; caller decides).
+        return null;
       } catch {
         // Fall through to truncated-JSON recovery.
       }
     }
 
-    // Layer 2: truncated JSON. Look for a verdict key-value pair anywhere.
-    const verdictMatch = raw.match(/"verdict"\s*:\s*"(\w+)"/);
+    // Layer 2: truncated JSON. Look for a verdict key-value pair. Use the
+    // LAST match so a thinking trace's final stated verdict wins over an
+    // earlier draft it talked itself out of.
+    const verdictMatches = [...raw.matchAll(/"verdict"\s*:\s*"(\w+)"/g)];
+    const verdictMatch = verdictMatches.length
+      ? verdictMatches[verdictMatches.length - 1]
+      : null;
     if (verdictMatch && VALID.has(verdictMatch[1])) {
       const confMatch = raw.match(/"confidence"\s*:\s*([\d.]+)/);
       const reasonMatch = raw.match(/"reasoning"\s*:\s*"([^"]*)/);
@@ -740,9 +801,11 @@ ${lines}
           || /\b(plausible|appropriate|aligned|matches?)\b.*\b(task|action|tool)\b/i.test(raw)) {
         return { verdict: "consistent", confidence: 0.5, reasoning: `Free-text inference: ${raw.substring(0, 100)}` };
       }
-      return failClosed("Bare 'consistent' without supporting reasoning — possible injection");
+      // Bare "consistent" without supporting reasoning — possible injection.
+      return null;
     }
 
-    return failClosed("Unparseable judge response — treating as adversarial");
+    // Unparseable — caller fails closed.
+    return null;
   }
 }
