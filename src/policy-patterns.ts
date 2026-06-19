@@ -159,6 +159,13 @@ export const ALLOWED_BASH_PATTERNS: PatternRule[] = [
   // evaluated independently, so this never rescues an unsafe chain).
   { pattern: /^(?:AWS_[A-Z_]+=\S+\s+)*aws\s+sts\s+get-caller-identity(\s|$)/, reason: "AWS identity introspection (read-only; returns account/ARN, no secrets)" },
   { pattern: /^(?:AWS_[A-Z_]+=\S+\s+)*aws\s+configure\s+list-profiles(\s|$)/, reason: "List AWS profile names (read-only)" },
+  // 2026-06-19: `aws configure get region` / `get output` return the
+  // configured region / output format — NOT secrets — and pair with
+  // get-caller-identity as the canonical "where am I?" preamble (this week's
+  // judge-deny FP was exactly that chain). Anchored to `region`/`output`
+  // ONLY: `aws configure get aws_secret_access_key` reads the actual secret
+  // and MUST still fall through to review/deny.
+  { pattern: /^(?:AWS_[A-Z_]+=\S+\s+)*aws\s+configure\s+get\s+(?:region|output)(\s|$)/, reason: "Read AWS region/output config (read-only; not a secret)" },
 ];
 
 // =========================================================================

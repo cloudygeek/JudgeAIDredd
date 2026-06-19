@@ -37,6 +37,7 @@ export function computeFingerprint(
 ): Fingerprint | null {
   if (tool === "Bash") return fingerprintBash(input);
   if (tool === "Edit" || tool === "Write") return fingerprintFileWrite(tool, input);
+  if (tool === "Read") return fingerprintFileRead(input);
   if (tool === "WebFetch") return fingerprintWebFetch(input);
   if (tool.startsWith("mcp__")) return fingerprintMcp(tool, input);
   return null;
@@ -312,6 +313,25 @@ function fingerprintFileWrite(tool: string, input: Record<string, unknown>): Fin
     tool,
     shape: { file_path: path },
     summary: `${tool} ${path}`,
+  };
+}
+
+// ---- Read fingerprinter ---------------------------------------------------
+
+/** A `Read` of a sensitive file can reach the judge and get blocked
+ *  (reading a `.key`/`.env` looks like exfil prep). Without a fingerprint,
+ *  `computeFingerprint` returned null for Read, so an approved read was
+ *  never stored and the identical read re-prompted forever. Key on the
+ *  file path (scoped to (ownerSub, projectRoot) by the approval store) so
+ *  consent to read a given file carries forward like Edit/Write. Not a
+ *  credential-pair, so the intent-drift backstop still applies on lookup. */
+function fingerprintFileRead(input: Record<string, unknown>): Fingerprint | null {
+  const path = String(input.file_path ?? "");
+  if (!path) return null;
+  return {
+    tool: "Read",
+    shape: { file_path: path },
+    summary: `Read ${path}`,
   };
 }
 

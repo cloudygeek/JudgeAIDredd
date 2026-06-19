@@ -106,6 +106,14 @@ function main() {
   expect("ls with 2>&1 still allowed", "ls -la 2>&1", "allow");
   expect("cat to /dev/null is allowed", "cat foo.txt >/dev/null 2>&1", "allow");
 
+  // 2026-06-19: `aws configure get region`/`output` — read-only, non-secret;
+  // pairs with get-caller-identity as the "where am I?" preamble (this week's
+  // judge-deny FP). The whole introspection chain must collapse to allow.
+  expect("configure get region", "aws configure get region", "allow");
+  expect("configure get output 2>&1", "aws configure get output 2>&1", "allow");
+  expect("get-caller-identity + region introspection chain",
+    "aws sts get-caller-identity 2>&1; echo '---'; aws configure get region 2>&1; echo \"AWS_REGION=$AWS_REGION AWS_PROFILE=$AWS_PROFILE\"", "allow");
+
   // -------------------------------------------------------------------------
   // Negative: the allow-list must NOT weaken anything. "On their own" only —
   // any risky co-command, real file/device write, or non-introspection aws
@@ -120,6 +128,10 @@ function main() {
   expect("aws sts assume-role NOT allowed", "aws sts assume-role --role-arn arn:aws:iam::1:role/x --role-session-name s", "review");
   expect("aws configure set NOT allowed", "aws configure set region eu-west-1", "review");
   expect("non-AWS env prefix NOT allowed", "LD_PRELOAD=/tmp/evil.so aws sts get-caller-identity", "review");
+  // CRITICAL: `configure get` must be anchored to region/output — reading the
+  // actual secret key must NOT be allow-listed.
+  expect("configure get aws_secret_access_key NOT allowed", "aws configure get aws_secret_access_key", "review");
+  expect("configure get aws_access_key_id NOT allowed", "aws configure get aws_access_key_id", "review");
 
   console.log(`\n  ${PASS} passed, ${FAIL} failed`);
   process.exit(FAIL === 0 ? 0 : 1);

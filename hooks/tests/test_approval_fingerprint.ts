@@ -134,6 +134,35 @@ function main() {
     ? pass(`echo;curl literal → curl shape host=${ls.host}`)
     : fail(`echo;curl literal fingerprint wrong: ${JSON.stringify(litChain)}`);
 
+  // -------------------------------------------------------------------------
+  section("Read tool — secret-file reads are now fingerprintable (gap fix)");
+  // Previously computeFingerprint returned null for Read, so an approved
+  // read was never stored and re-prompted forever. Now keyed on file_path.
+  {
+    const r = computeFingerprint("Read", { file_path: "/proj/spher_wall/wallarm_api.key" });
+    r ? pass("Read returns a fingerprint (not null)") : fail("Read still returns null");
+    const rs = r?.shape as { file_path?: string } | undefined;
+    rs?.file_path === "/proj/spher_wall/wallarm_api.key"
+      ? pass("Read shape keys on file_path") : fail(`Read shape wrong: ${JSON.stringify(r?.shape)}`);
+
+    const a = computeFingerprint("Read", { file_path: "/proj/.env" });
+    const b = computeFingerprint("Read", { file_path: "/proj/.env" });
+    const cc = computeFingerprint("Read", { file_path: "/proj/other.env" });
+    a && b && hashFingerprint(a) === hashFingerprint(b)
+      ? pass("same file → stable hash (repeat read auto-allows)") : fail("same-file hash unstable");
+    a && cc && hashFingerprint(a) !== hashFingerprint(cc)
+      ? pass("different file → different hash (consent doesn't leak across files)") : fail("different files collided");
+
+    computeFingerprint("Read", {}) === null
+      ? pass("Read with no file_path → null (nothing to record)") : fail("empty Read should be null");
+
+    // Read and Write of the same path must NOT share consent (different tool).
+    const rd = computeFingerprint("Read", { file_path: "/proj/x" });
+    const wr = computeFingerprint("Write", { file_path: "/proj/x", content: "y" });
+    rd && wr && hashFingerprint(rd) !== hashFingerprint(wr)
+      ? pass("Read vs Write of same path → distinct (tool is in the hash)") : fail("Read/Write collided");
+  }
+
   console.log(`\n  ${PASS} passed, ${FAIL} failed`);
   process.exit(FAIL === 0 ? 0 : 1);
 }
