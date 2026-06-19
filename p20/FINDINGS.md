@@ -49,3 +49,25 @@ unnecessary.
 
 Results + SUMMARY.md (per-cell recall / false-allow / Wilson CI + the gpt-oss
 temperature sweep) live in `results/p20-consensus-20260618/`.
+
+## 2026-06-19 — kimi re-run: parser fixed, but token-budget truncation remains
+
+Parser fix (0.1.703) verified: kimi 1-call probe returns clean `consistent`. Full
+N=20 cell ran (240 reps, 0 fail-soft). BUT 68/240 reps are still **unparseable** —
+all truncated at exactly outputTokens=512 (the `bedrock-client.ts:94` no-effort
+maxTokens cap). kimi is a native thinking model: it always reasons, and ~28% of
+the time it burns the full 512-token budget on reasoning before emitting the
+verdict JSON. The parser fix recovers verdicts that WERE emitted; it can't recover
+one that never was.
+
+**Honest kimi number:** among the 172 PARSEABLE reps, C/D/H = 162/4/6 →
+**real recall 3.5%** (one of the weakest detectors, near deepseek 0.4% / gpt-oss
+2.1%). The naive count (74/240 = 30.8%) is ~92% truncation artifact (68 of the 74
+"hijacked" are fail-closed truncations, mean tokens=512). DO NOT report 30.8%.
+
+**Proper fix (not yet applied):** raise the effort-off `maxTokens` floor for
+reasoning models (kimi, deepseek-r1, gpt-oss-reasoning). 512 was tuned for cheap
+non-thinking judges; parseable kimi reps averaged 406 tokens, so ~2048 would
+capture nearly all. Decision pending (touches shared client cost + needs a
+rebuild/redeploy). Until then, kimi cell must be filtered to parseable reps (like
+the "Judge error" census filter) before scoring.

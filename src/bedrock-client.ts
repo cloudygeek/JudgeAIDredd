@@ -90,8 +90,20 @@ export async function bedrockChat(
   // caching." Cross-vendor judges (qwen / gpt-oss / glm / nova) go through the
   // same client (P20), so gate both features on the model family.
   const isAnthropic = modelId.includes("anthropic") || modelId.includes("claude");
+  // Native reasoning models emit a chain-of-thought BEFORE the verdict
+  // regardless of whether we ask for it — they don't honour the Anthropic
+  // `thinking` toggle. At effort-off the 512-token cap (tuned for cheap
+  // non-thinking judges) truncates them mid-reasoning, so the verdict JSON is
+  // never emitted and parseVerdict fails closed. Give those models a larger
+  // floor so they finish reasoning AND emit the verdict.
+  // Observed in the P20 panel: kimi-k2-thinking burned exactly 512 tokens on
+  // ~28% of calls (truncated), while parseable reps averaged ~406 — 2048
+  // captures the tail with headroom. (gpt-oss-120b, by contrast, averaged ~165
+  // tokens with ZERO truncation, so it does NOT need the bump and is excluded.)
+  const isReasoningModel = /kimi|deepseek\.r1|deepseek-r1/i.test(modelId);
+  const noEffortMaxTokens = isReasoningModel ? 2048 : 512;
   const inferenceConfig: Record<string, unknown> = {
-    maxTokens: effort ? (isOpus47 ? 16384 : Math.min(budgetTokens + 4096, 64000)) : 512,
+    maxTokens: effort ? (isOpus47 ? 16384 : Math.min(budgetTokens + 4096, 64000)) : noEffortMaxTokens,
   };
   // Opus 4.7/4.8 reject the temperature param entirely, so it's never set
   // for them. Otherwise: an explicit `temperature` (P20) wins; absent that,
