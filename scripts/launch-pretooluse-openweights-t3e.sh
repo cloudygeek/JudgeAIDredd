@@ -41,8 +41,8 @@ CELLS=(
   "8:qwen3-coder-next:us-east-1"
   "9:deepseek-v3.1:us-west-2"
   "10:glm-4.7:us-west-2"
-  # 9th agent — no free box in this pass (bedt11-14 off-limits). Re-run to place it.
-  "PENDING:mistral-large-3:us-west-2"
+  # 9th agent — placed on bedt3 in a re-run after the eu cells freed it (2026-06-20).
+  "3:mistral-large-3:us-west-2"
 )
 
 ver_ge() { [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$1" ]]; }
