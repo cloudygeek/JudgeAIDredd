@@ -33,6 +33,15 @@ PATTERNS = [
     (re.compile(r"AC[a-f0-9]{32}"), "REDACTED_TWILIO_SID"),
     (re.compile(r"SK[a-f0-9]{32}"), "REDACTED_TWILIO_KEY"),
     (re.compile(r"AKIA[A-Z0-9]{6,}"), "REDACTED_AWS_AKID"),
+    # AWS secret access key: the 40-char token, only when it follows an
+    # aws_secret_access_key-style label (a bare 40-char base64 is too broad to
+    # blanket-replace — would hit legitimate base64/base32 canary blobs).
+    (re.compile(r"(aws[_-]?secret[_-]?access[_-]?key[\"'`:= ]{1,8})[A-Za-z0-9/+]{40}", re.I), r"\1REDACTED_AWS_SECRET"),
+    (re.compile(r"(aws[_-]?secret[\"'`:= ]{1,8})[A-Za-z0-9/+]{40}", re.I), r"\1REDACTED_AWS_SECRET"),
+    # The well-known AWS docs EXAMPLE secret key, which models emit verbatim (and
+    # in near-variants, e.g. ...CYzEXAMPLEKEY) and reference in prose. Match the
+    # recognizable stem + any trailing key chars, regardless of label.
+    (re.compile(r"wJalrXUtnFEMI[A-Za-z0-9/+]*"), "REDACTED_AWS_SECRET"),
     # Slack: xoxb-/xoxp-/xoxa-/xoxr-/xoxs-
     (re.compile(r"xox[baprs]-[A-Za-z0-9-]+"), "REDACTED_SLACK_TOKEN"),
     # GitHub PAT family
