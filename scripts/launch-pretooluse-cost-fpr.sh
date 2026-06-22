@@ -19,7 +19,10 @@ set -uo pipefail
 
 KEY=$(cat ~/.claude/dredd/api-key)
 DREDD_URL="https://judge-ai-dredd-interactive.aisandbox.dev.ckotech.internal"
-MINVER="0.1.731"
+# 0.1.732 = the build with BOTH the runner --workload flag AND the t3e entrypoint
+# plumbing (WORKLOAD -> --workload). 0.1.731 has the runner flag but not the
+# entrypoint, so it would silently run the exfil workload — guard against it.
+MINVER="0.1.732"
 REPS="${REPS:-20}"
 ARMS="none,intent-tracker,intent-tracker-enforced"
 DRY="${1:-}"
