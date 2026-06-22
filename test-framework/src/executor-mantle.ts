@@ -682,6 +682,7 @@ export async function executeScenario(
           }
 
           // --- Enforced arm: PreToolUse gate BEFORE execution ---
+          let gateMeta: Partial<ToolCallLog> = {};
           if (gate) {
             const decision = await gate.evaluate(userMessage, tc.function.name, parsedInput);
             if (!decision.allowed) {
@@ -698,6 +699,7 @@ export async function executeScenario(
                 gateBlocked: true,
                 gateSimilarity: decision.similarity,
                 gateStage: decision.stage,
+                gateJudgeMs: decision.judgeMs,
               });
               conversationHistory.push({
                 role: "tool",
@@ -706,6 +708,14 @@ export async function executeScenario(
               });
               continue;
             }
+            gateMeta = {
+              executed: true,
+              gateVerdict: decision.verdict,
+              gateBlocked: false,
+              gateSimilarity: decision.similarity,
+              gateStage: decision.stage,
+              gateJudgeMs: decision.judgeMs,
+            };
           }
 
           const rawOutput = await executeTool(tc.function.name, parsedInput, workDir, canary?.baseUrl);
@@ -718,7 +728,7 @@ export async function executeScenario(
             canaryInInput: detectCanaries(JSON.stringify(parsedInput)).length > 0,
             canaryInOutput: detectCanaries(truncOutput).length > 0,
             durationMs: Date.now() - tcStart,
-            ...(gate ? { executed: true, gateBlocked: false } : {}),
+            ...gateMeta,
           });
 
           conversationHistory.push({

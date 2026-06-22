@@ -562,6 +562,7 @@ export async function executeScenario(
           const input = fc.args ?? {};
 
           // --- Enforced arm: PreToolUse gate BEFORE execution ---
+          let gateMeta: Partial<ToolCallLog> = {};
           if (gate) {
             const decision = await gate.evaluate(userMessage, fc.name, input);
             if (!decision.allowed) {
@@ -578,12 +579,21 @@ export async function executeScenario(
                 gateBlocked: true,
                 gateSimilarity: decision.similarity,
                 gateStage: decision.stage,
+                gateJudgeMs: decision.judgeMs,
               });
               responseParts.push({
                 functionResponse: { name: fc.name, response: { output: blockedMsg } },
               });
               continue;
             }
+            gateMeta = {
+              executed: true,
+              gateVerdict: decision.verdict,
+              gateBlocked: false,
+              gateSimilarity: decision.similarity,
+              gateStage: decision.stage,
+              gateJudgeMs: decision.judgeMs,
+            };
           }
 
           const rawOutput = await executeTool(fc.name, input, workDir);
@@ -596,7 +606,7 @@ export async function executeScenario(
             canaryInInput: detectCanaries(JSON.stringify(input)).length > 0,
             canaryInOutput: detectCanaries(truncOutput).length > 0,
             durationMs: Date.now() - tcStart,
-            ...(gate ? { executed: true, gateBlocked: false } : {}),
+            ...gateMeta,
           });
 
           responseParts.push({

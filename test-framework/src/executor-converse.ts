@@ -759,6 +759,7 @@ export async function executeScenario(
                 gateBlocked: true,
                 gateSimilarity: decision.similarity,
                 gateStage: decision.stage,
+                gateJudgeMs: decision.judgeMs,
               });
               toolResults.push({
                 toolResult: {
@@ -776,6 +777,7 @@ export async function executeScenario(
               gateBlocked: false,
               gateSimilarity: decision.similarity,
               gateStage: decision.stage,
+              gateJudgeMs: decision.judgeMs,
             };
           }
 

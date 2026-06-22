@@ -50,6 +50,10 @@ export interface ToolCallLog {
   gateSimilarity?: number | null;
   /** Which gate stage decided ("stage1-deny" | "drift-block" | "judge" | "drift-allow"). */
   gateStage?: string;
+  /** Per-call LLM-judge latency in ms (>0 only when the call reached the judge
+   *  stage; 0 for deterministic early-exit at Stage 1/drift). Drives the per-call
+   *  cost/latency analysis — see docs/test-request-pretooluse-cost-fpr-2026-06-22.md. */
+  gateJudgeMs?: number;
 }
 
 export interface TestResult {
