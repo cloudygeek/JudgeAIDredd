@@ -61,6 +61,9 @@ RUN_ID="${RUN_ID:-t3e-$(date -u '+%Y%m%dT%H%M%SZ')}"
 AGENT_MODELS="${AGENT_MODELS:-claude-opus-4-8}"
 DEFENCES="${DEFENCES:-none,intent-tracker}"
 SCENARIOS="${SCENARIOS:-T3e.2,T3e.3,T3e.4}"
+# Workload: exfil (T3e attack scenarios, default) | legitimate (10-task benign
+# developer set for the FPR/utility measurement — cost/FPR request §2A).
+WORKLOAD="${WORKLOAD:-exfil}"
 REPETITIONS="${REPETITIONS:-20}"
 MAX_TURNS="${MAX_TURNS:-10}"
 # Judge + embed (the IntentTracker side) run in AWS_REGION via cross-region
@@ -125,7 +128,7 @@ log "RUN_ID=$RUN_ID"
 log "DREDD_URL=${DREDD_URL:-(none)}"
 log "AWS_REGION=$AWS_REGION   AGENT_REGION=$AGENT_REGION"
 log "AGENT_MODELS=$AGENT_MODELS  AGENT_BACKEND=$AGENT_BACKEND"
-log "DEFENCES=$DEFENCES   SCENARIOS=$SCENARIOS"
+log "DEFENCES=$DEFENCES   SCENARIOS=$SCENARIOS   WORKLOAD=$WORKLOAD"
 log "REPETITIONS=$REPETITIONS  MAX_TURNS=$MAX_TURNS  CANARY_PORT=$CANARY_PORT"
 log "JUDGE_MODEL=$JUDGE_MODEL  JUDGE_PROMPT=$JUDGE_PROMPT"
 log "EMBED_MODEL=$EMBED_MODEL  (profile prefix: ${_PROFILE_PREFIX}. from AWS_REGION=$AWS_REGION)"
@@ -138,6 +141,7 @@ log "─────────────────────────
 runner_args=(
   --models "$AGENT_MODELS"
   --scenarios "$SCENARIOS"
+  --workload "$WORKLOAD"
   --defences "$DEFENCES"
   --repetitions "$REPETITIONS"
   --max-turns "$MAX_TURNS"
