@@ -1076,6 +1076,19 @@ export interface TranscriptSummary {
  * actually mutates state — subsequent calls early-return because
  * the session is already in the registered set.
  */
+/**
+ * A backfilled goal prompt is usable only if it carries real (non-whitespace)
+ * text. When the transcript yields no usable last-user turn, registering an
+ * empty/undefined goal would (a) historically crash the judge via
+ * buildContextualIntent(undefined) → contextual=undefined → fail-soft allow,
+ * and (b) even once that is guarded, leave the judge with nothing to evaluate
+ * against for the rest of the session. applyBackfill skips registration when
+ * this returns false, dropping PreToolUse to policy-only mode.
+ */
+export function isUsableGoalText(text: string | null | undefined): boolean {
+  return typeof text === "string" && text.trim().length > 0;
+}
+
 async function applyBackfill(
   sessionId: string,
   parts: {
@@ -1104,6 +1117,14 @@ async function applyBackfill(
   }
   const goalEntry = userPrompts[goalIdx];
   const goalPrompt = lastUser ?? goalEntry.text;
+  if (!isUsableGoalText(goalPrompt)) {
+    console.log(
+      `  [BACKFILL] Session ${sessionId.substring(0, 8)}: no usable goal prompt ` +
+      `recovered from ${source} (${userPrompts.length} prompt(s)); skipping intent ` +
+      `registration — PreToolUse runs policy-only`
+    );
+    return;
+  }
   const goalImages = lastImages.length ? lastImages : goalEntry.images;
   const contextualGoal = buildContextualIntent(goalPrompt, priorAssistant);
 

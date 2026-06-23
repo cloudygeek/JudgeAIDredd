@@ -253,17 +253,24 @@ export function buildContextualIntent(
   userPrompt: string,
   priorAssistant: string | null
 ): string {
-  if (!priorAssistant) return userPrompt;
+  // Coerce away undefined/null. The backfill path (applyBackfill) can resolve
+  // an undefined last-user prompt from a transcript with no usable user turn;
+  // returning undefined here lands as IntentEntry.contextual = undefined, which
+  // crashes scrubFenceTags(undefined).replace() in IntentJudge.evaluate and
+  // fails the judge soft (drifting -> silent allow). See
+  // hooks/tests/test_judge_undefined_intent.ts.
+  const prompt = userPrompt ?? "";
+  if (!priorAssistant) return prompt;
 
   // Substantive prompts don't need the prior context. Heuristic: long
   // (≥200 chars) or wordy (≥8 words). At that scale the user has
   // provided enough context that the prior assistant turn would only
   // enlarge the injection surface without changing the judge's verdict.
-  const trimmed = userPrompt.trim();
+  const trimmed = prompt.trim();
   const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
   const isSubstantive = trimmed.length >= 200 || wordCount >= 8;
   if (isSubstantive) {
-    return userPrompt;
+    return prompt;
   }
 
   const tail = priorAssistant.length > PRIOR_ASSISTANT_MAX_CHARS
@@ -274,7 +281,7 @@ export function buildContextualIntent(
   // sanitisation — users are allowed to type "ignore previous" if they
   // mean it. But they shouldn't be able to paste `</user_prompt>` and
   // break the fence either, even by accident.
-  const sanitisedUser = sanitiseFenceTags(userPrompt);
+  const sanitisedUser = sanitiseFenceTags(prompt);
   return `<prior_assistant_response>
 ${sanitisedAssistant}
 </prior_assistant_response>

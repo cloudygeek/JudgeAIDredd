@@ -88,7 +88,7 @@ export interface InterceptionResult {
     | "domain-allow" | "domain-deny"
     | "approval-allow"
     | "drift-allow" | "drift-deny"
-    | "judge-allow" | "judge-deny"
+    | "judge-allow" | "judge-deny" | "judge-error"
     | "user-deny"
     | "pattern-trust-allow";
   policyResult: PolicyResult;
@@ -735,12 +735,16 @@ export class PreToolInterceptor {
     // Only "hijacked" is denied. "consistent" and "drifting" are allowed.
     // "drifting" means the agent may be going off-task but it's not malicious —
     // the systemMessage reminder (injected at UserPromptSubmit) handles this.
-    const allowed = judgeVerdict.verdict !== "hijacked";
+    // internalError (a code bug, not a Bedrock outage) fails CLOSED: not
+    // allowed, surfaced under a distinct "judge-error" stage so the handler
+    // can ask/deny with an accurate reason. verdict stays "drifting", so the
+    // autonomous hijack-strike counter (gated on "hijacked") never fires.
+    const allowed = judgeVerdict.verdict !== "hijacked" && !judgeVerdict.internalError;
     const result: InterceptionResult = {
       allowed,
       tool,
       input,
-      stage: allowed ? "judge-allow" : "judge-deny",
+      stage: judgeVerdict.internalError ? "judge-error" : (allowed ? "judge-allow" : "judge-deny"),
       policyResult,
       similarity: drift.similarity,
       judgeVerdict,

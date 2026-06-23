@@ -617,6 +617,21 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
           `${DREDD_TAG}: ${result.reason}` +
           ` — blocked by your local Claude Code deny list.`,
       };
+    } else if (result.stage === "judge-error") {
+      // The judge hit an INTERNAL error (a code bug, not a Bedrock outage) and
+      // could not evaluate this call. Fail CLOSED: ask the user (interactive)
+      // or deny (autonomous) rather than silently allowing. No approval-learning
+      // stash — consent given under a judge error must not train pattern-trust.
+      const decision = mode === "interactive" ? "ask" : "deny";
+      hookResponse.hookSpecificOutput = {
+        hookEventName: "PreToolUse",
+        permissionDecision: decision,
+        permissionDecisionReason:
+          `${DREDD_TAG}: the judge could not evaluate this call (internal error) — failing closed. ` +
+          (decision === "ask"
+            ? "Approve only if you trust this call; otherwise deny."
+            : "Blocked until the judge is healthy."),
+      };
     } else if (mode === "interactive") {
       // Surface as an "ask" — Claude Code shows the user a
       // permission prompt with our reason. The reason text is

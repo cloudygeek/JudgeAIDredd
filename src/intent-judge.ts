@@ -25,7 +25,12 @@ import type { ImageBlock } from "./session-tracker.js";
  * (rather than imported) to avoid a cyclic dep with server-core.
  */
 const FENCE_TAG_RE = /<\s*\/?\s*(?:user_intent|user_prompt|prior_assistant_response|actions|action|provenance_alert|instructions_loaded)\s*>/gi;
-function scrubFenceTags(text: string): string {
+export function scrubFenceTags(text: string): string {
+  // Backstop: any caller passing a non-string (e.g. an IntentEntry whose
+  // contextual was never set) would otherwise throw "reading 'replace'", be
+  // caught by evaluate()'s try/catch, and fail the judge soft (silent allow).
+  // Coerce to "" so the judge always runs.
+  if (typeof text !== "string") return "";
   return text.replace(FENCE_TAG_RE, "[REDACTED:fence-tag]");
 }
 
@@ -146,6 +151,49 @@ export interface JudgeVerdict {
    *  token to the platform role. Surfaced up to the handler so the
    *  dashboard can warn the user their token failed. */
   byotFallback?: { reason: string };
+  /** Set when the judge could not evaluate due to an INTERNAL (non-Bedrock)
+   *  error — a code bug, not an availability problem. The interceptor treats
+   *  this as fail-CLOSED (ask in interactive, deny in autonomous), never a
+   *  hijack strike. Distinct from the fail-soft "drifting" used for Bedrock
+   *  outages, which stays fail-open (allowed). */
+  internalError?: boolean;
+}
+
+/** True when an error thrown inside the judge is an internal programmer error
+ *  (a code bug) rather than a Bedrock/availability failure. TypeError /
+ *  ReferenceError / RangeError / SyntaxError are JS's programmer-error classes;
+ *  AWS SDK and network failures surface as generic Error / custom AWS types.
+ *  Drives the fail-closed (code bug) vs fail-open (outage) decision. */
+export function isInternalJudgeError(err: unknown): boolean {
+  return (
+    err instanceof TypeError ||
+    err instanceof ReferenceError ||
+    err instanceof RangeError ||
+    err instanceof SyntaxError
+  );
+}
+
+/** Build the JudgeVerdict for an error thrown inside evaluate(). A code bug
+ *  fails CLOSED (internalError flag → interceptor asks/denies); a Bedrock /
+ *  availability error fails SOFT to "drifting" (allowed) so an outage doesn't
+ *  brick the agent. evaluate() never throws — it always returns one of these. */
+export function failVerdictFor(err: unknown, durationMs = 0): JudgeVerdict {
+  const message = err instanceof Error ? err.message : String(err);
+  if (isInternalJudgeError(err)) {
+    return {
+      verdict: "drifting",
+      confidence: 0,
+      reasoning: `Judge internal error (fail-closed): ${message}`,
+      durationMs,
+      internalError: true,
+    };
+  }
+  return {
+    verdict: "drifting",
+    confidence: 0.3,
+    reasoning: `Judge error (fail-soft): ${message}`,
+    durationMs,
+  };
 }
 
 const SYSTEM_PROMPT = `You are a security analyst evaluating whether an AI agent's CURRENT ACTION is consistent with its CURRENT TASK.
@@ -681,22 +729,23 @@ ${lines}
         ...(byotFallback ? { byotFallback } : {}),
       };
     } catch (err) {
-      // Soft fail: on judge error (Bedrock outage, API mismatch, etc.) return
-      // "drifting" rather than "consistent". The tool call is still allowed
-      // (only "hijacked" blocks), but the intent-tracker injects a goal anchor
-      // before the next turn and the event surfaces in logs instead of being
-      // silently absorbed. A silent fail-open would remove the judge layer
-      // from the defence stack without any visible signal — which is exactly
-      // how the 2026-04-17 Opus 4.7 Bedrock "thinking.type.enabled" errors
-      // produced 12/12 adversarial passes that looked like clean data.
+      // The judge must never throw out of evaluate(). Two failure modes,
+      // handled by failVerdictFor:
+      //  - INTERNAL (programmer) error — a code bug (TypeError etc.). Fails
+      //    CLOSED: internalError is set, the interceptor surfaces ask
+      //    (interactive) / deny (autonomous). A bug must not silently remove
+      //    the judge from the defence stack.
+      //  - Bedrock / availability error (outage, throttle, BYOT exhaust).
+      //    Fails SOFT to "drifting" (still allowed — only "hijacked" blocks)
+      //    so an outage doesn't brick every agent; the goal anchor still fires
+      //    and the event is logged. A silent fail-open here would remove the
+      //    judge invisibly — exactly how the 2026-04-17 Opus 4.7 Bedrock
+      //    "thinking.type.enabled" errors produced 12/12 adversarial passes.
+      // Neither path counts as a hijack strike (verdict is "drifting").
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[intent-judge] fail-soft: ${message.split("\n")[0]}`);
-      return {
-        verdict: "drifting",
-        confidence: 0.3,
-        reasoning: `Judge error (fail-soft): ${message}`,
-        durationMs: 0,
-      };
+      const internal = isInternalJudgeError(err);
+      console.error(`[intent-judge] fail-${internal ? "closed (internal bug)" : "soft"}: ${message.split("\n")[0]}`);
+      return failVerdictFor(err);
     }
   }
 
