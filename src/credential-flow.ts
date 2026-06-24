@@ -311,7 +311,9 @@ export function analyzeCommand(command: string): CommandFlow {
 export const CREDENTIAL_FP_VERSION = 2;
 
 export interface NetworkFingerprint {
-  shape: { verb: "curl"; host: string; principals: string[] };
+  shape:
+    | { verb: "curl"; host: string; principals: string[] }
+    | { verb: "ssh" | "scp" | "rsync"; host: string; cmd: string };
   summary: string;
   /** Stable pre-image of the hash — stored as the approval's
    *  fingerprintJson for audit + pattern-trust embedding. */
@@ -336,13 +338,27 @@ export function fingerprintNetwork(command: string): NetworkFingerprint | null {
     network.find((n) => n.host && n.principals.length > 0) ??
     network.find((n) => n.host) ??
     null;
-  if (!access || !access.host) return null;
+  if (access && access.host) {
+    const principals = access.principals.map(sourceKey);
+    const shape = { verb: "curl" as const, host: access.host, principals };
+    const summary = principals.length
+      ? `curl to ${access.host} with credential ${principals.join(", ")}`
+      : `curl to ${access.host} (no credential)`;
+    return finalizeNetworkFingerprint(shape, summary);
+  }
 
-  const principals = access.principals.map(sourceKey);
-  const shape = { verb: "curl" as const, host: access.host, principals };
-  const summary = principals.length
-    ? `curl to ${access.host} with credential ${principals.join(", ")}`
-    : `curl to ${access.host} (no credential)`;
+  // No curl/wget egress — try remote-exec verbs (ssh/scp/rsync). These pin
+  // (verb, exact host, full command) so a user's approval to run a specific
+  // thing on a specific host is exempt from the intent-drift backstop, while a
+  // hijack to a different host OR a different remote command yields a different
+  // fingerprint and is re-checked.
+  return fingerprintRemoteExec(command);
+}
+
+function finalizeNetworkFingerprint(
+  shape: NetworkFingerprint["shape"],
+  summary: string,
+): NetworkFingerprint {
   const fingerprintJson = stableStringify({ tool: "Bash", shape });
   return {
     shape,
@@ -350,4 +366,80 @@ export function fingerprintNetwork(command: string): NetworkFingerprint | null {
     fingerprintJson,
     hash: createHash("sha256").update(fingerprintJson).digest("hex"),
   };
+}
+
+// ---- remote-exec (ssh / scp / rsync) host pinning --------------------------
+
+const REMOTE_EXEC_VERBS = new Set(["ssh", "scp", "rsync"]);
+
+/** Single-letter ssh options whose VALUE is the following SEPARATE token (so
+ *  the first positional after them is the host, not the value). Attached forms
+ *  like `-p22` / `-oFoo=bar` carry their value in the same token. */
+const SSH_VALUE_FLAGS = new Set("BbcDEeFIiJLlmOopQRSWw".split(""));
+
+function normHost(h: string): string | null {
+  const x = h.trim().toLowerCase().replace(/\.$/, "");
+  return x.length ? x : null;
+}
+
+/** `[user@]host` → host (drop any `user@` prefix). */
+function stripUser(token: string): string {
+  return token.includes("@") ? token.slice(token.lastIndexOf("@") + 1) : token;
+}
+
+/** Host of an scp/rsync remote spec: `[user@]host:path`, `host::module`, or
+ *  `rsync://[user@]host/…`. Returns null for a local path or a flag value. */
+function remoteSpecHost(token: string): string | null {
+  const url = /^(?:rsync|ssh|scp):\/\/(?:[^@/]+@)?([^/:]+)/i.exec(token);
+  if (url) return normHost(url[1]);
+  const m = /^(?:[^@:/\s]+@)?([A-Za-z0-9._-]+):(?!\/\/)/.exec(token);
+  return m ? normHost(m[1]) : null;
+}
+
+/** The remote target host of an ssh/scp/rsync argv, or null. ssh: the first
+ *  positional after the options. scp/rsync: the first `host:path` spec. */
+function remoteHost(verb: string, argv: string[], varValue: Map<string, string>): string | null {
+  if (verb === "ssh") {
+    for (let i = 1; i < argv.length; i++) {
+      const t = argv[i];
+      if (t.startsWith("-")) {
+        if (t.length === 2 && SSH_VALUE_FLAGS.has(t[1])) i++; // skip a separate value token
+        continue;
+      }
+      return normHost(stripUser(expandLiteral(t, varValue)));
+    }
+    return null;
+  }
+  for (let i = 1; i < argv.length; i++) {
+    const t = argv[i];
+    if (t.startsWith("-")) continue;
+    const h = remoteSpecHost(expandLiteral(t, varValue));
+    if (h) return h;
+  }
+  return null;
+}
+
+/** Host-pinned fingerprint for an ssh/scp/rsync command — (verb, host, hash of
+ *  the full command). Only the EXACT approved command to the EXACT host is
+ *  drift-exempt; a different host or remote command re-hashes → re-checked.
+ *  Returns null when no remote host resolves (caller falls back to the generic
+ *  Bash fingerprint — unchanged behaviour). */
+function fingerprintRemoteExec(command: string): NetworkFingerprint | null {
+  const statements = tokenize(command);
+  const { varValue } = collectAssignments(statements);
+  for (const stmt of statements) {
+    for (const seg of stmt) {
+      let k = 0;
+      while (k < seg.length && ASSIGN_RE.test(seg[k]) && !/[$`]/.test(seg[k])) k++;
+      const argv = seg.slice(k);
+      if (argv.length === 0) continue;
+      const verb = argv[0];
+      if (!REMOTE_EXEC_VERBS.has(verb)) continue;
+      const host = remoteHost(verb, argv, varValue);
+      if (!host) continue;
+      const shape = { verb: verb as "ssh" | "scp" | "rsync", host, cmd: hashValue(argv.join(" ")) };
+      return finalizeNetworkFingerprint(shape, `${verb} to ${host}`);
+    }
+  }
+  return null;
 }
