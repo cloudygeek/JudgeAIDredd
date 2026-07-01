@@ -218,11 +218,22 @@ build_transcript_summary() {
   if [ -z "$tp" ] || [ ! -f "$tp" ]; then
     return 1
   fi
-  jq -s '
-    # Slurp every JSONL line into an array, then walk it once.
-    # Synthetic command markers (<command-name>, <local-command-…>)
-    # are filtered out — same predicate the server applies in
-    # isSyntheticUserEntry().
+  # Bound the work to a recent tail of the transcript. On very long
+  # sessions (thousands of turns / 100MB+ transcripts) slurping the whole
+  # file with `jq -s` costs seconds AND ships every historical prompt to
+  # /intent — together blowing the UserPromptSubmit hook's 30s budget as
+  # the transcript grows unboundedly. The summary only needs recent
+  # context: the latest goal + prior-assistant anchor, the recent tool
+  # history (capped at 50 below), and enough recent prompts to seed a
+  # cold-session backfill. `tail -n` keeps whole JSONL lines (no mid-line
+  # cut) and reads from the end (O(tail), not O(file)); $userPrompts is
+  # additionally capped below so the envelope stays small regardless of
+  # per-line density.
+  local max_lines="${DREDD_TRANSCRIPT_SUMMARY_MAX_LINES:-1200}"
+  tail -n "$max_lines" "$tp" 2>/dev/null | jq -s '
+    # Walk the recent-tail JSONL array once. Synthetic command markers
+    # (<command-name>, <local-command-…>) are filtered out — same
+    # predicate the server applies in isSyntheticUserEntry().
     def text_of(content):
       if (content | type) == "string" then content
       elif (content | type) == "array" then
@@ -272,7 +283,11 @@ build_transcript_summary() {
               or . == "please" or . == "thanks" or . == "thankyou"));
 
     # User prompts (oldest first), with images.
-    [ .[] | select(.type == "user") |
+    # Cap to the most recent prompts (like $toolCalls). The tail already
+    # bounds the input, but capping here fixes the envelope size so a
+    # dense recent stretch cannot reflate it; the server intent stack
+    # only cares about recent (unresolved) goals anyway.
+    ([ .[] | select(.type == "user") |
         . as $msg |
         text_of(.message.content) as $raw |
         ($raw | gsub("^\\s+|\\s+$"; "")) as $t |
@@ -280,7 +295,7 @@ build_transcript_summary() {
         select(is_synthetic($msg; $t) | not) |
         select(($t | length) > 0 or ($imgs | length) > 0) |
         { text: $t, images: $imgs }
-    ] as $userPrompts |
+    ] | (if length > 60 then .[(length - 60):] else . end)) as $userPrompts |
 
     # Tool calls + file IO from assistant tool_use blocks.
     # Cap stringy fields in tool_input so a 50KB Edit payload x 50
@@ -357,7 +372,7 @@ build_transcript_summary() {
       filesRead: $filesRead,
       filesWritten: $filesWritten
     }
-  ' "$tp" 2>/dev/null
+  ' 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
