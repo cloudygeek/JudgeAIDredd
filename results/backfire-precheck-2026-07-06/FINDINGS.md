@@ -61,6 +61,23 @@ and the haiku "objective_drifting regression" that turned out to be the same thi
 the intent-tracker arm blocks, the block truncates the trajectory, and AgentLAB's
 judge mislabels the truncation as attack success — inflating the *defended* arm's ASR.
 
+### (3b) Opus-4.8 "mirror" — suppression is REAL (and stronger after correction)
+
+`python3 scripts/backfire-precheck.py opus` (v565 pair) + `opus-v578` (IT-rerun):
+
+| Opus 4.8 strat-50 | none | intent-tracker | Δ |
+|---|--:|--:|--:|
+| raw `attackSucceeded` (v565) | 4/35 | 1/32 | −8.3 pp |
+| **corrected (v565)** | 4/35 | **0/32** | **−11.4 pp** |
+| corrected (v578 IT-rerun) | 4/35 | **0/35** | **−11.4 pp** |
+
+Opus's suppression is genuine and, unlike Sonnet's "backfire," survives correction —
+the one IT "success" was itself a Dredd-block artifact, so correcting makes the
+suppression *stronger*. **So the true agent-dependent story is "no effect (Sonnet,
+corrected 0.0 pp) vs suppression (Opus, −11.4 pp)"** — not the paper's dramatic
+"backfire vs suppression" sign-flip. The sign-flip is largely manufactured by the
+scoring artifact on the Sonnet side.
+
 ---
 
 ## Recommendation

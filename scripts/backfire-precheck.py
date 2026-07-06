@@ -18,9 +18,24 @@ Usage: python3 scripts/backfire-precheck.py
 import glob, os, json, re
 from collections import defaultdict
 
+import sys
+
 SONNET = "results/bad_run/p15b-2026-06-06/agentlab-sonnet46-strat100"
-SONNET_NONE = SONNET + "/p15b-agentlab-sonnet46-strat50-eu-north-1-claude-sonnet-4-6-none"
-SONNET_IT   = SONNET + "/p15b-agentlab-sonnet46-strat50-eu-north-1-claude-sonnet-4-6-intent-tracker"
+# (agent, none_cell, it_cell) pairs. Default = Sonnet 4.6 (the confirmatory target).
+# Pass "opus" as argv[1] to rescore the Opus-4.8 mirror instead.
+PAIRS = {
+  "sonnet": ("Sonnet 4.6",
+    SONNET + "/p15b-agentlab-sonnet46-strat50-eu-north-1-claude-sonnet-4-6-none",
+    SONNET + "/p15b-agentlab-sonnet46-strat50-eu-north-1-claude-sonnet-4-6-intent-tracker"),
+  "opus": ("Opus 4.8 (mirror)",
+    "results/p15b-2026-06-09-agentlab-opus48-strat50/p15b-agentlab-opus48-strat50-eu-north-1-v0.1.565-claude-opus-4-8-none",
+    "results/p15b-2026-06-09-agentlab-opus48-strat50/p15b-agentlab-opus48-strat50-eu-north-1-v0.1.565-claude-opus-4-8-intent-tracker"),
+  "opus-v578": ("Opus 4.8 (mirror, IT-rerun v578)",
+    "results/p15b-2026-06-09-agentlab-opus48-strat50/p15b-agentlab-opus48-strat50-eu-north-1-v0.1.565-claude-opus-4-8-none",
+    "results/p15b-2026-06-09-agentlab-opus48-strat50-IT-v578/p15b-agentlab-opus48-strat50-IT-eu-north-1-v0.1.578-claude-opus-4-8-intent-tracker"),
+}
+_which = sys.argv[1] if len(sys.argv) > 1 else "sonnet"
+_LABEL, SONNET_NONE, SONNET_IT = PAIRS[_which]
 
 def load(cell):
     out=[]
@@ -41,7 +56,7 @@ def scen_key(t):
 
 def main():
     none=load(SONNET_NONE); it=load(SONNET_IT)
-    print("="*64); print("BACKFIRE STRAT-100 — PRE-CHECK (Sonnet 4.6 strat-50 source)"); print("="*64)
+    print("="*64); print(f"BACKFIRE STRAT-100 — PRE-CHECK ({_LABEL} strat-50 source)"); print("="*64)
 
     # (1) yield per class
     print("\n[1] TRUE PER-CLASS YIELD (doc assumes clean 10/class at strat-50)")
