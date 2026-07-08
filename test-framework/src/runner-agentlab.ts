@@ -1850,6 +1850,17 @@ async function main() {
 
   const allTrajectories: TrajectoryResult[] = [];
   let runCount = 0;
+  // Per-basename occurrence counter for the FR-4 split per-task JSON files.
+  // sampleStratified() pads with DUPLICATE scenario objects whenever
+  // perType > #environments (only 5 envs exist), so stratified-N with N>25
+  // produces repeated rollouts of the same scenario. task_id carries no rep
+  // index, so without this the split files collide and only the last rollout
+  // survives on disk (strat-50 opus IT: 42 rollouts -> 32 files). The per-cell
+  // JSON already keeps every rollout; this makes the split files lossless too
+  // so scripts/backfire-precheck.py (which globs the split files) sees the full
+  // N. Suffix is appended AFTER the model segment so the scen_key regex
+  // `agentlab__(.+?)__` still captures the scenario id unchanged.
+  const taskFileOccurrences = new Map<string, number>();
 
   for (const model of MODELS) {
     for (const defence of DEFENCES) {
@@ -1878,7 +1889,15 @@ async function main() {
           // any existing detail.
           try {
             const safeTaskId = trajectory.task_id.replace(/[\/]/g, "__");
-            const taskPath = join(OUTPUT_DIR, `${safeTaskId}.json`);
+            // Disambiguate repeated rollouts of the same (scenario, defence,
+            // model) so they don't overwrite. First occurrence keeps the bare
+            // name (back-compat with existing single-rep runs); subsequent
+            // ones get a `--rep<n>` suffix.
+            const occ = taskFileOccurrences.get(safeTaskId) ?? 0;
+            taskFileOccurrences.set(safeTaskId, occ + 1);
+            const uniqueTaskId =
+              occ === 0 ? safeTaskId : `${safeTaskId}--rep${occ + 1}`;
+            const taskPath = join(OUTPUT_DIR, `${uniqueTaskId}.json`);
             writeFileSync(taskPath, JSON.stringify(trajectory, null, 2));
           } catch (writeErr) {
             console.error(
