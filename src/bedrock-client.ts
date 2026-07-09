@@ -42,6 +42,27 @@ export interface BedrockImageBlock {
   mediaType: string;
 }
 
+/** Convert an image block to a Bedrock Converse image content block, or null if
+ *  the block is malformed. Defensive: images can reach here with an undefined
+ *  mediaType/data — e.g. the transcript SUMMARY ships images as
+ *  `{ source: { media_type, data } }` and the server casts them straight to
+ *  ImageBlock without mapping source.media_type -> mediaType. `undefined.replace`
+ *  would throw a TypeError, which the judge (fail-closed) surfaces as ask/deny.
+ *  Skip such images rather than crash the whole evaluation. */
+export function imageToBedrockContent(
+  img: BedrockImageBlock | null | undefined,
+): { image: { format: string; source: { bytes: Buffer } } } | null {
+  if (!img || typeof img.mediaType !== "string" || typeof img.data !== "string" || img.data.length === 0) {
+    return null;
+  }
+  return {
+    image: {
+      format: img.mediaType.replace("image/", ""),
+      source: { bytes: Buffer.from(img.data, "base64") },
+    },
+  };
+}
+
 // Bounded per-credential client cache. Keyed by `${region}#${authFp}` so
 // the platform role and each distinct bearer token get their own client.
 // LRU-evicted (delete + reinsert on touch; drop oldest past the cap) so a
@@ -153,11 +174,11 @@ export async function bedrockChat(
   // Build user content (text + optional images).
   const userContent: any[] = [{ text: userMessage }];
   if (images?.length) {
+    // Skip malformed image blocks (undefined mediaType/data) rather than throw —
+    // a summary-shaped image would otherwise crash the whole judge evaluation.
     for (const img of images) {
-      const format = img.mediaType.replace("image/", "");
-      // SDK requires `bytes` to be a Uint8Array, not a base64 string.
-      const bytes = Buffer.from(img.data, "base64");
-      userContent.push({ image: { format, source: { bytes } } });
+      const block = imageToBedrockContent(img);
+      if (block) userContent.push(block);
     }
   }
 
