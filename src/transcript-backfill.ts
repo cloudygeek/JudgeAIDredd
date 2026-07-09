@@ -61,6 +61,34 @@ export function extractImagesFromContentBlocks(blocks: any[]): ImageBlock[] {
   return images;
 }
 
+/** Map the transcript SUMMARY's image shape into ImageBlocks. The hook ships
+ *  each image as `{ source: { type, media_type, data } }` (real, goal turn) or
+ *  `{ source: null }` (count-only placeholder for historical turns). Real images
+ *  become ImageBlocks; placeholders and any block without base64 data are
+ *  dropped. Also tolerates an already-flat `{ mediaType, data }` block so the
+ *  mapping is idempotent. Without this the server cast the summary shape straight
+ *  to ImageBlock, leaving mediaType undefined — the judge then crashed on
+ *  img.mediaType.replace() and (since 0.1.514) failed closed. */
+export function summaryImagesToBlocks(imgs: unknown): ImageBlock[] {
+  if (!Array.isArray(imgs)) return [];
+  const out: ImageBlock[] = [];
+  for (const raw of imgs) {
+    const src = (raw as any)?.source;
+    if (src && typeof src.data === "string" && src.data.length > 0) {
+      out.push({
+        data: src.data,
+        mediaType: typeof src.media_type === "string" ? src.media_type : "image/png",
+      });
+    } else if (
+      raw && typeof (raw as any).data === "string" && (raw as any).data.length > 0 &&
+      typeof (raw as any).mediaType === "string"
+    ) {
+      out.push({ data: (raw as any).data, mediaType: (raw as any).mediaType });
+    }
+  }
+  return out;
+}
+
 export function extractTextAndImages(content: unknown): { text: string; images: ImageBlock[] } {
   if (typeof content === "string") {
     return { text: content, images: [] };

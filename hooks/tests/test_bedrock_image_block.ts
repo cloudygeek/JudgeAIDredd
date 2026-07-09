@@ -15,6 +15,7 @@
  */
 
 import { imageToBedrockContent } from "../../src/bedrock-client.js";
+import { summaryImagesToBlocks } from "../../src/transcript-backfill.js";
 
 const c = { green: "\x1b[32m", red: "\x1b[31m", off: "\x1b[0m" };
 let PASS = 0, FAIL = 0;
@@ -40,6 +41,29 @@ check("undefined data -> null", () => imageToBedrockContent({ mediaType: "image/
 check("empty data -> null", () => imageToBedrockContent({ mediaType: "image/png", data: "" } as any), (v) => v === null);
 check("null -> null", () => imageToBedrockContent(null as any), (v) => v === null);
 check("undefined -> null", () => imageToBedrockContent(undefined as any), (v) => v === null);
+
+console.log("\n--- summaryImagesToBlocks: map summary {source:...} -> ImageBlock, drop placeholders ---");
+const B64 = Buffer.from("img").toString("base64");
+check("real summary image maps to ImageBlock (source.media_type -> mediaType)",
+  () => summaryImagesToBlocks([{ source: { type: "base64", media_type: "image/png", data: B64 } }]),
+  (v: any) => v.length === 1 && v[0].mediaType === "image/png" && v[0].data === B64);
+check("missing media_type defaults to image/png",
+  () => summaryImagesToBlocks([{ source: { type: "base64", data: B64 } }]),
+  (v: any) => v.length === 1 && v[0].mediaType === "image/png");
+check("count-only placeholder {source:null} is dropped",
+  () => summaryImagesToBlocks([{ source: null }]), (v: any) => v.length === 0);
+check("source without data is dropped",
+  () => summaryImagesToBlocks([{ source: { type: "base64" } }]), (v: any) => v.length === 0);
+check("already-flat {mediaType,data} passes through (idempotent)",
+  () => summaryImagesToBlocks([{ mediaType: "image/jpeg", data: B64 }]),
+  (v: any) => v.length === 1 && v[0].mediaType === "image/jpeg" && v[0].data === B64);
+check("mixed real + placeholder keeps only the real one",
+  () => summaryImagesToBlocks([{ source: { data: B64, media_type: "image/gif" } }, { source: null }]),
+  (v: any) => v.length === 1 && v[0].mediaType === "image/gif");
+check("non-array -> []", () => summaryImagesToBlocks(undefined), (v: any) => Array.isArray(v) && v.length === 0);
+check("end-to-end: mapped summary image -> valid bedrock content block",
+  () => imageToBedrockContent(summaryImagesToBlocks([{ source: { data: B64, media_type: "image/png" } }])[0] as any),
+  (v: any) => v?.image?.format === "png");
 
 console.log(`\n${FAIL === 0 ? c.green + "ALL PASS" : c.red + FAIL + " FAILED"}${c.off}  (${PASS} passed, ${FAIL} failed)\n`);
 process.exit(FAIL === 0 ? 0 : 1);

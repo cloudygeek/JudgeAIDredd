@@ -31,6 +31,7 @@ import {
   backfillFromSummary,
   extractLastUserAndPriorAssistant,
   buildContextualIntent,
+  summaryImagesToBlocks,
   applyIntentStackUpdate,
   applyClassifierOverride,
   describePhrasingMatches,
@@ -222,7 +223,7 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   const { priorAssistant, images: transcriptImages } = summaryPrior
     ? {
         priorAssistant: summaryPrior.priorAssistantText ?? null,
-        images: Array.isArray(summaryPrior.lastUserImages) ? summaryPrior.lastUserImages : [],
+        images: summaryImagesToBlocks(summaryPrior.lastUserImages),
       }
     : transcriptContent
       ? extractLastUserAndPriorAssistant(transcriptContent, true)

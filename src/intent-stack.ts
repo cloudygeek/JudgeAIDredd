@@ -39,6 +39,7 @@ import {
   extractTextAndImages,
   isSyntheticUserEntry,
   extractLastUserAndPriorAssistant,
+  summaryImagesToBlocks,
 } from "./transcript-backfill.js";
 import {
   tracker,
@@ -1185,7 +1186,7 @@ export async function backfillFromSummary(
     .filter((p): p is { text: string; images: ImageBlock[] } =>
       Boolean(p) && typeof (p as any).text === "string"
     )
-    .map((p) => ({ text: p.text, images: Array.isArray(p.images) ? p.images : [] }));
+    .map((p) => ({ text: p.text, images: summaryImagesToBlocks(p.images) }));
 
   if (userPrompts.length === 0) return false;
 
@@ -1214,7 +1215,7 @@ export async function backfillFromSummary(
       {
         userPrompts,
         lastUserText: typeof s.lastUserText === "string" ? s.lastUserText : null,
-        lastUserImages: Array.isArray(s.lastUserImages) ? s.lastUserImages : [],
+        lastUserImages: summaryImagesToBlocks(s.lastUserImages),
         priorAssistantText: typeof s.priorAssistantText === "string" ? s.priorAssistantText : null,
         toolCalls,
         filesRead,

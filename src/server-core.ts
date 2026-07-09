@@ -1072,6 +1072,7 @@ export {
   extractLastUserAndPriorAssistant,
   sanitiseFenceTags,
   buildContextualIntent,
+  summaryImagesToBlocks,
 } from "./transcript-backfill.js";
 
 import {
