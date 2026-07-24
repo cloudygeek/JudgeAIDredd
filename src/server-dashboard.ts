@@ -41,6 +41,7 @@ import {
   buildSessionLogShape,
   flushLogs,
   byotService,
+  trustStore,
 } from "./server-core.js";
 import type { ApprovalRecord } from "./approval-store.js";
 import type { SessionSummary } from "./session-store.js";
@@ -54,6 +55,7 @@ import {
 } from "./clerk-auth.js";
 import { resolveByotTarget, isKnownKeyOwner } from "./byot/admin-target.js";
 import type { ByotActor } from "./byot/types.js";
+import { parseTrustToggle } from "./trust-store.js";
 
 const HOOK_URL = process.env.DREDD_HOOK_URL ?? "";
 
@@ -570,6 +572,67 @@ const server = createServer(async (req, res) => {
         }
         await byotService.remove(target.targetOwner, onBehalfActor(target));
         return json(res, 200, { configured: false });
+      }
+
+      return json(res, 405, { error: "Method not allowed" });
+    }
+
+    // ---------------------------------------------------------------
+    // Trust mode — per-user admin-granted judge bypass. ADMIN ONLY.
+    // GET status, POST toggle (enabled:true upserts, false deletes),
+    // DELETE removes. Stored as sk=TRUST on jaid-byot via trustStore.
+    // ---------------------------------------------------------------
+    if (url.pathname === "/api/trust") {
+      const principal = await requireClerkAuth(req, res);
+      if (!principal) return;
+      if (!principal.isAdmin) return json(res, 403, { error: "Admin only" });
+
+      const statusFor = async (ownerSub: string) => {
+        const rec = await trustStore.get(ownerSub);
+        return rec
+          ? { ownerSub, enabled: rec.enabled, setBy: rec.setBy, setByEmail: rec.setByEmail, setAt: rec.setAt, note: rec.note ?? null }
+          : { ownerSub, enabled: false };
+      };
+
+      if (req.method === "GET") {
+        const ownerSub = url.searchParams.get("ownerSub");
+        if (!ownerSub) return json(res, 400, { error: "ownerSub is required" });
+        return json(res, 200, await statusFor(ownerSub));
+      }
+
+      if (req.method === "POST") {
+        let body: any;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch {
+          return json(res, 400, { error: "Invalid JSON body" });
+        }
+        const parsed = parseTrustToggle(body);
+        if (!parsed.ok) return json(res, 400, { error: parsed.error });
+        const { ownerSub, enabled, note } = parsed.value;
+        if (!(await isKnownKeyOwner(apiKeys, ownerSub))) {
+          return json(res, 404, { error: "Unknown user" });
+        }
+        if (enabled) {
+          await trustStore.put({
+            ownerSub,
+            enabled: true,
+            setBy: principal.userId,
+            setByEmail: principal.email || null,
+            setAt: new Date().toISOString(),
+            note,
+          });
+        } else {
+          await trustStore.delete(ownerSub);
+        }
+        return json(res, 200, await statusFor(ownerSub));
+      }
+
+      if (req.method === "DELETE") {
+        const ownerSub = url.searchParams.get("ownerSub");
+        if (!ownerSub) return json(res, 400, { error: "ownerSub is required" });
+        await trustStore.delete(ownerSub);
+        return json(res, 200, { ownerSub, enabled: false });
       }
 
       return json(res, 405, { error: "Method not allowed" });
