@@ -186,7 +186,7 @@ if [ -n "$DREDD_API_KEY" ]; then
 fi
 
 # If server is down, fall back to user prompt
-if ! curl -s --connect-timeout 1 "$DREDD_URL/health" > /dev/null 2>&1; then
+if ! curl -s --connect-timeout 3 --max-time 5 "$DREDD_URL/health" > /dev/null 2>&1; then
   if [ "$HOOK_EVENT" = "PreToolUse" ]; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Judge AI Dredd server unavailable — requesting user approval"}}'
   else
