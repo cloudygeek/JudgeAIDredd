@@ -90,7 +90,8 @@ export interface InterceptionResult {
     | "drift-allow" | "drift-deny"
     | "judge-allow" | "judge-deny" | "judge-error"
     | "user-deny"
-    | "pattern-trust-allow";
+    | "pattern-trust-allow"
+    | "trust-allow";
   policyResult: PolicyResult;
   /** Embedding similarity (null if not evaluated) */
   similarity: number | null;
@@ -350,6 +351,12 @@ export class PreToolInterceptor {
      *  /evaluate handler from session state when DREDD_INSTRUCTIONS_EVIDENCE_ENABLED
      *  is on. Threaded to the judge as a server-trusted block. Undefined/empty → no-op. */
     instructionsEvidence?: string,
+    /** Per-user trust short-circuit. When true, allow at Stage 1.9 (after
+     *  Stage 0 user-deny + Stage 1 policy, before Stage 2 drift + Stage 3
+     *  judge) — skips the judge AND the drift embedding. Set by /evaluate
+     *  from the jaid-byot sk=TRUST flag when DREDD_TRUST_MODE_ENABLED. Never
+     *  overrides a hard deny: those return before this point. */
+    trustedOwner?: boolean,
   ): Promise<InterceptionResult> {
     const start = Date.now();
     const s = this.getSession(sessionId);
@@ -591,6 +598,29 @@ export class PreToolInterceptor {
         this.log(s, result, sessionId, userAllowMatch);
         return result;
       }
+    }
+
+    // --- Stage 1.9: Owner-trust short-circuit --------------------------
+    // A trusted owner (admin-granted, resolved on the hot path) skips the
+    // LLM judge AND the drift embedding to save cost. Deliberately placed
+    // AFTER Stage 0 user-deny and Stage 1 policy so hard denies (rm -rf,
+    // dangerous combinations, user-deny) still block — trust bypasses only
+    // the judgement stages, never the deterministic guardrails. Unlike
+    // pattern-trust-hard it does NOT override policy denies.
+    if (trustedOwner) {
+      const result: InterceptionResult = {
+        allowed: true,
+        tool,
+        input,
+        stage: "trust-allow",
+        policyResult,
+        similarity: null,
+        judgeVerdict: null,
+        evaluationMs: Date.now() - start,
+        reason: "Owner is trusted — LLM judge skipped",
+      };
+      this.log(s, result, sessionId, userAllowMatch);
+      return result;
     }
 
     // --- Stage 2: Embedding drift check ---
