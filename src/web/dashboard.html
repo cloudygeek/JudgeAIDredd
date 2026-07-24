@@ -367,6 +367,7 @@
       <div class="tab" onclick="switchTab('keys')">API Keys</div>
       <div class="tab" onclick="switchTab('approvals')">Approvals</div>
       <div class="tab" onclick="switchTab('byot')">BYOT</div>
+      <div class="tab admin-only" onclick="switchTab('trust')">Trust</div>
     </div>
 
     <div id="tab-overview" class="tab-content active">
@@ -831,6 +832,43 @@ chmod 600 ~/.claude/dredd/api-key</code></pre>
             <button class="refresh-btn" id="byot-admin-save" onclick="saveAdminByot()" style="font-size:14px">Validate &amp; save for user</button>
             <span id="byot-admin-msg" style="font-size:13px;color:var(--muted)"></span>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-trust" class="tab-content admin-only">
+      <div style="max-width:620px">
+        <h2 style="margin:0 0 4px">Trust mode — skip the judge for a user</h2>
+        <p class="muted" style="margin:0 0 16px;font-size:13px">
+          Mark a user as trusted so their tool calls skip the LLM judge (and the
+          drift embedding) to save Bedrock cost. Deterministic guardrails
+          (<span class="mono">rm -rf</span>, dangerous combinations, and the
+          user's own deny list) still block. Applies to every project the user
+          runs. Enforced only when <span class="mono">DREDD_TRUST_MODE_ENABLED</span>
+          is set on the hook container.
+        </p>
+        <div style="margin-bottom:16px">
+          <label style="display:block;font-size:13px;color:var(--muted);margin-bottom:4px">User</label>
+          <select id="trust-user" onchange="renderTrust()"
+                  style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;font-family:inherit;width:100%">
+            <option value="">— select a user —</option>
+          </select>
+        </div>
+        <div id="trust-status" style="margin-bottom:16px"></div>
+        <div id="trust-form" style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;display:none">
+          <div style="margin-bottom:12px">
+            <label style="display:block;font-size:13px;color:var(--muted);margin-bottom:4px">Note (optional)</label>
+            <input type="text" id="trust-note" autocomplete="off" placeholder="why this user is trusted"
+                   style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;font-family:inherit">
+          </div>
+          <div style="display:flex;gap:12px;align-items:center">
+            <button class="refresh-btn" id="trust-enable" onclick="setTrust(true)" style="font-size:14px">Enable trust</button>
+            <button class="refresh-btn" id="trust-disable" onclick="setTrust(false)" style="font-size:14px;border:1px solid var(--red);color:var(--red)">Disable</button>
+            <span id="trust-msg" style="font-size:13px;color:var(--muted)"></span>
+          </div>
+          <p class="muted" style="margin:12px 0 0;font-size:12px">
+            ⚠︎ Enabling disables the LLM judge for this user in every project.
+          </p>
         </div>
       </div>
     </div>
@@ -2450,12 +2488,13 @@ chmod 600 ~/.claude/dredd/api-key</code></pre>
     // source of truth: `#<tab>` selects a tab; `#session/<id>` opens the
     // detail view (handled by showDetail/showMain). Unknown hashes — or the
     // admin-only Logs tab for a non-admin — fall back to overview.
-    const KNOWN_TABS = ['overview', 'policies', 'logs', 'integrate', 'keys', 'approvals', 'byot'];
+    const KNOWN_TABS = ['overview', 'policies', 'logs', 'integrate', 'keys', 'approvals', 'byot', 'trust'];
     let currentTab = 'overview';
 
     function resolveTab(tab) {
       if (!KNOWN_TABS.includes(tab)) return 'overview';
       if (tab === 'logs' && !(dreddPrincipal && dreddPrincipal.isAdmin)) return 'overview';
+      if (tab === 'trust' && !(dreddPrincipal && dreddPrincipal.isAdmin)) return 'overview';
       return tab;
     }
 
@@ -2481,6 +2520,7 @@ chmod 600 ~/.claude/dredd/api-key</code></pre>
       if (tab === 'keys') loadKeys();
       if (tab === 'approvals') loadApprovals();
       if (tab === 'byot') loadByot();
+      if (tab === 'trust') loadTrust();
     }
 
     // User-initiated tab change (onclick handlers + in-page links): apply
@@ -2920,6 +2960,88 @@ chmod 600 ~/.claude/dredd/api-key</code></pre>
         if (!r.ok) { alert('Remove failed: HTTP ' + r.status); return; }
         await renderAdminByot();
       } catch (e) { alert('Remove failed: ' + e.message); }
+    }
+
+    // ---- Trust tab (admin only) ------------------------------------------
+    async function loadTrust() {
+      if (!(dreddPrincipal && dreddPrincipal.isAdmin)) return;
+      await loadTrustUserList();
+      renderTrust();
+    }
+
+    async function loadTrustUserList() {
+      const sel = document.getElementById('trust-user');
+      if (!sel) return;
+      try {
+        const r = await dreddFetch(`${API}/api/keys`);
+        if (!r.ok) return;
+        const keys = await r.json();
+        const seen = new Set();
+        const users = [];
+        for (const k of keys) {
+          if (!k.ownerSub || seen.has(k.ownerSub)) continue;
+          seen.add(k.ownerSub);
+          users.push({ ownerSub: k.ownerSub, email: k.ownerEmail || '' });
+        }
+        users.sort((a, b) => (a.email || a.ownerSub).localeCompare(b.email || b.ownerSub));
+        sel.innerHTML = '<option value="">— select a user —</option>' +
+          users.map(u => `<option value="${esc(u.ownerSub)}">${esc(u.email || '(no email)')} — ${esc(u.ownerSub.slice(0, 12))}…</option>`).join('');
+      } catch (e) { /* leave list as-is on error */ }
+    }
+
+    async function renderTrust() {
+      const sub = document.getElementById('trust-user').value;
+      const statusEl = document.getElementById('trust-status');
+      const formEl = document.getElementById('trust-form');
+      const msgEl = document.getElementById('trust-msg');
+      if (msgEl) msgEl.textContent = '';
+      if (!sub) { statusEl.innerHTML = ''; formEl.style.display = 'none'; return; }
+      formEl.style.display = 'block';
+      try {
+        const r = await dreddFetch(`${API}/api/trust?ownerSub=${encodeURIComponent(sub)}`);
+        if (!r.ok) { statusEl.innerHTML = `<div style="color:var(--red);font-size:13px">Failed to load (HTTP ${r.status})</div>`; return; }
+        const s = await r.json();
+        if (s.enabled) {
+          statusEl.innerHTML = `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden">
+            <table style="margin:0">
+              <tr><td style="width:140px;color:var(--muted)">Trust</td><td style="color:var(--green);font-weight:600">ENABLED — judge skipped</td></tr>
+              <tr><td style="color:var(--muted)">Set by</td><td class="muted">${esc(s.setByEmail || s.setBy || '—')}${s.setAt ? ' on ' + esc(new Date(s.setAt).toLocaleString()) : ''}</td></tr>
+              ${s.note ? `<tr><td style="color:var(--muted)">Note</td><td class="muted">${esc(s.note)}</td></tr>` : ''}
+            </table></div>`;
+        } else {
+          statusEl.innerHTML = `<div style="font-size:13px;color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px">Not trusted — this user's calls go through the judge.</div>`;
+        }
+      } catch (e) {
+        statusEl.innerHTML = `<div style="color:var(--red);font-size:13px">Failed: ${esc(e.message)}</div>`;
+      }
+    }
+
+    async function setTrust(enabled) {
+      const sub = document.getElementById('trust-user').value;
+      const note = document.getElementById('trust-note').value.trim();
+      const msgEl = document.getElementById('trust-msg');
+      if (!sub) { msgEl.style.color = 'var(--red)'; msgEl.textContent = 'Select a user first.'; return; }
+      msgEl.style.color = 'var(--muted)';
+      msgEl.textContent = enabled ? 'Enabling…' : 'Disabling…';
+      try {
+        const r = await dreddFetch(`${API}/api/trust`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ownerSub: sub, enabled, note: note || null }),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          msgEl.style.color = 'var(--red)';
+          msgEl.textContent = e.error || `Failed (HTTP ${r.status})`;
+          return;
+        }
+        msgEl.style.color = 'var(--green)';
+        msgEl.textContent = enabled ? 'Trust enabled.' : 'Trust disabled.';
+        renderTrust();
+      } catch (e) {
+        msgEl.style.color = 'var(--red)';
+        msgEl.textContent = 'Failed: ' + (e && e.message ? e.message : e);
+      }
     }
 
     async function loadLogs() {
