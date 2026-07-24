@@ -34,6 +34,8 @@ import {
   CREDENTIAL_CONSENT_ENABLED,
   credentialProvider,
   byotStore,
+  TRUST_MODE_ENABLED,
+  trustResolver,
   type TrustMode,
 } from "../server-core.js";
 import {
@@ -489,6 +491,17 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     }
   }
 
+  // Per-user trust: an admin can mark this owner trusted so their calls skip
+  // the judge (+ drift embedding). Gated on DREDD_TRUST_MODE_ENABLED; the
+  // resolver caches per-owner for 5 min and fails soft to "not trusted", so a
+  // trust-store blip just means a judge call, never an accidental allow-all.
+  const trustedOwner = TRUST_MODE_ENABLED
+    ? await trustResolver.isTrusted(ownerForApproval.ownerSub)
+    : false;
+  if (trustedOwner) {
+    console.log(`  [${session_id.substring(0, 8)}] [TRUST] owner trusted — judge bypassed`);
+  }
+
   const result = await interceptor.evaluate(
     session_id,
     tool_name,
@@ -506,6 +519,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     taintEvidence,
     cwdForEval,
     instructionsEvidence,
+    trustedOwner,
   );
 
   // Spec §7: surface BYOT runtime failures on the config record so the

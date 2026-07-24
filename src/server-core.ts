@@ -125,6 +125,9 @@ import {
 import type { ByotStore } from "./byot-store.js";
 import type { ByotCrypto } from "./byot/byot-crypto.js";
 import { ByotService } from "./byot/byot-service.js";
+import { type TrustStore, InMemoryTrustStore } from "./trust-store.js";
+import { DynamoTrustStore } from "./dynamo-trust-store.js";
+import { TrustResolver } from "./trust-resolver.js";
 
 export type TrustMode = "interactive" | "autonomous" | "learn";
 
@@ -706,6 +709,26 @@ export const USER_PERMISSIONS_ENFORCED =
   (process.env.DREDD_USER_PERMISSIONS_ENABLED ?? "false").toLowerCase() === "true";
 console.log(
   `  [USERPERM] Pipeline enforcement: ${USER_PERMISSIONS_ENFORCED ? "ON" : "OFF (rollout)"}`,
+);
+
+// ---------------------------------------------------------------------------
+// Trust mode — per-user admin-granted judge bypass. Stored as a sk=TRUST item
+// on the SAME jaid-byot table (no new infra/IAM/KMS). TRUST_MODE_ENABLED gates
+// ONLY the /evaluate hot-path short-circuit; the dashboard write path + storage
+// work regardless so the feature can soak before enforcement.
+// ---------------------------------------------------------------------------
+export const TRUST_MODE_ENABLED =
+  (process.env.DREDD_TRUST_MODE_ENABLED ?? "false").toLowerCase() === "true";
+
+export const trustStore: TrustStore = STORE_BACKEND === "dynamo"
+  ? new DynamoTrustStore({ tableName: DYNAMO_BYOT_TABLE_NAME, region: DYNAMO_REGION })
+  : new InMemoryTrustStore();
+
+export const trustResolver = new TrustResolver({ store: trustStore });
+
+console.log(
+  `  [TRUST] Judge-bypass: ${TRUST_MODE_ENABLED ? "ENABLED" : "disabled (rollout)"} ` +
+    `(store=${STORE_BACKEND}, table=${DYNAMO_BYOT_TABLE_NAME})`,
 );
 
 // Phase 8b rollout. Umbrella controls whether the interceptor reads
