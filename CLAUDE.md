@@ -197,6 +197,7 @@ docker run -p 3000:3000 \
 | `DREDD_PATTERN_LEARNING_HARD_ENABLED` | `false` | Phase 8b hard-mode flag. Only consulted when the umbrella is `true`. When `true`, ≥2 matches with cosine ≥ 0.85 short-circuit the pipeline to `stage=pattern-trust-allow` BEFORE Stage 1 policy — overrides Dredd's hard denies (`rm -rf`, dangerous combinations) by design. Flip only after observing soft-mode telemetry |
 | `DREDD_PROVENANCE_TAINT_ENABLED` | `false` | When `true`, `/evaluate` derives a deterministic data-flow graph from already-tracked session state (file reads, file writes, env vars) and injects any sensitive-source→sink chain — including multi-turn read→write→exec/egress chains that span many turns — into the judge prompt as a server-trusted `<provenance_alert>` block. Soft signal only: the judge still decides; no hard block. Fail-soft (analysis error → judge runs unchanged). No extra Bedrock/Dynamo calls. Default off; flip on after observing telemetry |
 | `DREDD_INSTRUCTIONS_EVIDENCE_ENABLED` | `false` | When `true`, `/evaluate` folds the session's recorded instruction-file loads (CLAUDE.md / rules, from the InstructionsLoaded hook → `/instructions`) into the judge prompt as a server-trusted `<instructions_loaded>` block — evidence about which instructions are shaping the agent, since the judge runs in clean context and can't see them. Soft signal only; the judge still decides. Recording + session-log surfacing happen regardless of the flag; only the judge-prompt injection is gated. Fail-soft, no extra Bedrock/Dynamo calls. Default off; flip on after observing telemetry |
+| `DREDD_TRUST_MODE_ENABLED` | `false` | When `true`, `/evaluate` resolves a per-user trust flag (admin-set via the dashboard, stored as `sk="TRUST"` on `jaid-byot`) and, for a trusted owner, short-circuits to `stage="trust-allow"` after Stage 0 user-deny + Stage 1 policy but BEFORE Stage 2 drift + Stage 3 judge — skipping the LLM judge (and drift embedding) to save cost. Deterministic hard denies (`rm -rf`, dangerous combos, user-deny) still block. Resolver caches per-owner 5 min, fails soft to not-trusted. Storage + dashboard write path work regardless of the flag; only the hot-path short-circuit is gated. Default off; flip on after soak |
 | `DREDD_MANAGED_ALLOW_SCOPE` | `conservative` | **Hook-side env var.** Picks which patterns Dredd splices into the project's `.claude/settings.local.json` on every UserPromptSubmit so Claude Code stops re-prompting for tool calls Dredd already authorises. `conservative` = ~19 read-only / inspection patterns (Read, Glob, Grep, awk/sed/grep/ls/cat/head/tail/wc/echo/pwd/file/date/jq/find/rg/node --check). `off` = never splice anything |
 | `DREDD_MANAGED_ALLOW_RULES` | (unset) | **Hook-side env var.** Optional operator override — a raw JSON array that replaces the scope-driven defaults. e.g. `'["Bash(awk:*)","Read"]'` |
 | `DREDD_MANAGED_DIR` | `$HOME/.claude/dredd/managed` | **Hook-side env var.** Where Dredd writes per-(project, session) sidecars tracking which allow rules it has injected. Also holds `manage.log` for audit |
@@ -466,6 +467,30 @@ Same shape as provenance taint, for a different blind spot: instruction files. A
 - **Wiring**: `/evaluate` (gated on `DREDD_INSTRUCTIONS_EVIDENCE_ENABLED`) builds the evidence from `tracker.getInstructionLoads()` and threads it through `interceptor.evaluate` → `judge.evaluate`, where `renderInstructionsBlock` emits a server-trusted `<instructions_loaded>` block at the head of the user prompt (same injection pattern as `<provenance_alert>`; system prompt stays static for cache stability). The block tells the judge to weigh instructions loaded mid-session or from outside the project root as lower-trust.
 - **Soft-only by design**, fail-soft, no extra Bedrock/Dynamo calls. Surfaced on the dashboard session-detail "Instructions Loaded" section regardless of the flag.
 
+### 7. Trust mode — per-user admin-granted judge bypass
+
+Lets an admin mark a Clerk user (`ownerSub`) as **trusted** so their tool calls
+skip the LLM judge (and drift embedding) to save Bedrock cost, while the
+deterministic guardrails still enforce.
+
+- **Storage:** a `sk="TRUST"` item on the existing **`jaid-byot`** table
+  (`pk = USER#<ownerSub>`) — no new table/IAM/KMS (trust records hold no secret).
+  `src/trust-store.ts` (`TrustStore` + `InMemoryTrustStore` + `parseTrustToggle`),
+  `src/dynamo-trust-store.ts` (`DynamoTrustStore`).
+- **Hot-path resolver:** `src/trust-resolver.ts` `TrustResolver.isTrusted(ownerSub)`
+  with a 5-min in-process cache; fails soft to not-trusted.
+- **Wiring:** `/evaluate` (gated on `DREDD_TRUST_MODE_ENABLED`) resolves the flag
+  for the session owner and threads `trustedOwner` into `interceptor.evaluate`,
+  which short-circuits to `stage="trust-allow"` after Stage 0 user-deny + Stage 1
+  policy, before Stage 2 drift + Stage 3 judge. Unlike `pattern-trust-hard`, it
+  does **not** override hard denies (it sits after them). The decision is still
+  recorded via `/track` (stage `trust-allow` shows in the feed + Tool Calls).
+- **Dashboard:** admin-only **Trust** tab → `GET/POST/DELETE /api/trust`
+  (`isAdmin`-enforced server-side). Cross-container: the dashboard writes the
+  flag; the hook picks it up within the resolver's 5-min TTL.
+- **Admin-only, soft-rollout:** storage + UI work with the flag off; only the
+  `/evaluate` short-circuit is gated.
+
 ### PostToolUseFailure — failure visibility
 
 Current Claude Code routes a tool call that *fails* at runtime to the `PostToolUseFailure` hook, not `PostToolUse`. The hook POSTs these to `/track` with `is_error: true` + `tool_error`. The server records the failure as the call's `ToolCallRecord.outcome` (paired to the PreToolUse decision by `tool_use_id`; an unpaired failure becomes a standalone `stage="post-tool-failure"` row) and skips state accumulation + approval promotion. Persisted as append-only `FAIL#` Dynamo items merged onto the decision row at `loadSession` time. The dashboard Tool Calls table shows a red `failed` badge. This makes repeated failed exec/egress attempts (probing behaviour) visible to the judge's `recentTools` and to operators.
@@ -494,6 +519,8 @@ hooks/tests/test_provenance_pipeline.ts             # render block + interceptor
 hooks/tests/test_posttoolfailure.ts                 # recordToolFailure decorate/fallback/cap            (16, npx tsx)
 hooks/tests/test_instruction_evidence.ts            # build + render + store + interceptor→judge thread  (20, npx tsx)
 hooks/tests/test_new_hook_events.sh                 # hook routing: PostToolUseFailure + InstructionsLoaded (13)
+hooks/tests/test_trust_store.ts                     # TrustStore + resolver + parseTrustToggle           (17, npx tsx)
+hooks/tests/test_trust_pipeline.ts                  # interceptor trust-allow short-circuit + ordering    (6, npx tsx)
 ```
 
 All green at last full run. The bash suites are self-contained (mktemp sandboxes + python stub HTTP server); the `.ts` ones run via `npx tsx`.
@@ -531,4 +558,7 @@ All green at last full run. The bash suites are self-contained (mktemp sandboxes
 | `src/byot-store.ts` | `ByotStore` interface + `InMemoryByotStore` |
 | `src/dynamo-byot-store.ts` | `DynamoByotStore` against `jaid-byot` (pk=`USER#<ownerSub>`, sk=`BYOT`); `markRuntimeFallback` uses conditional `UpdateItem` |
 | `src/hook-bake.ts` | `buildBakedHook` — inlines `dredd-managed-allow.sh` + bakes `DREDD_URL`; used by both the integration bundle and `/api/hook-script` |
+| `src/trust-store.ts` | `TrustStore` + `InMemoryTrustStore` + `parseTrustToggle` — per-user judge-bypass flag |
+| `src/dynamo-trust-store.ts` | `DynamoTrustStore` against `jaid-byot` (`pk=USER#<ownerSub>`, `sk=TRUST`) |
+| `src/trust-resolver.ts` | `TrustResolver.isTrusted` — hot-path trust lookup with 5-min cache, fail-soft |
 | `terraform/jaid-byot.tf` | `jaid-byot` DynamoDB table (PAY_PER_REQUEST, SSE via `var.sse_kms_key_arn`, PITR, no TTL) |
