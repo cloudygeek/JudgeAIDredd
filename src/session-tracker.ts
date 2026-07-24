@@ -740,9 +740,41 @@ export class InMemorySessionStore implements SessionStore {
     const canaryFiles = files.filter((f) => f.containsCanary);
     const sensitiveReads = this.getSession(sessionId).filesRead.filter((r) => r.isSensitive);
 
-    let context = `FILES WRITTEN THIS SESSION (${files.length} total):\n`;
+    // Bounded file-context to keep the judge prompt (and Bedrock input
+    // cost) in check. This used to dump every written file at 2000 chars
+    // each with no cap on file count — and it's attached to the judge
+    // prompt on every `git add/commit/push`. A commit-heavy session
+    // accumulates dozens of written files, so each commit-time judge call
+    // shipped 40-80K tokens of uncached file content (the entire cost
+    // tail). We now spend a fixed total budget, giving security-relevant
+    // files (multi-write / canary / read-then-written — the actual
+    // payload-splitting indicators) first claim on it. Once the budget is
+    // spent, remaining files are listed by path + flags only so the judge
+    // still sees they exist and how they were flagged.
+    const MAX_TOTAL_CHARS = 12_000;
+    const PER_FILE_CHARS = 1_000;
+    const MAX_FILES_LISTED = 40;
 
-    for (const f of files) {
+    const isFlagged = (f: (typeof files)[number]) =>
+      f.writeCount > 1 || f.containsCanary || f.wasReadFirst;
+    // Stable sort (V8): flagged files first, original order kept within groups.
+    const ordered = [...files].sort(
+      (a, b) => Number(isFlagged(b)) - Number(isFlagged(a))
+    );
+
+    let context = `FILES WRITTEN THIS SESSION (${files.length} total):\n`;
+    let budget = MAX_TOTAL_CHARS;
+    let omittedContent = 0;
+    let listed = 0;
+
+    for (const f of ordered) {
+      // Hard ceiling on the number of per-file entries so output stays
+      // bounded even for a session that writes hundreds of files —
+      // otherwise the path-header list alone grows unbounded. Flagged
+      // files are sorted first, so the security-relevant ones always land.
+      if (listed >= MAX_FILES_LISTED) break;
+      listed++;
+
       const flags = [
         f.writeCount > 1 ? `MULTI-WRITE(${f.writeCount}x)` : null,
         f.containsCanary ? "CONTAINS-SENSITIVE-DATA" : null,
@@ -752,9 +784,27 @@ export class InMemorySessionStore implements SessionStore {
         .join(", ");
 
       context += `\n--- ${f.path} ${flags ? `[${flags}]` : ""} ---\n`;
-      context += f.content.substring(0, 2000);
-      if (f.content.length > 2000) context += "\n... (truncated)";
+
+      if (budget <= 0) {
+        context += "(content omitted — file-context budget reached)\n";
+        omittedContent++;
+        continue;
+      }
+
+      const take = Math.min(PER_FILE_CHARS, budget, f.content.length);
+      context += f.content.substring(0, take);
+      if (f.content.length > take) context += "\n... (truncated)";
       context += "\n";
+      budget -= take;
+    }
+
+    const notListed = files.length - listed;
+    if (omittedContent > 0 || notListed > 0) {
+      const parts: string[] = [];
+      if (omittedContent > 0)
+        parts.push(`${omittedContent} listed by path+flags only`);
+      if (notListed > 0) parts.push(`${notListed} not shown`);
+      context += `\n(${parts.join(", ")} — file-context budget reached)\n`;
     }
 
     if (sensitiveReads.length > 0) {
