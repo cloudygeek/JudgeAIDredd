@@ -1,179 +1,275 @@
 #!/usr/bin/env bash
-# Run the same prompt sequence twice (with/without Dredd) and emit two
-# asciinema casts that can be played back side-by-side via player.html.
+# Friction A/B: run the same free-form task twice — once with no hooks at
+# all (vanilla Claude Code), once with the Dredd hooks wired — and record
+# each leg as an asciinema cast plus a machine-readable count of how many
+# native permission dialogs the user had to answer.
 #
-# Usage: harness/run-pair.sh prompts.txt
+# Usage: harness/run-pair.sh [prompts.txt]
+#          default prompts file: harness/prompts.friction.txt
 #
-# prompts.txt: one prompt per line. Blank lines ignored.
+# Env:
+#   ARMS="dredd-off dredd-on"   which legs to run, in order
+#   IDLE_CAP=900                per-prompt wall-clock cap, seconds
 #
-# Requires: tmux, asciinema, claude (Claude Code CLI).
+# Requires: tmux, asciinema, jq, claude (Claude Code CLI).
+#
+# Outputs to harness/casts/<utc-timestamp>/:
+#   <arm>.cast          asciinema recording
+#   <arm>.dialogs.log   one line per permission dialog answered
+#   <arm>.tools.txt     tool_use names pulled from the transcript
+#   results.tsv         arm / toolCalls / dialogs / dialogsPerCall / secs
+#   player.html         side-by-side viewer
 
 set -euo pipefail
 
-PROMPTS_FILE="${1:?usage: run-pair.sh prompts.txt}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+PROMPTS_FILE="${1:-$HERE/prompts.friction.txt}"
+TEMPLATE="$HERE/friction-workspace"
+WS="$HERE/run-workspace"
 OUT_DIR="$HERE/casts/$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$OUT_DIR"
+ARMS="${ARMS:-dredd-off dredd-on}"
+IDLE_CAP="${IDLE_CAP:-900}"
 
-# Two pre-built CLAUDE_CONFIG_DIRs. Populate harness/configs/{dredd-on,dredd-off}
-# with copies of ~/.claude — the on variant has the Dredd hooks block in
-# settings.json, the off variant has it stripped. See harness/README.md.
-CONFIG_ON="$HERE/configs/dredd-on"
-CONFIG_OFF="$HERE/configs/dredd-off"
+# The permission-dialog matcher. Claude Code renders a modal whose body
+# starts "Do you want to <verb>..." and whose footer offers Esc to cancel.
+# TUNE THIS FIRST if the pilot run hangs or reports 0 dialogs — it was
+# written against an older Claude Code and the wording drifts between
+# versions.
+DIALOG_BODY='Do you want to'
+DIALOG_FOOT='Esc to cancel'
+# Steady-state footer shown at an empty prompt, and the busy marker that
+# replaces it while a tool call or model turn is in flight.
+IDLE_HINT='? for shortcuts'
+BUSY_HINT='esc to interrupt'
 
-for d in "$CONFIG_ON" "$CONFIG_OFF"; do
-  if [ ! -d "$d" ]; then
-    echo "error: missing $d — see harness/README.md" >&2
+for tool in tmux asciinema jq; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "error: $tool not installed — brew install tmux asciinema jq" >&2; exit 1; }
+done
+command -v claude >/dev/null 2>&1 || { echo "error: claude not on PATH" >&2; exit 1; }
+[ -f "$PROMPTS_FILE" ] || { echo "error: no prompts file at $PROMPTS_FILE" >&2; exit 1; }
+[ -d "$TEMPLATE" ]     || { echo "error: no template workspace at $TEMPLATE" >&2; exit 1; }
+
+# Fail fast if an arm's config dir isn't logged in.
+#
+# Claude Code namespaces its OAuth token in the macOS Keychain PER config
+# directory ("Claude Code-credentials" for the default,
+# "Claude Code-credentials-<hash>" for a custom CLAUDE_CONFIG_DIR), so the
+# seeded dirs do NOT inherit the operator's normal login. Left undetected
+# this is silent and looks like a result: Claude answers the prompt with
+# "Login expired · Please run /login", does no work, and the run exits 0
+# reporting 0 tool calls and 0 dialogs.
+#
+# `claude -p` exits 0 even when auth fails, so the text has to be matched.
+preflight_auth() {
+  local arm="$1" dir="$HERE/configs/$arm" out
+  [ -d "$dir" ] || {
+    echo "error: missing $dir — run harness/seed-configs.sh first" >&2; exit 1; }
+
+  out=$(CLAUDE_CONFIG_DIR="$dir" claude -p "reply with the single word ok" 2>&1 | head -20 || true)
+  if printf '%s' "$out" | grep -qiE 'Failed to authenticate|OAuth session expired|Please run /login|Login expired|Invalid API key'; then
+    {
+      echo "error: config dir '$arm' is not authenticated."
+      echo
+      echo "  Claude Code stores its OAuth token in the macOS Keychain keyed by"
+      echo "  config directory, so a custom CLAUDE_CONFIG_DIR does not inherit"
+      echo "  your normal login. Each arm needs its own one-time sign-in:"
+      echo
+      echo "      CLAUDE_CONFIG_DIR=\"$dir\" claude"
+      echo "      # then type /login and complete it in the browser"
+      echo
+      echo "  Probe said:"
+      printf '%s\n' "$out" | grep -iE 'authenticate|OAuth|login|API key' | sed 's/^/      /'
+    } >&2
     exit 1
   fi
-done
+  echo "    auth ok: $arm"
+}
 
-# Detect and dismiss startup dialogs that block the prompt:
-#   - MCP-server approval ("Space to select · Enter to confirm · Esc to
-#     reject all") — we send Esc to skip all MCP servers since the
-#     example prompts don't need them and we want a clean comparison.
-#   - Any other modal that pins a footer like "Esc to reject" / "Esc to
-#     cancel" — same treatment.
-#
-# Stops as soon as we see the steady-state "? for shortcuts" footer
-# (which means we're at an empty prompt and ready for input).
+echo "==> preflight"
+for arm in $ARMS; do preflight_auth "$arm"; done
+
+mkdir -p "$OUT_DIR"
+
+# Restore the workspace to a byte-identical starting state. Without this
+# the second leg sees the first leg's index.html and does far less work,
+# and any allow rules left in .claude/settings.local.json would stop the
+# vanilla arm prompting at all.
+reset_workspace() {
+  rm -rf "$WS"
+  cp -R "$TEMPLATE" "$WS"
+  rm -rf "$WS/.claude"
+  if [ -x "$REPO/hooks/dredd-cleanup.sh" ]; then
+    "$REPO/hooks/dredd-cleanup.sh" --project "$WS" --yes --quiet >/dev/null 2>&1 || true
+  fi
+}
+
+# Dismiss the startup dialogs we don't want in the recording (MCP-server
+# approval, etc). Stops as soon as the empty-prompt footer appears.
 dismiss_startup_dialogs() {
   local sess="$1" tries=0 pane
-  while [ "$tries" -lt 10 ]; do
-    pane=$(tmux capture-pane -p -t "$sess")
-    if echo "$pane" | grep -q '? for shortcuts'; then
-      return 0
-    fi
+  while [ "$tries" -lt 12 ]; do
+    pane=$(tmux capture-pane -p -t "$sess" 2>/dev/null || true)
+    echo "$pane" | grep -qF "$IDLE_HINT" && return 0
     if echo "$pane" | grep -qE 'Esc to (reject|cancel)|reject all'; then
-      tmux send-keys -t "$sess" Escape
-      sleep 1
+      tmux send-keys -t "$sess" Escape; sleep 1
     else
       sleep 0.5
     fi
     tries=$(( tries + 1 ))
   done
-  echo "warn: $sess never reached an empty prompt during dialog dismissal" >&2
+  echo "    warn: never reached an empty prompt during startup" >&2
 }
 
-# Poll capture-pane until Claude is idle, capped at 240s.
+# Poll until Claude is back at an idle prompt, answering (and COUNTING)
+# every permission dialog on the way.
 #
-# Idle is positively confirmed by "? for shortcuts" (bottom-right hint
-# at the empty prompt) AND negatively by absence of "esc to interrupt"
-# (the busy marker that replaces it during tool calls / model thinking).
-#
-# We scan the WHOLE pane (no tail) because tmux repaints regions out
-# of order: a single mid-render snapshot might omit the bottom hint
-# even when Claude has actually returned to the prompt. The hint sits
-# on the same row as a long, dynamic timestamp string ("MAC-...
-# 14:19 08-May-26") which can also overwrite it transiently. Scanning
-# the full pane catches it on whichever row tmux happens to have
-# painted it on this tick.
-#
-# Require two consecutive matches (≥1s apart) so we don't false-trigger
-# during a transient pre-tool-call repaint where the hint flashes back.
+# Idle is confirmed positively by the empty-prompt footer and negatively
+# by absence of the busy marker, twice in a row — tmux repaints regions
+# out of order, so a single snapshot can catch a misleading frame.
 wait_for_idle() {
-  # Cap raised to 600s — large multi-tool prompts (e.g. "build a
-  # website" with WebFetch + multiple Writes) can exceed 240s when
-  # the underlying API is under load (Phase B Bedrock contention).
-  #
-  # Also auto-answers permission prompts: when Claude Code surfaces
-  # a "Do you want to ...?" dialog (because user permissions config
-  # asks before writing/editing/etc), we send Enter to pick option 1
-  # (Yes). This applies in BOTH dredd-on and dredd-off variants — the
-  # comparison is between the Dredd judge's behaviour, not Claude
-  # Code's user-permissions UX. Without this auto-accept the harness
-  # would hang on every Write.
-  local sess="$1" deadline=$(( $(date +%s) + 600 )) hits=0 pane
+  local sess="$1" log="$2"
+  local deadline=$(( $(date +%s) + IDLE_CAP )) hits=0 pane q gone
+
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    pane=$(tmux capture-pane -p -t "$sess")
-    # Detect a Claude Code permission dialog and answer Yes.
-    if echo "$pane" | grep -qE 'Do you want to (create|edit|run|fetch|read)' && \
-       echo "$pane" | grep -q 'Esc to cancel'; then
+    pane=$(tmux capture-pane -p -t "$sess" 2>/dev/null || true)
+
+    if echo "$pane" | grep -qF "$DIALOG_BODY" && echo "$pane" | grep -qF "$DIALOG_FOOT"; then
+      q=$(echo "$pane" | grep -F "$DIALOG_BODY" | head -1 | tr -s ' ' | sed 's/^ *//;s/ *$//')
+      printf '%s\t%s\n' "$(date -u +%H:%M:%S)" "$q" >> "$log"
+      echo "      dialog: $q"
       tmux send-keys -t "$sess" Enter
-      sleep 1
+
+      # Wait for the modal to actually clear before looking again, so one
+      # dialog can't be counted twice across repaints.
+      gone=0
+      for _ in $(seq 1 20); do
+        sleep 0.25
+        tmux capture-pane -p -t "$sess" 2>/dev/null | grep -qF "$DIALOG_FOOT" || { gone=1; break; }
+      done
+      [ "$gone" -eq 1 ] || echo "      warn: dialog still on screen after answering" >&2
       hits=0
       continue
     fi
-    if echo "$pane" | grep -q '? for shortcuts' && \
-       ! echo "$pane" | grep -q 'esc to interrupt'; then
+
+    if echo "$pane" | grep -qF "$IDLE_HINT" && ! echo "$pane" | grep -qF "$BUSY_HINT"; then
       hits=$(( hits + 1 ))
-      if [ "$hits" -ge 2 ]; then
-        sleep 1   # one extra tick to let the last frame render
-        return 0
-      fi
+      if [ "$hits" -ge 2 ]; then sleep 1; return 0; fi
     else
       hits=0
     fi
     sleep 0.5
   done
-  echo "warn: $sess didn't return to prompt within 600s" >&2
+  echo "    warn: prompt did not return within ${IDLE_CAP}s" >&2
+}
+
+# Pull the tool-call count out of Claude Code's own transcript. Each arm's
+# CLAUDE_CONFIG_DIR is seeded without projects/, so exactly one transcript
+# exists afterwards and there is nothing to disambiguate.
+harvest_transcript() {
+  local config_dir="$1" arm="$2"
+  local tx
+  tx=$(find "$config_dir/projects" -name '*.jsonl' -type f 2>/dev/null \
+        | xargs ls -t 2>/dev/null | head -1 || true)
+
+  if [ -z "$tx" ]; then
+    echo "    warn: no transcript found under $config_dir/projects" >&2
+    echo 0 > "$OUT_DIR/$arm.toolcount"
+    : > "$OUT_DIR/$arm.tools.txt"
+    return 0
+  fi
+
+  cp "$tx" "$OUT_DIR/$arm.transcript.jsonl"
+  jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name' \
+     "$tx" 2>/dev/null > "$OUT_DIR/$arm.tools.txt" || : > "$OUT_DIR/$arm.tools.txt"
+  wc -l < "$OUT_DIR/$arm.tools.txt" | tr -d ' ' > "$OUT_DIR/$arm.toolcount"
+
+  # Session id lets us join the Dredd arm against /api/session-log/:id.
+  jq -r 'select(.sessionId != null) | .sessionId' "$tx" 2>/dev/null | head -1 \
+     > "$OUT_DIR/$arm.sessionid" || true
 }
 
 run_one() {
-  local label="$1" config_dir="$2"
-  local claude_sess="claude-$label-$$"
-  local rec_sess="rec-$label-$$"
-  local cast="$OUT_DIR/$label.cast"
+  local arm="$1"
+  local config_dir="$HERE/configs/$arm"
+  local claude_sess="claude-$arm-$$" rec_sess="rec-$arm-$$"
+  local cast="$OUT_DIR/$arm.cast" log="$OUT_DIR/$arm.dialogs.log"
+  local started ended
 
-  echo "==> recording $label (config: $config_dir)"
+  [ -d "$config_dir" ] || {
+    echo "error: missing $config_dir — run harness/seed-configs.sh first" >&2; exit 1; }
 
-  # 1. Claude in a detached tmux session.
+  echo "==> $arm"
+  : > "$log"
+  reset_workspace
+  started=$(date +%s)
+
   CLAUDE_CONFIG_DIR="$config_dir" \
-    tmux new-session -d -s "$claude_sess" -x 200 -y 50 "claude"
+    tmux new-session -d -s "$claude_sess" -x 200 -y 50 -c "$WS" "claude"
 
-  # 2. asciinema in another detached tmux session, attached to the first.
-  #    The outer tmux gives asciinema a pty; neither session is displayed.
-  #    Force asciicast-v2 — asciinema 3.x defaults to v3 which older
-  #    asciinema-player builds don't read.
+  # asciinema needs a pty; a second detached tmux session attached to the
+  # first provides one without either session ever being displayed.
+  # asciicast-v2 is forced because asciinema 3.x defaults to v3, which the
+  # pinned asciinema-player build in player.html cannot read.
   tmux new-session -d -s "$rec_sess" -x 200 -y 50 \
-    "asciinema rec --quiet --overwrite --output-format asciicast-v2 --command 'tmux attach -t $claude_sess' '$cast'"
+    "asciinema rec --quiet --overwrite --output-format asciicast-v2 \
+       --command 'tmux attach -t $claude_sess' '$cast'"
 
-  # 3. Wait for Claude to finish booting and dismiss any startup dialogs
-  #    we don't want to record (MCP-server approval, model picker, etc.).
-  #    Theme + trust-folder dialogs are pre-acked once when configs are
-  #    seeded; everything else gets dismissed here so the recording
-  #    starts cleanly.
   sleep 4
   dismiss_startup_dialogs "$claude_sess"
-
-  # The welcome / "what's new" panel can swallow the first Enter
-  # keypress on some Claude versions. Give it an explicit dismissal:
-  # send Space (no-op input that forces a redraw) then immediately
-  # backspace it, which clears the panel without leaving residue.
+  # Some versions swallow the first Enter on the welcome panel; a
+  # space-then-backspace forces a redraw without leaving input residue.
   tmux send-keys -t "$claude_sess" Space BSpace
   sleep 1
 
-  # 4. Drive prompts.
   while IFS= read -r prompt; do
     [ -z "$prompt" ] && continue
-    echo "    > $prompt"
-    # Send the prompt as text, then Enter as a discrete event with a
-    # short pause so the renderer commits the input buffer before
-    # accepting submission. Some terminals coalesce text+Enter into
-    # one event, which Claude treats as multi-line paste rather than
-    # submit.
+    echo "    > ${prompt:0:70}..."
     tmux send-keys -t "$claude_sess" -l "$prompt"
     sleep 0.5
     tmux send-keys -t "$claude_sess" Enter
-    wait_for_idle "$claude_sess"
+    wait_for_idle "$claude_sess" "$log"
   done < "$PROMPTS_FILE"
 
-  # 5. Quit Claude cleanly so the cast captures the exit.
   tmux send-keys -t "$claude_sess" "/exit" Enter
-  sleep 2
-
+  sleep 3
   tmux kill-session -t "$claude_sess" 2>/dev/null || true
   tmux kill-session -t "$rec_sess"   2>/dev/null || true
 
-  echo "    saved $cast"
+  ended=$(date +%s)
+  echo $(( ended - started )) > "$OUT_DIR/$arm.secs"
+  harvest_transcript "$config_dir" "$arm"
+
+  # Snapshot what the agent actually built, for eyeballing afterwards.
+  mkdir -p "$OUT_DIR/$arm.workspace"
+  cp -R "$WS"/. "$OUT_DIR/$arm.workspace"/ 2>/dev/null || true
+
+  echo "    cast    $cast ($(du -h "$cast" 2>/dev/null | cut -f1 || echo '?'))"
+  echo "    dialogs $(wc -l < "$log" | tr -d ' ')"
+  echo "    tools   $(cat "$OUT_DIR/$arm.toolcount")"
 }
 
-# Run serially. Cast timestamps are relative to recording start, so
-# side-by-side playback works regardless of when each was recorded.
-run_one "dredd-off" "$CONFIG_OFF"
-run_one "dredd-on"  "$CONFIG_ON"
+for arm in $ARMS; do run_one "$arm"; done
 
-# Drop a copy of the player next to the casts for convenience.
 cp "$HERE/player.html" "$OUT_DIR/player.html"
+
+{
+  printf 'arm\ttoolCalls\tdialogs\tdialogsPerCall\tsecs\tcastBytes\n'
+  for arm in $ARMS; do
+    tc=$(cat "$OUT_DIR/$arm.toolcount" 2>/dev/null || echo 0)
+    dl=$(wc -l < "$OUT_DIR/$arm.dialogs.log" 2>/dev/null | tr -d ' ' || echo 0)
+    sc=$(cat "$OUT_DIR/$arm.secs" 2>/dev/null || echo 0)
+    cb=$(wc -c < "$OUT_DIR/$arm.cast" 2>/dev/null | tr -d ' ' || echo 0)
+    if [ "$tc" -gt 0 ]; then
+      dpc=$(awk "BEGIN{printf \"%.2f\", $dl/$tc}")
+    else
+      dpc="n/a"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$arm" "$tc" "$dl" "$dpc" "$sc" "$cb"
+  done
+} | tee "$OUT_DIR/results.tsv" | column -t -s $'\t'
+
 echo
-echo "done. open $OUT_DIR/player.html"
+echo "artifacts: $OUT_DIR"
+echo "view:      open $OUT_DIR/player.html"
