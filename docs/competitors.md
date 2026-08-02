@@ -1,6 +1,6 @@
 # Competitor Landscape — Tool-Call Approval and Adjacent Defences
 
-**Date:** 2026-04-25
+**Date:** 2026-04-25 (**updated 2026-07-29** — added Sub-family E: OpenAI Codex Auto-review, now the closest competitor in the landscape)
 **Scope:** alternatives and adjacent approaches to JudgeAIDredd's runtime tool-call approval architecture, organised by defence mechanism. For deployer-facing recommendations see the trade-off table at the end.
 
 JudgeAIDredd's positioning is **runtime per-tool-call approval in a context isolated from the agent's conversation**, fired at the PreToolUse decision point. The alternatives below sit at different layers of the stack — model-internal, capability-restriction at session start, agent-loop wrappers, OS-level sandboxing, evaluation-only — and are mostly complementary rather than directly competing with dredd. The closest architectural comparator is CaMeL.
@@ -102,6 +102,23 @@ Defences that train a separate small model on labelled unsafe trajectories and r
 - **Trade-off:** **requires labelled unsafe trajectories** for the RL training stage. Quality of labels caps the guardrail's coverage; novel attack patterns outside the training distribution likely missed. Also adds a fine-tuned model to the deployment stack — cost, ops, and vendor-lock-in.
 - **Relationship to dredd:** **dredd avoids the labelled-data requirement entirely.** dredd's prompt v2 catalogue is hand-authored from the P14 attack taxonomy; the LLM judge generalises to unseen patterns via the catalogue's *patterns-of-attack* framing rather than per-instance labels. TS-Guard achieves higher accuracy on its training distribution; dredd is more vendor-portable and easier to update (one prompt-edit vs. one re-training run). On open-weights agents (Qwen) the gap narrows because TS-Guard can be co-deployed; on commercial agents (Claude, GPT-4o), running TS-Guard means hosting an additional 7B-class model, which is the cost dredd's prompt-only design avoids.
 
+### Sub-family E: Vendor-shipped LLM reviewer at the escalation point
+
+The first production deployment of dredd's own architecture by a frontier lab.
+
+#### OpenAI Codex Auto-review (shipped + evaluated 2026-04-30)
+
+- **Mechanism:** a separate reviewer agent — **GPT-5.4 Thinking (low reasoning)** — receives "a compact transcript plus the exact approval request" and returns approve / deny / timeout. Hidden reasoning chains are excluded from the reviewer's view; it sees retained chat items and tool evidence only. Denials return a rationale to the main agent, which is instructed to pursue materially safer alternatives or ask the user. A circuit breaker interrupts the turn after **3 consecutive denials, or 10 denials in a rolling window of 50 reviews**. Layered on top of the OS sandbox (Apple Seatbelt on macOS, Landlock/seccomp on Linux), not a replacement for it — OpenAI describe it as "a reviewer swap, not a permission grant".
+- **Reported numbers:** 99.3% recall on prompt-injection attacks (RCE, secret exfiltration); 90.3% recall on overeagerness scenarios; 96.1% recall on MonitoringBench hard cases (covert malicious tasks); 99.1% approval rate on escalated actions and **99.93% effective approval rate** across all actions; **~200x fewer human interruptions** than manual approval. Codex recovers to an acceptable alternative after denial in >half of cases.
+- **Trade-off — the decisive one is coverage.** Auto-review fires **only on boundary crossings**: sandbox escalations, blocked network requests, edits outside writable roots, approval-annotated MCP/tool calls, Computer Use visiting a new domain. Anything the sandbox already permits runs unreviewed. In OpenAI's own illustrative 10,000-action snapshot: **9,280 ran inside the sandbox with no review at all**, 720 reached the reviewer, 7 were denied — **7.2% coverage by construction**. OpenAI state the consequence directly: auto-review "cannot protect against model scheming", where "strategically hidden intent within sandbox actions remains undetected", and "should not be treated as a guarantee of security". Two further gaps: it is **not enabled by default** (`approvals_reviewer = "auto_review"` must be set), and it **does not run under `approval_policy = "never"`** — so the full-auto population, the highest-risk configuration, gets no reviewer at all.
+- **Relationship to dredd:** **the closest competitor in the landscape, and the only one shipping at frontier-lab scale.** The convergence is near-total: separate reviewer model, context isolated from the agent's hidden reasoning, structured verdict, rationale fed back as an anchor, and a consecutive-denial circuit breaker within one point of dredd's own `hijackThreshold` of 2. Where they diverge is the **trigger**: Codex reviews on *capability boundary crossed*, dredd reviews on *every PreToolUse call*. That is the whole ballgame. An agent hijacked into editing source inside the workspace — planting an auth bypass, weakening a check, seeding a backdoor for CI to ship — never crosses a boundary and is never reviewed. Measured on dredd's own 2026-07-29 friction run, 5 of 7 tool calls reached the judge (~71%) against Codex's 7.2%.
+  Dredd's remaining defensible ground against it:
+  1. **Coverage of in-sandbox actions** — the 92.8% Codex does not look at.
+  2. **Cross-vendor.** Auto-review protects Codex. Dredd protects Claude Code and any Claude Agent SDK app; an enterprise running both agents cannot buy OpenAI's answer.
+  3. **Long-horizon evidence.** A compact transcript cannot carry a turn-3 secret read to a turn-100 egress. Dredd's provenance-taint graph derives that from durable session state, where turn distance is irrelevant.
+  4. **Enforcement under full autonomy**, where Codex's reviewer is switched off by design.
+  Where dredd is now *behind*: no OS sandbox of its own (Codex has defence-in-depth dredd lacks), no published recall numbers on comparable evals, higher per-session cost (≈71% of calls to Sonnet 4.6 vs 7.2% to a low-reasoning model), and a friction story that OpenAI now tells better and gives away free.
+
 ### Summary of dredd vs. runtime-interception family
 
 | Defence | Decision signal | Stateful across turns? | Per-call cost | White-box vs. black-box | Vendor-portable | Reported headline |
@@ -114,6 +131,7 @@ Defences that train a separate small model on labelled unsafe trajectories and r
 | **AttriGuard** | Causal attribution of tool calls | partial | varies | **white-box** (gradients/attention) | restricted | 0% ASR static |
 | **ToolShield** | Agent self-exploration | partial | ~1.3x (extra self-check turns) | black-box | ✓ | --30pp avg ASR |
 | **ToolSafe TS-Guard** | Fine-tuned safety classifier | ✗ (per-call) | ~1.2x (classifier call) | black-box | partial (host classifier) | 94.97% accuracy |
+| **Codex Auto-review** | LLM reviewer on escalation vs. transcript intent | partial (compact transcript) | ~1.07x (**7.2% of calls**) | black-box | ✗ (Codex only) | 99.3% injection recall |
 
 **Key positioning takeaways for §2 / §4:**
 
@@ -195,7 +213,8 @@ These are the *human approver* dredd is positioned to augment or replace.
 
 ### OpenAI Codex CLI approval modes
 
-- Including `--dangerously-bypass-approvals-and-sandbox` (aliased `--yolo`). Two of four major coding-agent CLIs name-check "dangerously" in the bypass flag itself.
+- Modes: `on-request` (the "Auto" preset default), `never`, `untrusted`, `granular`; sandbox modes `read-only`, `workspace-write` (Auto default), `danger-full-access`. Plus `--dangerously-bypass-approvals-and-sandbox` (aliased `--yolo`) — two of four major coding-agent CLIs name-check "dangerously" in the bypass flag itself.
+- **This entry is now only half the story.** As of 2026-04-30 Codex ships **Auto-review**, which replaces the human at this decision point with an LLM reviewer. It is no longer a human-approver competitor but a direct architectural one — see **Sub-family E** above.
 
 ### OpenAI Operator action confirmation
 
