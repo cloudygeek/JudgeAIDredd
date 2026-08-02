@@ -73,6 +73,33 @@ function main() {
   expect("rm -rf /tmp/scratch", "rm -rf /tmp/scratch", "allow");
   expect("rm -f /tmp files", "rm -f /tmp/a /tmp/b", "allow");
 
+  // On macOS /tmp is a symlink to private/tmp, and Claude Code hands the agent
+  // a scratchpad under the RESOLVED path (/private/tmp/claude-501/...). The
+  // scratch carve-out matched only a literal /tmp/ prefix, so every cleanup of
+  // the agent's own scratch dir hard-denied — 7 such denies in the week of
+  // 2026-07-26 alone. /private/tmp is the same directory, so it grades the same.
+  section("/private/tmp = macOS real /tmp → same scratch carve-out");
+  expect(
+    "rm -rf session scratchpad subdir",
+    "rm -rf /private/tmp/claude-501/-Users-adrian-IdeaProjects-katy-travel/67b60d78/scratchpad/iac-typo-test",
+    "allow",
+  );
+  expect("rm -f in session scratchpad", "rm -f /private/tmp/claude-501/x/scratchpad/clerk.js.bak", "allow");
+  expect("rm -rf /private/tmp/scratch", "rm -rf /private/tmp/scratch", "allow");
+  expect("/private/tmp glob stays allow", "rm -f /private/tmp/scratch/*.log", "allow");
+  expect(
+    "brace expansion in scratchpad still denies",
+    "rm -rf /private/tmp/claude-501/x/scratchpad/{verify,srep-sub}",
+    "deny",
+  );
+
+  section("/private/* must NOT be broadly allowed (prefix over-match guards)");
+  expect("sibling dir named tmpfoo", "rm -rf /private/tmpfoo/x", "deny");
+  expect("no slash after tmp", "rm -rf /private/tmp", "deny");
+  expect("other /private subtree", "rm -rf /private/etc/passwd", "deny");
+  expect("privatetmp is not /private/tmp", "rm -rf /privatetmp/x", "deny");
+  expect("tmp not at path root", "rm -rf /var/private/tmp/x", "deny");
+
   section("chained cd is tracked so targets resolve against the cd'd dir");
   // cd /tmp then rm: rm part allowed (tmp), but cd-escape combo → review overall
   expect("cd /tmp && rm -rf X → review (escape)", "cd /tmp && rm -rf cflinkcpp-src", "review");

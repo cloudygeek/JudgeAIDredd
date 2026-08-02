@@ -388,7 +388,11 @@ type RmLoc = "tmp" | "inproject" | "bounded" | "outside";
  * non-recursive delete).
  */
 function classifyRmTarget(target: string, base: string | null, sandbox: string | null): RmLoc {
-  const underTmp = (p: string) => /^\/tmp\/\S/.test(p);
+  // `/private/tmp` is the same directory as `/tmp` on macOS (/tmp is a symlink
+  // to private/tmp), and Claude Code hands agents a scratchpad under the
+  // RESOLVED path. Matching only a literal `/tmp/` prefix hard-denied every
+  // cleanup of the agent's own scratch dir.
+  const underTmp = (p: string) => /^(?:\/private)?\/tmp\/\S/.test(p);
   const sb = sandbox ? sandbox.replace(/\/+$/, "") : null;
   // Strict subpath only — equality means the target IS the project root
   // (`rm -rf <projectRoot>` wipes the whole project), which is NOT in-sandbox.
@@ -434,7 +438,7 @@ function classifyGlobDir(target: string, base: string | null, sandbox: string | 
   } else {
     dir = "";
   }
-  const underTmp = (p: string) => /^\/tmp(?:\/|$)/.test(p);
+  const underTmp = (p: string) => /^(?:\/private)?\/tmp(?:\/|$)/.test(p);
   const sb = sandbox ? sandbox.replace(/\/+$/, "") : null;
 
   let resolved: string | null;
