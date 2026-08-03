@@ -69,6 +69,15 @@ const ANTHROPIC_MODEL_MAP: Record<string, string> = {
     "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
   "sonnet-4-6":
     process.env.BEDROCK_MODEL_SONNET ?? "eu.anthropic.claude-sonnet-4-6",
+  // Claude 5 family — see executor-bedrock.ts for the probe record.
+  "claude-opus-5":
+    process.env.BEDROCK_MODEL_OPUS5 ?? "eu.anthropic.claude-opus-5",
+  "opus-5":
+    process.env.BEDROCK_MODEL_OPUS5 ?? "eu.anthropic.claude-opus-5",
+  "claude-sonnet-5":
+    process.env.BEDROCK_MODEL_SONNET5 ?? "eu.anthropic.claude-sonnet-5",
+  "sonnet-5":
+    process.env.BEDROCK_MODEL_SONNET5 ?? "eu.anthropic.claude-sonnet-5",
 };
 
 // Tier B: non-Anthropic Bedrock foundation models. Direct model IDs (no

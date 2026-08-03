@@ -43,6 +43,14 @@ const BEDROCK_MODEL_MAP: Record<string, string> = {
   "claude-opus-4-6":   process.env.BEDROCK_MODEL_OPUS   ?? "eu.anthropic.claude-opus-4-6-v1",
   "claude-opus-4-7":   process.env.BEDROCK_MODEL_OPUS47 ?? "eu.anthropic.claude-opus-4-7",
   "claude-opus-4-8":   process.env.BEDROCK_MODEL_OPUS48 ?? "eu.anthropic.claude-opus-4-8",
+  // Claude 5 family. Probed live in eu-west-2 AND eu-central-1 on 2026-08-03
+  // ("Reply with exactly: OK" -> 'OK', stopReason end_turn). Both also exist
+  // as global.* profiles. Added because the friendly names were previously
+  // UNMAPPED: resolveBedrockModel returns an unmapped name unchanged, so
+  // --models claude-opus-5 would have been sent verbatim as a model id and
+  // 404'd — the Fable 5 failure mode.
+  "claude-opus-5":     process.env.BEDROCK_MODEL_OPUS5   ?? "eu.anthropic.claude-opus-5",
+  "claude-sonnet-5":   process.env.BEDROCK_MODEL_SONNET5 ?? "eu.anthropic.claude-sonnet-5",
 };
 
 function resolveBedrockModel(model: string): string {
