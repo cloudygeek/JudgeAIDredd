@@ -47,6 +47,12 @@ const loadExecutor = async (backend: string) => {
   if (backend === "vertex") {
     return (await import("./executor-vertex.js")).executeScenario;
   }
+  if (backend === "cli") {
+    // P14 seven-config CLI runtime (C1/C2/C2a/C2b): drives the real `claude`
+    // binary headless so the runtime axis is genuine rather than SDK-emulated.
+    // See docs/build-spec-p14-sevenconfig-harness-regen-2026-08-03.md T-A.
+    return (await import("./executor-cli.js")).executeScenario;
+  }
   return (await import("./executor-bedrock.js")).executeScenario;
 };
 import { TurnLogger } from "./turn-logger.js";
@@ -108,7 +114,7 @@ const JUDGE_PROMPT = values["judge-prompt"]!;
 const JUDGE_EFFORT = values["judge-effort"] as "low" | "medium" | "high" | "max" | undefined;
 const AGENT_EFFORT = values["agent-effort"] as "low" | "medium" | "high" | "max" | undefined;
 const EMBED_MODEL = values["embed-model"]!;
-const AGENT_BACKEND = values["agent-backend"]! as "bedrock" | "converse" | "openai" | "mantle" | "vertex";
+const AGENT_BACKEND = values["agent-backend"]! as "bedrock" | "converse" | "openai" | "mantle" | "vertex" | "cli";
 const EMBED_BACKEND = values["embed-backend"]! as "ollama" | "bedrock";
 const THETA_WARN = parseFloat(values["theta-warn"]!);
 const THETA_BLOCK = parseFloat(values["theta-block"]!);

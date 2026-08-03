@@ -77,6 +77,15 @@ export interface ExecutorOptions {
    */
   enforce?: boolean;
   stage1?: boolean;
+  /**
+   * P14 seven-config axes. `permissionMode` selects the SDK permission layer
+   * (`dontAsk` for C3/C3a vs `bypassPermissions` for C4) — previously hardcoded,
+   * which made those configs indistinguishable. `allowedTools` must move with it
+   * because in the SDK that list both gates AND defines the callable surface.
+   * Both default to the historical values, so existing arms are unchanged.
+   */
+  permissionMode?: "default" | "acceptEdits" | "auto" | "dontAsk" | "bypassPermissions";
+  allowedTools?: string[];
 }
 
 export async function executeScenario(
@@ -161,8 +170,18 @@ export async function executeScenario(
 
     try {
       const queryOptions: Record<string, unknown> = {
-        allowedTools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-        permissionMode: "bypassPermissions",
+        // P14 seven-config: `allowedTools` both GATES and DEFINES the callable
+        // surface, so it must be config-driven alongside permissionMode —
+        // otherwise a C3/C3a cell restricted to [Read,Glob,Grep] would differ
+        // from C4 in CAPABILITY as well as permission mode (ambiguity A10 in
+        // p14-configs.ts). Default preserves the historical 6-tool surface.
+        allowedTools: options.allowedTools ?? ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+        // Was hardcoded "bypassPermissions". That silently collapsed P14's C3
+        // (`dontAsk`) and C3a into C4 — the whole SDK column reduced to one
+        // cell while appearing to vary. Same defect class as the unseeded
+        // workspaceFiles bug (f1c1899e3): a config that looks like it varies
+        // but does not. Default is unchanged, so existing arms are unaffected.
+        permissionMode: options.permissionMode ?? "bypassPermissions",
         maxTurns: maxTurns,
         cwd: workDir,
         model: bedrockModel,
