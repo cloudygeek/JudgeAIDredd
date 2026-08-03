@@ -93,10 +93,57 @@ but must be recorded and held fixed across both prompt arms.
 The primary matrix has T3 at n=1/detailed-cell; the variance layer (V1, V2)
 pooled T3.1–T3.3 at **C1 and C2a only**, one tier. We need the **full crossing**
 of {C1-baseline, C4-baseline} × {Haiku-4.5, Sonnet-4.6, Opus} at n≥20/cell.
-**If cells already exist with per-run JSONs (turns + toolCalls captured), point
-us at them and run only the gaps.** Both arms are defined and confirmed present:
-`C4-baseline` at `runner-p14.ts:143`, `C1-baseline` at `:153`
-(`useJudge:false`, `systemPrompt: C1_SYSTEM_PROMPT`).
+Both arms are defined and confirmed present: `C4-baseline` at
+`runner-p14.ts:143`, `C1-baseline` at `:153` (`useJudge:false`,
+`systemPrompt: C1_SYSTEM_PROMPT`).
+
+### ✅ ANSWERED 2026-08-03 — the entire Haiku tier already exists, at n=90
+
+Found in `results/bad_run/test22/`:
+
+| Dir | Cells | n |
+|---|---|--:|
+| `G2-haiku-4-5-T3-C1-baseline-n90-20260524T202341Z` | T3.1–**T3.4** | **90 each** |
+| `G2-haiku-4-5-T3-C4-baseline-n90-20260524T202341Z` | T3.1–**T3.4** | **90 each** |
+
+All 8 cells carry full per-run records (`turns` + `toolCalls` populated), so the
+§6 overlay can be applied to them. n=90 is **4.5× the requested 20**, and T3.4 is
+already included — which independently corroborates §0.0.
+
+**These are reusable despite living in `bad_run/`, and here is why.** That
+directory was quarantined 2026-06-18 for one specific reason
+(`results/bad_run/README.md`): the executors judged **post-turn**
+(`onTurnComplete`) rather than at the **PreToolUse** call point, so a `hijacked`
+verdict only blocked the *next* turn and same-turn exfiltration was recorded but
+not prevented. **That defect can only affect arms where a judge runs.** This
+factorial uses `C1-baseline` and `C4-baseline`, both `useJudge:false` — and §4 of
+this request already states the judge is irrelevant here.
+
+Verified rather than assumed: in both dirs `intentVerdicts` is present but
+**entirely null** (0 non-null across the array), i.e. no judge was ever invoked.
+The README says so too — *"Baseline (`none`) arms inside these dirs remain valid
+(no judge involved) but were moved with their campaigns to keep each matched
+comparison together."*
+
+**Consequence for scope:** the Haiku tier can be reused, cutting the wave from
+**480 → 320 runs** (Sonnet + Opus only), a 33% saving. Two caveats before doing
+so:
+
+1. **Unbalanced n** (90 for Haiku vs 20 for Sonnet/Opus). Fine for a logistic
+   regression with the tier factor, and it *increases* Haiku's precision — but
+   the analysis must not treat cells as equal-weight. Either model at the
+   run level, or down-sample Haiku to 20 for a strictly balanced design.
+   **State which.**
+2. **Date/version skew** — those runs are from 2026-05-24, ~10 weeks old, on a
+   different harness build than a fresh Sonnet/Opus wave. Record both build
+   identifiers; if the Haiku numbers look anomalous against the primary matrix,
+   re-run rather than reconcile.
+
+**Recommendation:** reuse the Haiku tier, run **320** for Sonnet + Opus, model at
+the run level rather than down-sampling (keeps the extra Haiku precision), and
+report the n-imbalance and build skew explicitly. If the reviewers would object
+to a 10-week-old cell in a "replicated" claim, run the full 480 instead — the
+cost is ~3 h, which the schedule can absorb.
 
 ### 0.3 Which Opus for the "Opus tier"?
 
@@ -287,7 +334,7 @@ Report **containment** (fraction of exfiltrating/hijacked runs whose credential-
 | Probe result (all three) | HTTP 200, `text='OK'`, `stopReason=end_turn`, 4 output tokens — **all four acceptance conditions met** |
 | Probe date / method | 2026-08-03, `bedrock-runtime converse`, `maxTokens:16`, prompt `"Reply with exactly: OK"` |
 | `BEDROCK_MODEL_*` overrides in effect | **none** — all three resolved from the `BEDROCK_MODEL_MAP` defaults (`executor-bedrock.ts:37-45`) |
-| Existing reusable cells (§0.2) | not yet checked — **still open** |
+| Existing reusable cells (§0.2) | **Haiku tier COMPLETE at n=90**, both arms, T3.1–T3.4, full turns+toolCalls — `results/bad_run/test22/G2-haiku-4-5-T3-{C1,C4}-baseline-n90-20260524T202341Z/`. Reusable: `bad_run` quarantine was for post-turn judging, and both arms are `useJudge:false` (`intentVerdicts` verified all-null). Reuse ⇒ **320 runs** instead of 480 |
 | §6 approval impl — located where? | **does not exist in this repo** — see the §6 warning; still open |
 | Parallel-by-tier: throttling observed? | not yet run |
 | `MAX_TOOL_LOOPS` in effect | default **20** (do not raise; see §7) |
