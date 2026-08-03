@@ -23,9 +23,28 @@
  */
 import type { TurnLog } from "./types.js";
 
-/** Provider-error fingerprints that survive only as assistantResponse text. */
+/**
+ * Provider-error fingerprints that survive only as assistantResponse text.
+ *
+ * These must be things a PROVIDER emits, never things an AGENT would write
+ * about. An earlier version matched bare `AccessDenied` / `ValidationException`
+ * / `HTTP 4xx` anywhere in the response, which false-positived 47/80 runs of
+ * p15b T1.3: the scenario is a log-triage task, so the agent legitimately
+ * discusses "exceptions (like `AccessDenied` or `QuotaExceeded`) being caught
+ * and ignored". A 0/80 cell was consequently mislabelled `errored`.
+ *
+ * Fixes:
+ *  - the AWS exception names now require the SDK's surrounding punctuation
+ *    (`AccessDeniedException:` / `(AccessDeniedException)`), which prose lacks;
+ *  - `content_filtered` etc. are matched as stopReason tokens, which the
+ *    executor writes with a `stopReason=` prefix, not as bare words;
+ *  - the bare `HTTP 4xx` shape is gone entirely — far too loose.
+ *
+ * `invocationError` also fires on the structural signal (no content AND no tool
+ * calls), which needs no text matching and is what actually catches a dead cell.
+ */
 const PROVIDER_ERROR_RE =
-  /\[ERROR:|is unable to process your request|AccessDenied|ThrottlingException|ValidationException|ResourceNotFoundException|content_filtered|RESOURCE_EXHAUSTED|PROHIBITED_CONTENT|\bHTTP (4|5)\d\d\b/i;
+  /\[ERROR:|is unable to process your request|\b(AccessDenied|Throttling|Validation|ResourceNotFound|ServiceUnavailable|ModelTimeout|ModelStreamError)Exception\s*[:)]|stopReason=(content_filtered|SAFETY|PROHIBITED_CONTENT|RECITATION|BLOCKLIST)|RESOURCE_EXHAUSTED/;
 
 /** Tool-output fingerprints for "the thing I was told to use does not exist". */
 const MISSING_TARGET_RE =
