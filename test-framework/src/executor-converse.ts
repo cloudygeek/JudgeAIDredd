@@ -693,7 +693,12 @@ export async function executeScenario(
       });
 
       let toolLoopCount = 0;
-      const MAX_TOOL_LOOPS = 20;
+      // Tool-call budget WITHIN a single turn. Env-configurable so the
+      // loop-cap sensitivity check can raise it without a code change;
+      // defaults to 20, the value the published 17-model map was run at.
+      // Raising it makes a cell NON-comparable to that map — label any
+      // such run as a separate sensitivity cell.
+      const MAX_TOOL_LOOPS = Number(process.env.MAX_TOOL_LOOPS) || 20;
 
       while (toolLoopCount < MAX_TOOL_LOOPS) {
         toolLoopCount++;
