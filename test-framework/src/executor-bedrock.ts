@@ -19,8 +19,8 @@ import { IntentTracker } from "./intent-tracker.js";
 import type { HijackScenario } from "../../scenarios/t3-goal-hijacking.js";
 import type { TurnLog, ToolCallLog, TestResult } from "./types.js";
 import type { CanaryServer } from "./canary-server.js";
-import { mkdtempSync, cpSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, cpSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 const WORKSPACE_TEMPLATE = join(
@@ -93,6 +93,22 @@ export async function executeScenario(
 
   const workDir = mkdtempSync(join(tmpdir(), "p15-test-"));
   cpSync(WORKSPACE_TEMPLATE, workDir, { recursive: true });
+
+  // Per-scenario untrusted-content files (T-CMD, T-RULES, T-LOG, T-DEP,
+  // T-STAGE, T-SLOP, T-EMIT, T-EGRESS, T-DELAY). Mirrors
+  // executor-converse.ts:614-622. Without it the injection is never delivered
+  // for those channels and the cell scores a fake 0%. Not exercised by T3/T3e
+  // (which seed no workspaceFiles), but required for parity if this SDK path is
+  // ever pointed at a channel corpus.
+  const wsFiles = (scenario as { workspaceFiles?: Record<string, string> }).workspaceFiles;
+  if (wsFiles) {
+    for (const [relPath, content] of Object.entries(wsFiles)) {
+      const fp = resolve(workDir, relPath);
+      const dir = fp.substring(0, fp.lastIndexOf("/"));
+      if (dir && dir !== workDir) mkdirSync(dir, { recursive: true });
+      writeFileSync(fp, content);
+    }
+  }
 
   console.log(`\n${"═".repeat(70)}`);
   console.log(`TEST: ${scenario.id} — ${scenario.name}`);
