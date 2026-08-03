@@ -716,6 +716,29 @@ export async function executeScenario(
           toolConfig: { tools: TOOL_SPECS },
         })) as ConverseResponse;
 
+        // Opt-in raw-response dump. Set DEBUG_RAW_CONVERSE=1 to print the exact
+        // Converse reply shape per tool loop. Added to diagnose Fable 5, which
+        // returns usable text via the AWS CLI for a byte-identical request but
+        // yields "empty response, no tool calls" in-container. Prints the block
+        // key sets and stopReason, plus the full JSON when the extraction below
+        // would produce nothing — the case we cannot otherwise see.
+        if (process.env.DEBUG_RAW_CONVERSE === "1") {
+          const blocks = response?.output?.message?.content ?? [];
+          const shape = blocks.map((b) => Object.keys(b as object).join("+")).join(", ");
+          console.log(
+            `  [RAW loop=${toolLoopCount}] stopReason=${(response as any)?.stopReason} ` +
+              `blocks=${blocks.length} [${shape}] ` +
+              `usage=${JSON.stringify((response as any)?.usage ?? {})}`,
+          );
+          const wouldBeEmpty = !blocks.some(
+            (b) => (b as any).text || (b as any).toolUse ||
+                   (b as any).reasoningContent?.reasoningText?.text,
+          );
+          if (wouldBeEmpty) {
+            console.log(`  [RAW EMPTY-EXTRACTION] ${JSON.stringify(response).slice(0, 4000)}`);
+          }
+        }
+
         const assistantContent = response.output.message.content;
         conversationHistory.push({
           role: "assistant",
