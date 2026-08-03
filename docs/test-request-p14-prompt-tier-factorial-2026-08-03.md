@@ -37,9 +37,11 @@ Consequences of leaving this unresolved:
 - Anyone later pooling on the assumption of 3 sub-scenarios silently
   **unbalances the factorial**, which is the exact defect this run exists to fix.
 
-**Decide explicitly — do not let the default decide:**
+**DECIDED 2026-08-03 (operator): option (a) — include T3.4, 480 runs.**
+Pool over 4 sub-scenarios. No code change needed; §3's commands are already
+correct as written. §7's success criterion and §9 reflect this.
 
-- **(a) Include T3.4 — RECOMMENDED.** 2 × 3 × **4** × 20 = **480 runs**. Pool
+- **(a) Include T3.4 — SELECTED.** 2 × 3 × **4** × 20 = **480 runs**. Pool
   over 4. More power on the interaction, and T3.4 is `sophisticated` — the
   hardest stratum, where a prompt effect is most likely to be tier-dependent.
   No code change; §3's commands are already correct for this option.
@@ -161,7 +163,13 @@ is the load-bearing cell.
 ## 3. Commands
 
 ```bash
-export AWS_BEARER_TOKEN_BEDROCK="$(cat ~/IdeaProjects/bedrock.key)"   # or the d2 host's Bedrock creds
+# Auth — pick ONE. Setting both, or setting the bearer token to an empty/stale
+# value, makes every Bedrock call fail with an opaque
+# "AccessDeniedException: Authentication failed" (see §9). If the key file is
+# absent, `cat` yields empty and the export SHADOWS working SigV4 creds.
+#   (i)  bearer token:  export AWS_BEARER_TOKEN_BEDROCK="$(cat ~/IdeaProjects/bedrock.key)"
+#   (ii) SigV4 creds:   unset AWS_BEARER_TOKEN_BEDROCK
+unset AWS_BEARER_TOKEN_BEDROCK          # (ii) — what the §9 probes used
 export AWS_REGION=eu-west-2
 # (container/SDK path also wants a clean claude config + the binary path; the
 #  dredd/fargate image provides /usr/local/bin/claude natively. For a local
@@ -269,18 +277,34 @@ Report **containment** (fraction of exfiltrating/hijacked runs whose credential-
 
 | Item | Value |
 |---|---|
-| §0.0 option taken (a = incl. T3.4 / b = excl.) | … |
-| Resulting run count (480 for (a), 360 for (b)) | … |
-| Haiku-4.5 — resolved ID + raw probe body | … |
-| Sonnet-4.6 — resolved ID + raw probe body | … |
-| Opus tier — model used + resolved ID + raw probe body | … |
-| All three `stopReason` values | … |
-| Region pinned (`AWS_REGION`) | … |
-| `BEDROCK_MODEL_*` overrides in effect, if any | … |
-| Existing reusable cells (§0.2), if any | … |
-| §6 approval impl — located where, or in scope to write? | … |
-| Parallel-by-tier: throttling observed? | … |
-| `MAX_TOOL_LOOPS` in effect (should be default 20) | … |
+| §0.0 option taken | **(a) — include T3.4** (operator decision, 2026-08-03) |
+| Resulting run count | **480** (2 prompt × 3 tier × 4 sub-scenario × 20) |
+| Expected output JSONs | **24** (6 factorial cells × 4 sub-scenarios) |
+| Region pinned (`AWS_REGION`) | **`eu-west-2`** — all three tiers confirmed present |
+| Haiku-4.5 — resolved ID | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` ✅ |
+| Sonnet-4.6 — resolved ID | `eu.anthropic.claude-sonnet-4-6` ✅ |
+| Opus tier — resolved ID | `eu.anthropic.claude-opus-4-6-v1` ✅ (the odd bare `-v1`; **confirmed real, listed in eu-west-2, and invocable**) |
+| Probe result (all three) | HTTP 200, `text='OK'`, `stopReason=end_turn`, 4 output tokens — **all four acceptance conditions met** |
+| Probe date / method | 2026-08-03, `bedrock-runtime converse`, `maxTokens:16`, prompt `"Reply with exactly: OK"` |
+| `BEDROCK_MODEL_*` overrides in effect | **none** — all three resolved from the `BEDROCK_MODEL_MAP` defaults (`executor-bedrock.ts:37-45`) |
+| Existing reusable cells (§0.2) | not yet checked — **still open** |
+| §6 approval impl — located where? | **does not exist in this repo** — see the §6 warning; still open |
+| Parallel-by-tier: throttling observed? | not yet run |
+| `MAX_TOOL_LOOPS` in effect | default **20** (do not raise; see §7) |
+
+**Auth gotcha found during the probe — worth recording.** A stale
+`AWS_BEARER_TOKEN_BEDROCK` in the operator's shell **shadowed the working SigV4
+credentials** and made every Bedrock call fail with
+`AccessDeniedException: Authentication failed: Please make sure your API Key is
+valid` — including plain `list-inference-profiles`. The token's embedded
+credential is scoped to **eu-central-1**, so it cannot serve eu-west-2 at all.
+`§3` exports that variable unconditionally from `~/IdeaProjects/bedrock.key`,
+which **does not exist on this host**, so following §3 verbatim would export an
+empty value and produce the same opaque auth failure.
+
+Either use the bearer token (with a *valid*, region-appropriate key) **or** SigV4
+creds — not both. To use SigV4, `unset AWS_BEARER_TOKEN_BEDROCK` first. The
+probes above were run with `env -u AWS_BEARER_TOKEN_BEDROCK`.
 
 ---
 *Context for whoever picks this up:* this is the last open experimental item for the CYSE-D-26-00987 revision. The three new experiment arms (benign utility R1-4, approval containment R2-4, three-vendor native-prompt R2-6 via Bedrock gpt-oss/devstral/qwen) are already run, scored, and folded into the manuscript. This factorial is the optional upgrade to the defence-layer attribution; if compute is tight, the manuscript ships without it on the associations framing.
