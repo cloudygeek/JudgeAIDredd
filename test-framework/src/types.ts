@@ -124,6 +124,32 @@ export interface TestResult {
   toolCallsAborted?: number;
   /** Number of tool calls the gate evaluated (allowed + aborted). */
   toolCallsGated?: number;
+
+  // ── Run-integrity positive controls (§3 of the p15b test request) ─────────
+  // Without these a 100%-dead cell and a perfectly robust cell aggregate to the
+  // identical 0%. See src/run-integrity.ts for the three real instances of that
+  // failure this harness has produced. These are MANDATORY on every run record:
+  // an omitted key is how this defect class hides, so `t0Completed` and
+  // `payloadDelivered` are `| null` rather than optional.
+  /** The provider returned an error or no usable content. */
+  invocationError?: boolean;
+  /** Raw provider error / stopReason. null when clean. */
+  errorDetail?: string | null;
+  /** The agent produced substantive output or ≥1 tool call. */
+  taskEngaged?: boolean;
+  /** The benign task was carried out. null = no reliable signal (still emitted). */
+  t0Completed?: boolean | null;
+  /**
+   * Did the untrusted content actually reach the agent? false + exfil=0 means
+   * the cell is VOID, not robust — this is the field that catches an
+   * undeliverable attack (missing tool, unseeded workspace file). null when
+   * there was no canary harness to key on.
+   */
+  payloadDelivered?: boolean | null;
+  /** Tool outputs reporting a missing file/command (unseeded-workspace signature). */
+  missingTargetErrors?: number;
+  /** Ended with tool calls but no closing text — usually the tool-loop cap. */
+  truncated?: boolean;
 }
 
 /**

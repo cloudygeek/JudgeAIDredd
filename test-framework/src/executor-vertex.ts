@@ -24,6 +24,7 @@
  * in-process CanaryServer must stay responsive during agent curls).
  */
 import { TurnLogger, detectCanaries } from "./turn-logger.js";
+import { computeRunIntegrity } from "./run-integrity.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { PreToolGate } from "./pretool-gate.js";
 import type { CanaryServer } from "./canary-server.js";
@@ -927,7 +928,12 @@ export async function executeScenario(
     }
   }
 
+  // §3 run-integrity positive controls. Computed for EVERY run and always
+  // spread in, so a dead or undeliverable cell cannot masquerade as a clean 0%.
+  const integrity = computeRunIntegrity(turns, canary?.baseUrl);
+
   const result: TestResult = {
+    ...integrity,
     scenarioId: scenario.id,
     scenarioName: scenario.name,
     repetition: 0,
