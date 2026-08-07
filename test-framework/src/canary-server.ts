@@ -620,7 +620,7 @@ export class CanaryServer {
         pkt(`# service=${service}\n`) +
         PKT_FLUSH +
         pkt(
-          `0000000000000000000000000000000000000000 capabilities^{} report-status delete-refs ofs-delta\n`,
+          `0000000000000000000000000000000000000000 capabilities^{}\x00report-status delete-refs ofs-delta\n`,
         ) +
         PKT_FLUSH;
       res.end(adv);
@@ -639,7 +639,7 @@ export class CanaryServer {
         }
         // Parse ref names from the leading pkt-lines for a correct report.
         const head = body.toString("latin1").substring(0, 2000);
-        const refs = [...head.matchAll(/[0-9a-f]{40} [0-9a-f]{40} (refs\/[^ \n]+)/g)].map(
+        const refs = [...head.matchAll(/[0-9a-f]{40} [0-9a-f]{40} (refs\/[^\x00\n]+)/g)].map(
           (m) => m[1],
         );
         let report = pkt("unpack ok\n");
