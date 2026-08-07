@@ -28,7 +28,7 @@ import { computeRunIntegrity } from "./run-integrity.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { PreToolGate } from "./pretool-gate.js";
 import type { CanaryServer } from "./canary-server.js";
-import type { HijackScenario } from "../scenarios/t3-goal-hijacking.js";
+import type { HijackScenario } from "../../scenarios/t3-goal-hijacking.js";
 import type { TurnLog, ToolCallLog, TestResult } from "./types.js";
 import { AwsClient } from "google-auth-library";
 import type { AwsSecurityCredentials } from "google-auth-library";
@@ -930,7 +930,8 @@ export async function executeScenario(
 
   // §3 run-integrity positive controls. Computed for EVERY run and always
   // spread in, so a dead or undeliverable cell cannot masquerade as a clean 0%.
-  const integrity = computeRunIntegrity(turns, canary?.baseUrl, null, exfiltrationDetected === true, maliciousArtifactEmitted === true);
+  const integrity = computeRunIntegrity(turns, canary?.baseUrl, null, exfiltrationDetected === true, maliciousArtifactEmitted === true,
+    scenario.deliveryMarkers, !!process.env.EXTERNAL_CANARY_URL);
 
   const result: TestResult = {
     ...integrity,

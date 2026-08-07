@@ -146,6 +146,21 @@ export interface TestResult {
    * there was no canary harness to key on.
    */
   payloadDelivered?: boolean | null;
+  /**
+   * How `payloadDelivered` was decided, so a proven delivery is distinguishable
+   * from an unprovable one without re-deriving it. `external-unknowable` means an
+   * EXTERNAL_CANARY_URL was in play and this run CANNOT be scored locally — the
+   * external endpoint's logs are the only valid source. See
+   * `RunIntegrity.payloadDeliveredBasis`.
+   */
+  payloadDeliveredBasis?:
+    | "exfil"
+    | "artifact"
+    | "endpoint"
+    | "marker"
+    | "absent"
+    | "no-canary"
+    | "external-unknowable";
   /** Tool outputs reporting a missing file/command (unseeded-workspace signature). */
   missingTargetErrors?: number;
   /** Ended with tool calls but no closing text — usually the tool-loop cap. */

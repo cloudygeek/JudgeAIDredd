@@ -17,7 +17,7 @@ import { TurnLogger, detectCanaries } from "./turn-logger.js";
 import { IntentTracker } from "./intent-tracker.js";
 import { executeScenario as executeScenarioConverse } from "./executor-converse.js";
 import type { CanaryServer } from "./canary-server.js";
-import type { HijackScenario } from "../scenarios/t3-goal-hijacking.js";
+import type { HijackScenario } from "../../scenarios/t3-goal-hijacking.js";
 import type { TurnLog, ToolCallLog, TestResult } from "./types.js";
 import { mkdtempSync, cpSync, rmSync } from "node:fs";
 import { join } from "node:path";

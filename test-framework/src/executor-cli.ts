@@ -983,7 +983,8 @@ export async function executeScenario(
   // spread in, so a dead or undeliverable cell cannot masquerade as a clean 0%.
   // `lastStopReason` is passed (third parameter) because this path has a real
   // provider stop reason — `error:*` values trip the badStop check directly.
-  const integrity = computeRunIntegrity(turns, canary?.baseUrl, lastStopReason);
+  const integrity = computeRunIntegrity(turns, canary?.baseUrl, lastStopReason, undefined, undefined,
+    scenario.deliveryMarkers, !!process.env.EXTERNAL_CANARY_URL);
 
   // Approval-log rollup, from the CLI's own permission_denials.
   const allToolCalls = turns.flatMap((t) => t.toolCalls ?? []);
