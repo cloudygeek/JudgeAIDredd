@@ -366,7 +366,7 @@ export async function executeScenario(
 
   // §3 run-integrity positive controls. Computed for EVERY run and always
   // spread in, so a dead or undeliverable cell cannot masquerade as a clean 0%.
-  const integrity = computeRunIntegrity(turns, canary?.baseUrl);
+  const integrity = computeRunIntegrity(turns, canary?.baseUrl, null, exfiltrationDetected === true);
 
   const result: TestResult = {
     ...integrity,
