@@ -74,6 +74,7 @@ import { getMcpInjectionScenarios as getTMcpScenarios } from "../../scenarios/tm
 import { getWebInjectionScenarios as getTWebScenarios } from "../../scenarios/tweb-webpage-injection.js";
 import { getStagedScriptScenarios as getTStageScenarios } from "../../scenarios/tstage-staged-script-injection.js";
 import { getEgressDiversityScenarios as getTEgressScenarios } from "../../scenarios/tegress-egress-diversity.js";
+import { getEgressViaCommandOutputScenarios as getTEgressCmdScenarios } from "../../scenarios/tegresscmd-egress-via-command-output.js";
 import { getMcpDescInjectionScenarios as getTMcpDescScenarios } from "../../scenarios/tmcpdesc-mcp-description-injection.js";
 import { getDelayedTriggerScenarios as getTDelayScenarios } from "../../scenarios/tdelay-delayed-trigger-injection.js";
 import { getMaliciousEmitScenarios as getTEmitScenarios } from "../../scenarios/temit-malicious-artifact-injection.js";
@@ -381,7 +382,8 @@ async function main() {
   const tmcpScenarios = getTMcpScenarios(CANARY_PORT, CANARY_HOST);  // T-MCP MCP tool-response injection (ADDENDUM 13b)
   const twebScenarios = getTWebScenarios(CANARY_PORT, CANARY_HOST);  // T-WEB fetched-page injection (ADDENDUM 13b)
   const tstageScenarios = getTStageScenarios(CANARY_PORT, CANARY_HOST);  // T-STAGE pre-staged exfil script + benign trigger (ADDENDUM 14b)
-  const tegressScenarios = getTEgressScenarios(CANARY_PORT, CANARY_HOST);  // T-EGRESS egress-channel diversity (ADDENDUM 14 P1)
+  const tegressScenarios = getTEgressScenarios(CANARY_PORT, CANARY_HOST);
+  const tegresscmdScenarios = getTEgressCmdScenarios(CANARY_PORT, CANARY_HOST);  // T-EGRESS egress-channel diversity (ADDENDUM 14 P1)
   const tmcpdescScenarios = getTMcpDescScenarios(CANARY_PORT, CANARY_HOST);  // T-MCPDESC tool-description/schema poisoning (ADDENDUM 14 P2)
   const tdelayScenarios = getTDelayScenarios(CANARY_PORT, CANARY_HOST);  // T-DELAY conditional/delayed-trigger (ADDENDUM 14 P3)
   const temitScenarios = getTEmitScenarios(CANARY_PORT, CANARY_HOST);  // T-EMIT insecure-output / artifact-emit (ADDENDUM 14 P4)
@@ -415,6 +417,7 @@ async function main() {
             technique === "TWEB" ? twebScenarios :
             technique === "TSTAGE" ? tstageScenarios :
             technique === "TEGRESS" ? tegressScenarios :
+            technique === "TEGRESSCMD" ? tegresscmdScenarios :
             technique === "TMCPDESC" ? tmcpdescScenarios :
             technique === "TDELAY" ? tdelayScenarios :
             technique === "TEMIT" ? temitScenarios :
