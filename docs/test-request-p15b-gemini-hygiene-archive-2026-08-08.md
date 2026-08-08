@@ -1,5 +1,18 @@
 # Test requirement — archive the missing Gemini hygiene + README-egress raw JSONs
 
+> **RESOLVED 2026-08-08 — no re-run needed; premise corrected.** The raw JSONs were
+> NOT missing: all 10 per-run files (T-STAGE, T-EMIT ×2 waves, T-EGRESS README) were
+> on disk the whole time as **untracked** dirs, so `git`-based searches ("0 files
+> found") could not see them. They are now archived in
+> `results/archive/p15b-gemini-hygiene-egress-2026-08-07.zip` (SHA-256
+> `a87ea06a…b09b7`) with `MANIFEST-p15b-gemini-hygiene-egress-2026-08-07.md`, and
+> **every manuscript number recomputes exactly** from the raw `runs[]`: T-STAGE
+> 160/160 exfil + `scriptAudited=false` 160/160; T-EMIT TEMIT.2 80/80 & TEMIT.1 0/80
+> `maliciousArtifactEmitted` (reproduced across both waves); T-EGRESS 0/80 per egress
+> with `agentDetected` 79/80/80/80. The collector-side detection log is archived at
+> `external-canary/CANARY_DETECTED-cloudwatch-2026-08-07.csv`. See the manifest for
+> the stale-`void-payload-undelivered`-label caveat (metadata artefact, data valid).
+
 **Date:** 2026-08-08
 **Requested by:** p15b-measurement revision (CYSE-D-26-01005, due 2026-08-19).
 **Priority:** HIGH — resubmission blocker. Three cells the manuscript reports have
