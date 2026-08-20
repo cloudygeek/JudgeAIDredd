@@ -59,12 +59,28 @@ resource "aws_lb" "main" {
 }
 
 resource "aws_lb_target_group" "hook" {
-  name                 = "${local.name_prefix}-hook"
-  port                 = 3000
-  protocol             = "HTTP"
-  vpc_id               = var.existing_vpc_id
-  target_type          = "ip"
-  deregistration_delay = 30
+  name        = "${local.name_prefix}-hook"
+  port        = 3000
+  protocol    = "HTTP"
+  vpc_id      = var.existing_vpc_id
+  target_type = "ip"
+
+  // Drain window during a deploy. This is the SAME ordering invariant as the
+  // ALB idle_timeout above, one layer down: it must exceed the client's curl
+  // --max-time on the slowest endpoint, or in-flight requests are killed
+  // mid-flight every time a task is replaced.
+  //
+  // Was 30s, which is below /evaluate's 60s curl timeout. A judge call that
+  // was legitimately running when a deploy started got its connection closed
+  // at 30s -> curl reports 000 -> the hook fails open with "ask" -> the user
+  // is shown an approval prompt. So every `update-service
+  // --force-new-deployment` generated spurious prompts for anyone mid-call.
+  // Observed directly during the 0.1.538 rollout (2026-08-20), where the ALB
+  // round-robined across the new and draining tasks for the whole window.
+  //
+  // 75 > the 60s curl --max-time, so the client always gives up before the
+  // ALB pulls the connection. Cost is ~45s of extra drain per deploy.
+  deregistration_delay = var.alb_deregistration_delay
 
   health_check {
     enabled             = true
@@ -85,12 +101,16 @@ resource "aws_lb_target_group" "hook" {
 
 resource "aws_lb_target_group" "dashboard" {
   // Name capped at 32 chars; trim if local.name_prefix is long.
-  name                 = "${local.name_prefix}-dash"
-  port                 = 3000
-  protocol             = "HTTP"
-  vpc_id               = var.existing_vpc_id
-  target_type          = "ip"
-  deregistration_delay = 30
+  name        = "${local.name_prefix}-dash"
+  port        = 3000
+  protocol    = "HTTP"
+  vpc_id      = var.existing_vpc_id
+  target_type = "ip"
+
+  // Same drain window as the hook target group — see the comment there. The
+  // dashboard has no long-running endpoint, so this is for consistency rather
+  // than need; it costs only deploy time.
+  deregistration_delay = var.alb_deregistration_delay
 
   health_check {
     enabled             = true

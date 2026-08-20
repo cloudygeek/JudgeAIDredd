@@ -81,6 +81,16 @@ variable "alb_internet_facing" {
   default     = true
 }
 
+variable "alb_deregistration_delay" {
+  description = "Target-group deregistration (connection-drain) delay in seconds. Must stay ABOVE the hook script's curl --max-time on the slowest endpoint, or in-flight requests are killed mid-flight on every deploy — surfacing to the user as a fail-open approval prompt. Raised 30 -> 75 on 2026-08-20. Same ordering invariant as alb_idle_timeout, one layer down."
+  type        = number
+  default     = 75
+  validation {
+    condition     = var.alb_deregistration_delay >= 0 && var.alb_deregistration_delay <= 3600
+    error_message = "alb_deregistration_delay must be between 0 and 3600 seconds (AWS ALB limit)."
+  }
+}
+
 variable "alb_idle_timeout" {
   description = "ALB idle_timeout in seconds (AWS range 1-4000). Must stay ABOVE the hook script's curl --max-time on the slowest endpoint (/evaluate) so the ALB is never the layer that kills a request the client is still waiting on. Bumped 60 -> 120 on 2026-08-20: the provider default (60) collided with both the curl --max-time and Claude Code's PreToolUse hook budget, making the failure mode a three-way race. See the ordering-invariant comment in alb.tf."
   type        = number

@@ -155,28 +155,96 @@ const AUTH_HEADER_RE =
 
 // ---- variable / host expansion ---------------------------------------------
 
-/** Expand `$VAR` / `${VAR}` using only literal values (for resolving a
- *  host). Unknown vars are left intact so they can't collapse to "". */
+/**
+ * Expand `$VAR` / `${VAR}` references against the collected assignments,
+ * repeatedly until nothing more resolves.
+ *
+ * A single pass is not enough: the common shape is a URL held in one variable
+ * whose value references another —
+ *
+ *   REGION=eu-west-1
+ *   URL="https://svc.$REGION.amazonaws.com/x"
+ *   curl "$URL"
+ *
+ * — where one pass yields `https://svc.$REGION.amazonaws.com/x`, which is not a
+ * parseable host, so the whole fingerprint came back null and the user was
+ * re-asked on every call.
+ *
+ * Unresolvable references are deliberately left as-is rather than blanked; the
+ * caller treats a residual `$` as "no host", so an unknown variable fails safe
+ * to a re-ask instead of inventing a host that can never match again.
+ *
+ * MAX_PASSES bounds `A=$B; B=$A` and self-reference; the loop also stops early
+ * as soon as a pass changes nothing.
+ */
+const MAX_EXPAND_PASSES = 8;
+
 function expandLiteral(token: string, varValue: Map<string, string>): string {
-  return token.replace(VAR_REF_RE, (whole, braced, bare) => {
-    const v = varValue.get(braced ?? bare);
-    return v !== undefined ? v : whole;
-  });
+  let out = token;
+  for (let pass = 0; pass < MAX_EXPAND_PASSES; pass++) {
+    const next = out.replace(VAR_REF_RE, (whole, braced, bare) => {
+      const v = varValue.get(braced ?? bare);
+      return v !== undefined ? v : whole;
+    });
+    if (next === out) return out;
+    out = next;
+  }
+  return out;
 }
 
-function extractUrl(argv: string[]): string | null {
+/**
+ * Find curl/wget's target URL.
+ *
+ * Each candidate token is EXPANDED before the http(s) test, because the target
+ * is very often held in a shell variable (`URL="https://…"; curl "$URL"`) and a
+ * bare `$URL` token never matches a literal-URL pattern. Without expanding
+ * first, those calls resolved no host at all — measured at 77% of denied
+ * credential-bearing network calls (2026-08-20).
+ *
+ * A token whose expansion still contains `$` is skipped rather than returned:
+ * a half-expanded host is not a real host, and keying an approval on one
+ * produces a pair that can never legitimately match again. Two live prod
+ * approvals were stored against `bedrock-runtime.$r.amazonaws.com` before this.
+ */
+function extractUrl(argv: string[], varValue: Map<string, string>): string | null {
+  const resolve = (t: string): string | null => {
+    const e = expandLiteral(t, varValue);
+    // Note: a residual `$` is NOT rejected here. It is only fatal when it
+    // lands in the HOSTNAME — `hostOf` makes that call. An unresolved variable
+    // in the path or query (`.../model/$MID/converse`, a `for MID in …` loop
+    // variable) leaves the host perfectly well-defined, and rejecting those
+    // cost real fingerprints.
+    return /^https?:\/\//.test(e) ? e : null;
+  };
   for (let i = 1; i < argv.length; i++) {
     const t = argv[i];
-    if (t === "--url" && i + 1 < argv.length) return argv[i + 1];
+    if (t === "--url" && i + 1 < argv.length) return resolve(argv[i + 1]);
     if (t === "-u" || t === "--user") { i++; continue; }
-    if (/^https?:\/\//.test(t)) return t;
+    const hit = resolve(t);
+    if (hit) return hit;
   }
   return null;
 }
 
 function hostOf(url: string): string | null {
   try {
-    return new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+    const h = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+    // An unexpanded variable in the HOSTNAME is refused, because such a key is
+    // host-family consent by the back door: an approval stored against
+    // `bedt${n}.aisandbox.dev.ckotech.internal` matches every value of `n`, and
+    // `bedrock-runtime.$r.amazonaws.com` matches every AWS region. Both were
+    // live in jaid-approvals. The locked design is "target = EXACT host, never
+    // host-family" (reaffirmed 2026-08-20: approving bedt4 must not imply
+    // bedt5), so a host we cannot pin is not a target we can consent to.
+    //
+    // Cost, accepted deliberately: a loop over hosts whose variable cannot be
+    // resolved now yields no fingerprint and re-asks each time. That is the
+    // safe direction — a re-ask, never a wildcard allow.
+    //
+    // A `$` elsewhere in the URL (path, query) is fine and deliberately
+    // allowed: `.../model/$MID/converse` leaves the host fully determined.
+    if (h.includes("$")) return null;
+    return h;
   } catch {
     return null;
   }
@@ -208,9 +276,19 @@ function collectAssignments(statements: Statement[]): {
           varSource.set(name, { kind: "file", id: fileSrcs[0] });
         } else if (refSrcs.length) {
           varSource.set(name, refSrcs[0]);
-        } else if (!/[$`]/.test(rhs)) {
+        } else if (!/\$\(|`/.test(rhs)) {
+          // Store the literal RHS. Plain `$VAR` / `${VAR}` references are
+          // ALLOWED here — expandLiteral resolves them on a later pass, which
+          // is what makes `REGION=…; URL="https://svc.$REGION…"; curl "$URL"`
+          // resolve a host at all. Command substitution (`$(…)` / backticks)
+          // stays excluded: its value is a command's OUTPUT, not a literal, so
+          // recording it as one would be wrong — and the credential branches
+          // above have already claimed the substitution cases that matter.
           varValue.set(name, rhs);
-          if (isSensitiveEnvVar(name, rhs)) {
+          // Sensitivity is only meaningful for a FULLY literal value; a string
+          // still containing `$` is a template, not a secret, and hashing it
+          // would key on the template text rather than the credential.
+          if (!/[$`]/.test(rhs) && isSensitiveEnvVar(name, rhs)) {
             varSource.set(name, { kind: "value", id: hashValue(rhs) });
           }
         }
@@ -290,8 +368,10 @@ export function analyzeCommand(command: string): CommandFlow {
       const verb = argv[0];
       if (verb === "curl" || verb === "wget") {
         const principals = principalsForCurl(argv, upstreamCatPaths, varSource);
-        const url = extractUrl(argv);
-        const host = url ? hostOf(expandLiteral(url, varValue)) : null;
+        const url = extractUrl(argv, varValue);
+        // extractUrl already expanded and rejected anything with a residual
+        // `$`, so `url` is a fully-resolved literal by this point.
+        const host = url ? hostOf(url) : null;
         network.push({ verb: "curl", host, principals: dedupeSort(principals) });
       } else if (verb === "cat") {
         for (let j = 1; j < argv.length; j++) {
