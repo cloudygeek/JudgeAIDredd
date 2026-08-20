@@ -11,6 +11,32 @@ resource "aws_lb" "main" {
 
   subnets = local.alb_subnet_ids
 
+  // ---------------------------------------------------------------------
+  // Timeout ordering invariant. Three layers can kill a /evaluate request:
+  //
+  //   1. Claude Code's PreToolUse hook budget  (client ~/.claude/settings.json)
+  //   2. curl --max-time in hooks/dredd-hook.sh
+  //   3. this ALB idle_timeout
+  //
+  // The required order is:
+  //
+  //   ALB idle_timeout  >  curl --max-time  <  Claude Code hook budget
+  //
+  // i.e. curl is always the layer that gives up first. That keeps failures
+  // attributable: the hook returns its own fail-open JSON instead of being
+  // SIGKILLed by Claude Code (which loses the response entirely) or handed
+  // an ALB 504 (which looks like a Dredd bug rather than a slow judge).
+  //
+  // All three were sitting at exactly 60s, so whichever fired first was a
+  // race and each produced a different symptom (hook killed / HTTP 000 /
+  // HTTP 504). Raising the ALB ceiling to 120 takes it out of the race.
+  //
+  // The provider DEFAULTS this argument to 60 and manages it, so it has to
+  // be declared here — an out-of-band `aws elbv2 modify-load-balancer-
+  // attributes` would be silently reverted on the next apply.
+  // ---------------------------------------------------------------------
+  idle_timeout = var.alb_idle_timeout
+
   // Per-request access logs (client IP, request line, latencies, status)
   // delivered to S3. See alb-access-logs.tf for the bucket + delivery
   // policy. The default X-Forwarded-For *append* mode is left in place —

@@ -4,7 +4,7 @@
  * The most complex handler. Registers (or updates) the original
  * intent for a session, runs the embedding-fallback classifier on the
  * incoming prompt, kicks off the async LLM classifier (when enabled),
- * applies the resulting stack mutation via `applyIntentStackUpdate`,
+ * applies the resulting stack mutation via `applyIntentStackUpdateOrDegrade`,
  * scans any inline CLAUDE.md content for prompt-injection, and
  * synthesises the response that Claude Code injects into the
  * conversation.
@@ -32,7 +32,7 @@ import {
   extractLastUserAndPriorAssistant,
   buildContextualIntent,
   summaryImagesToBlocks,
-  applyIntentStackUpdate,
+  applyIntentStackUpdateOrDegrade,
   applyClassifierOverride,
   describePhrasingMatches,
   userPermissions as userPermissionsStore,
@@ -468,7 +468,9 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     // LLM combines them at the next generation boundary), adopts the
     // assistant proposal on confirmation, and only clears prior intents
     // on a true topic switch (closed state, drift > NEW_TASK_DRIFT_MIN).
-    stackUpdate = await applyIntentStackUpdate(
+    // Degrades instead of throwing, for the same reason registerIntent
+    // does: losing the goal costs far more than losing the stack row.
+    stackUpdate = await applyIntentStackUpdateOrDegrade(
       tracker,
       session_id,
       prompt,
@@ -488,7 +490,28 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     // continuation we keep the existing index; on new-task / original
     // we reset it. confirmation gets the proposal as the contextual
     // goal so the judge sees what the user agreed to.
-    if (
+    if (stackUpdate.degraded) {
+      // The stack update failed part-way. Its writes are not atomic
+      // (markIntentResolved / activateIntent / setActiveIntents are
+      // separate round-trips), so the PERSISTED active set may now be
+      // missing this prompt — leaving /evaluate to judge the rest of the
+      // turn against an older goal, or against the session's turn-1
+      // prompt if the set emptied. Re-anchor on what the user actually
+      // just asked for; a stale anchor is the spurious-approval failure
+      // mode this whole workstream exists to remove.
+      //
+      // Cost of doing this: registerGoal collapses the drift detector's
+      // goal embeddings to this single prompt and resets goalStartIndex,
+      // so a tool call serving an older still-live goal looks driftier
+      // and escalates to the judge. Extra judge calls on a rare failure
+      // path beat a judge anchored on the wrong goal.
+      await interceptor.registerGoal(session_id, contextualGoal, transcriptImages, bedrockAuth);
+      console.warn(
+        `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: DEGRADED ` +
+        `(turn-state=${stackUpdate.turnState}) — stack not updated; judge re-anchored on ` +
+        `this prompt and the LLM classifier skipped for this turn`,
+      );
+    } else if (
       stackUpdate.kind === "new-task" ||
       stackUpdate.kind === "original"
     ) {
@@ -502,26 +525,31 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     // boundary — those are *additions* to what the agent is allowed
     // to do, not a replacement.
 
-    const stackPrompts = stackUpdate.stack
-      .map((e: { prompt: string; kind: string; resolved: boolean }) => `"${e.prompt.substring(0, 30)}"(${e.kind}${e.resolved ? "*" : ""})`)
-      .join(" → ");
-    console.log(
-      `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: ` +
-      `${stackUpdate.kind} (turn-state=${stackUpdate.turnState}, ` +
-      `drift=${stackUpdate.driftToStackTop?.toFixed(3) ?? "n/a"}, ` +
-      `stack=${stackUpdate.stack.length}: ${stackPrompts})`
-    );
+    if (!stackUpdate.degraded) {
+      const stackPrompts = stackUpdate.stack
+        .map((e: { prompt: string; kind: string; resolved: boolean }) => `"${e.prompt.substring(0, 30)}"(${e.kind}${e.resolved ? "*" : ""})`)
+        .join(" → ");
+      console.log(
+        `  [${session_id.substring(0, 8)}] [INTENT] ${mode} mode: ` +
+        `${stackUpdate.kind} (turn-state=${stackUpdate.turnState}, ` +
+        `drift=${stackUpdate.driftToStackTop?.toFixed(3) ?? "n/a"}, ` +
+        `stack=${stackUpdate.stack.length}: ${stackPrompts})`
+      );
+    }
 
     // Telemetry: emit one feed entry per /intent recording the
     // embedding-fallback verdict. The async LLM override (below)
     // emits a follow-up entry with classifierOverridden flag set.
+    // A degraded update is tagged as such rather than reported under its
+    // placeholder kind — "degraded" is not an intent-stack kind, so it
+    // aggregates separately and can be alerted on.
     addFeed({
       timestamp: new Date().toISOString(),
       type: "intent-classify",
       sessionId: session_id,
       ownerSub: identity.ownerSub,
       authStage: authStageForFeed(identity),
-      intentKind: stackUpdate.kind,
+      intentKind: stackUpdate.degraded ? "degraded" : stackUpdate.kind,
       intentStackSize: stackUpdate.stack.length,
       classifierSource: "embedding",
     });
@@ -641,8 +669,13 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     authStage: authStageForFeed(identity),
     // "coordination" is not an intent-stack kind — the stack never saw
     // this turn. It's a distinct feed tag so telemetry can count how
-    // much agent-team noise the suppression is absorbing.
-    intentKind: mayUpdateGoal ? stackUpdate?.kind : "coordination",
+    // much agent-team noise the suppression is absorbing. "degraded" is
+    // the same idea for a stack update that failed to persist.
+    intentKind: !mayUpdateGoal
+      ? "coordination"
+      : stackUpdate?.degraded
+        ? "degraded"
+        : stackUpdate?.kind,
     intentStackSize: stackUpdate?.stack.length,
   });
 

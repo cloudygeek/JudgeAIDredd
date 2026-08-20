@@ -81,6 +81,16 @@ variable "alb_internet_facing" {
   default     = true
 }
 
+variable "alb_idle_timeout" {
+  description = "ALB idle_timeout in seconds (AWS range 1-4000). Must stay ABOVE the hook script's curl --max-time on the slowest endpoint (/evaluate) so the ALB is never the layer that kills a request the client is still waiting on. Bumped 60 -> 120 on 2026-08-20: the provider default (60) collided with both the curl --max-time and Claude Code's PreToolUse hook budget, making the failure mode a three-way race. See the ordering-invariant comment in alb.tf."
+  type        = number
+  default     = 120
+  validation {
+    condition     = var.alb_idle_timeout >= 1 && var.alb_idle_timeout <= 4000
+    error_message = "alb_idle_timeout must be between 1 and 4000 seconds (AWS ALB limit)."
+  }
+}
+
 // ===========================================================================
 // DNS / TLS
 // ===========================================================================

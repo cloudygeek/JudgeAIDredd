@@ -660,6 +660,14 @@ export interface IntentStackUpdateResult {
    * mark/activate other entries) before the next /evaluate.
    */
   newEntryId?: string;
+  /**
+   * True when the update failed to persist and the values above are
+   * synthesised rather than observed. Set only by
+   * `applyIntentStackUpdateOrDegrade`; `applyIntentStackUpdate` itself
+   * either succeeds or throws. Callers MUST branch on this before
+   * reading `kind` — see the wrapper for why.
+   */
+  degraded?: boolean;
 }
 
 /**
@@ -882,6 +890,92 @@ export async function applyIntentStackUpdate(
   );
 
   return { kind, turnState, stack: planned.keep, driftToStackTop, newEntryId: entry.id };
+}
+
+/**
+ * Persist the intent-stack update, but never let a persistence failure
+ * fail `POST /intent`.
+ *
+ * Sibling of `registerIntentOrDegrade` (handlers/intent.ts) and it exists
+ * for the same reason: a failed /intent means the turn's goal never
+ * registers, so /evaluate judges every later tool call in the session
+ * against a stale goal — which the user experiences as spurious approval
+ * prompts. A non-fatal /intent is a false-positive fix, not just a
+ * reliability one.
+ *
+ * WHY THE DEGRADED RESULT IS SHAPED THIS WAY
+ *
+ * `applyIntentStackUpdate` is not atomic. It issues several independent
+ * round-trips — `markIntentResolved`, `activateIntent`, `setActiveIntents`
+ * — so a failure part-way through can leave the PERSISTED active set
+ * missing the user's newest goal: entries already marked resolved, the
+ * replacement stack never written. Swallowing that quietly would leave the
+ * stack diverged from Dynamo with nothing to signal it, which is its own
+ * hazard. So the wrapper reports the divergence instead of papering over it:
+ *
+ *   - `degraded: true` — the caller must re-anchor the judge on the current
+ *     prompt rather than trust whatever survived the partial write.
+ *   - `stack: []` — we did not observe the final stack; an empty list is
+ *     honest, a guess is not.
+ *   - `driftToStackTop: null` — genuinely unknown. Never 0, which would read
+ *     as "perfectly on-goal".
+ *   - `newEntryId: undefined` — closes the caller's gate on the async LLM
+ *     classifier. There is no entry we can prove is durable, and firing a
+ *     background override at an active set we already know is inconsistent
+ *     would compound the damage.
+ *   - `turnState` IS real: `deriveTurnState` is pure over the timing markers
+ *     the caller already holds, so no store access is needed to compute it.
+ *   - `kind: "continuation"` is a placeholder, NOT a classification. It is
+ *     the same conservative default the embedding classifier falls back to
+ *     when signals are ambiguous, chosen so that any future caller that
+ *     forgets to check `degraded` takes the least-destructive branch
+ *     (continuation mutates nothing) rather than a stack-clearing one.
+ */
+export async function applyIntentStackUpdateOrDegrade(
+  store: SessionStore,
+  sessionId: string,
+  prompt: string,
+  priorAssistant: string | null,
+  isConfirmation: boolean,
+  prevTimings: {
+    prevUserPromptAt: number;
+    prevPreToolUseAt: number;
+    prevStopAt: number;
+  },
+  embeddingModel: string,
+  images?: ImageBlock[],
+  historyActiveMode: boolean = false,
+): Promise<IntentStackUpdateResult> {
+  try {
+    const result = await applyIntentStackUpdate(
+      store,
+      sessionId,
+      prompt,
+      priorAssistant,
+      isConfirmation,
+      prevTimings,
+      embeddingModel,
+      images,
+      historyActiveMode,
+    );
+    return { ...result, degraded: false };
+  } catch (err) {
+    const e = err as Error;
+    console.error(
+      `  [${sessionId.substring(0, 8)}] [INTENT] DEGRADED — the intent-stack update failed; ` +
+      `continuing so the judge still gets anchored (the persisted active set may be ` +
+      `mid-write and is no longer trusted for this turn): ` +
+      `${e?.name ?? "Error"}: ${e?.message ?? String(err)}`,
+    );
+    return {
+      kind: "continuation",
+      turnState: deriveTurnState(prevTimings),
+      stack: [],
+      driftToStackTop: null,
+      newEntryId: undefined,
+      degraded: true,
+    };
+  }
 }
 
 /**

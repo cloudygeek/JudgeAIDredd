@@ -1122,6 +1122,7 @@ export {
   deriveTurnState,
   classifyIntentByEmbedding,
   applyIntentStackUpdate,
+  applyIntentStackUpdateOrDegrade,
   applyClassifierOverride,
   backfillFromSummary,
   backfillFromTranscript,

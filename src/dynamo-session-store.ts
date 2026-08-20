@@ -110,6 +110,58 @@ import {
   intentSk,
 } from "./dynamo-session-marshal.js";
 
+// ---- bounded partition load -------------------------------------------------
+
+/** Sort-key prefix for per-tool decision rows. */
+const TOOL_SK_PREFIX = "TOOL#";
+
+/**
+ * First sort key strictly above every `TOOL#` row — `'$'` is `'#' + 1`.
+ *
+ * BEWARE the lexicographic trap this exists to navigate: `TOOL#` is NOT the
+ * last prefix this store writes. Sort keys compare by byte order and
+ * `'O'` (0x4F) < `'U'` (0x55), so `TOOL# < TURN#`. A bounded load that only
+ * reads "everything below TOOL# plus the tail of TOOL#" silently drops the
+ * ENTIRE turn history, with no error to show for it. Hence the third range.
+ */
+const TOOL_SK_AFTER = "TOOL$";
+
+/**
+ * How many `TOOL#` rows `loadSession` pulls back — the most recent N.
+ *
+ * `TOOL#` is ~80% of the items in a long-lived partition (27,221 of 34,015
+ * on prod session 67b60d78) and reading all of them cost ~20s on every
+ * genuine cache miss. It is also the LEAST long-horizon-critical prefix:
+ *
+ *   - the judge reads `recentTools` — the last 10 (`getSessionContext`);
+ *   - the interceptor scopes its own in-memory `toolLog` by `goalStartIndex`,
+ *     which is independent of what this loads;
+ *   - session-wide counts live on META as `aggToolCalls` / `aggDenied` /
+ *     `aggFiles`, maintained by atomic ADDs and read by `listSessions`.
+ *
+ * Every OTHER prefix is loaded whole and must stay that way. `FILE#R#`,
+ * `FILE#W#` and `ENV#` feed `getFilesRead` / `getWrittenFiles` /
+ * `getEnvVars`, which feed provenance taint — a feature whose entire
+ * purpose is connecting a sensitive read at turn 3 to an exfiltration at
+ * turn 100. Bounding those by recency would delete real attack chains and
+ * surface nothing. `TURN#` / `INTENT#` carry the goals the judge anchors on.
+ *
+ * 500 sits far above anything a judge or a human scrolling the dashboard
+ * reads, and ~54x below the partition that caused the outage. Override with
+ * `DREDD_MAX_LOADED_TOOL_ROWS` (0 or negative disables the bound entirely,
+ * restoring the old full-partition read).
+ */
+export const MAX_LOADED_TOOL_ROWS = 500;
+
+/** Resolved per call so the env override can be flipped without a restart. */
+function toolRowBound(): number | undefined {
+  const raw = process.env.DREDD_MAX_LOADED_TOOL_ROWS;
+  if (!raw) return MAX_LOADED_TOOL_ROWS;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n)) return MAX_LOADED_TOOL_ROWS;
+  return n > 0 ? n : undefined; // <= 0 → unbounded
+}
+
 // ---- store ------------------------------------------------------------------
 
 export interface DynamoSessionStoreOptions {
@@ -393,21 +445,91 @@ export class DynamoSessionStore implements SessionStore {
     }));
   }
 
-  async loadSession(sessionId: string): Promise<SessionState | null> {
+  /**
+   * Paginate one `pk = :pk AND <sk constraint>` Query to exhaustion, or
+   * until `limit` items have been collected.
+   *
+   * Returns `more: true` when the walk stopped early, i.e. Dynamo still had
+   * a `LastEvaluatedKey` when we hit the limit. (Dynamo also returns a
+   * LastEvaluatedKey when a page merely *reaches* the Limit with nothing
+   * behind it, so `more` can be a benign false positive — every caller
+   * treats it as "assume truncated", which is the safe direction.)
+   */
+  private async queryPaged(
+    sessionId: string,
+    keyConditionExpression: string,
+    extraValues: Record<string, any>,
+    opts: { descending?: boolean; limit?: number } = {},
+  ): Promise<{ items: Record<string, any>[]; more: boolean }> {
     const items: Record<string, any>[] = [];
     let cursor: Record<string, any> | undefined;
     do {
+      const remaining =
+        opts.limit === undefined ? undefined : opts.limit - items.length;
+      if (remaining !== undefined && remaining <= 0) break;
       const r = await this.client.send(
         new QueryCommand({
           TableName: this.tableName,
-          KeyConditionExpression: "pk = :pk",
-          ExpressionAttributeValues: { ":pk": pk(sessionId) },
+          KeyConditionExpression: keyConditionExpression,
+          ExpressionAttributeValues: { ":pk": pk(sessionId), ...extraValues },
           ExclusiveStartKey: cursor,
+          ...(opts.descending ? { ScanIndexForward: false } : {}),
+          ...(remaining !== undefined ? { Limit: remaining } : {}),
         }),
       );
       if (r.Items) items.push(...r.Items);
       cursor = r.LastEvaluatedKey;
-    } while (cursor);
+    } while (cursor && (opts.limit === undefined || items.length < opts.limit));
+
+    return { items, more: Boolean(cursor) };
+  }
+
+  /**
+   * Read the session's partition with `TOOL#` bounded to the most recent
+   * `MAX_LOADED_TOOL_ROWS` and every other prefix loaded in full.
+   *
+   * Three ranges, because `TOOL#` sits in the MIDDLE of the sort-key space
+   * (see TOOL_SK_AFTER):
+   *
+   *   sk < "TOOL#"    ENV# FAIL# FILE#R# FILE#W# INSTR# INTENT# META METRIC#
+   *   TOOL#…          bounded, read DESCENDING so the window is the newest N
+   *   sk >= "TOOL$"   TURN#  (and any future prefix that sorts above TOOL#)
+   *
+   * Issued in parallel — the two unbounded ranges are the small ones. The
+   * caller sorts by `sk` anyway, so the descending middle range needs no
+   * special handling downstream.
+   */
+  private async queryPartitionBounded(sessionId: string): Promise<{
+    items: Record<string, any>[];
+    toolTruncated: boolean;
+    toolRowsLoaded: number;
+  }> {
+    const limit = toolRowBound();
+    const [below, toolWindow, above] = await Promise.all([
+      this.queryPaged(sessionId, "pk = :pk AND sk < :toolLo", {
+        ":toolLo": TOOL_SK_PREFIX,
+      }),
+      this.queryPaged(
+        sessionId,
+        "pk = :pk AND begins_with(sk, :toolLo)",
+        { ":toolLo": TOOL_SK_PREFIX },
+        { descending: true, limit },
+      ),
+      this.queryPaged(sessionId, "pk = :pk AND sk >= :toolHi", {
+        ":toolHi": TOOL_SK_AFTER,
+      }),
+    ]);
+
+    return {
+      items: [...below.items, ...toolWindow.items, ...above.items],
+      toolTruncated: toolWindow.more,
+      toolRowsLoaded: toolWindow.items.length,
+    };
+  }
+
+  async loadSession(sessionId: string): Promise<SessionState | null> {
+    const { items, toolTruncated, toolRowsLoaded } =
+      await this.queryPartitionBounded(sessionId);
 
     if (items.length === 0) return null;
 
@@ -508,6 +630,16 @@ export class DynamoSessionStore implements SessionStore {
     // no decision row matches (the PreToolUse row was lost), append a
     // standalone outcome-only entry so the failure isn't dropped — mirrors
     // InMemorySessionStore.recordToolFailure's fallback.
+    //
+    // The bounded TOOL# window changes what "no decision row matches" means.
+    // FAIL# rows are loaded WHOLE (they sort below TOOL#), so on a truncated
+    // load every failure older than the window would suddenly fail to merge
+    // and get appended — at the END of toolHistory, which is exactly the
+    // slice `recentTools` reads. A turn-3 failure presented to the judge as
+    // recent activity is worse than a dropped one, so out-of-window
+    // failures are skipped when (and only when) the window is truncated.
+    const oldestLoadedToolTurn = tools.length > 0 ? (tools[0].turnNumber as number) : null;
+    let staleFailuresSkipped = 0;
     for (const f of failItems) {
       const outcome = {
         status: "error" as const,
@@ -526,6 +658,14 @@ export class DynamoSessionStore implements SessionStore {
         }
       }
       if (!merged) {
+        if (
+          toolTruncated &&
+          oldestLoadedToolTurn !== null &&
+          (f.turnNumber ?? 0) < oldestLoadedToolTurn
+        ) {
+          staleFailuresSkipped++;
+          continue;
+        }
         toolHistory.push({
           turnNumber: f.turnNumber ?? 0,
           tool: f.tool ?? "(unknown)",
@@ -538,6 +678,16 @@ export class DynamoSessionStore implements SessionStore {
           outcome,
         });
       }
+    }
+
+    if (toolTruncated) {
+      console.log(
+        `  [${sessionId.substring(0, 8)}] [loadSession] tool history bounded to the most recent ` +
+        `${toolRowsLoaded} TOOL# rows (older decisions omitted; session-wide counts remain on META ` +
+        `as aggToolCalls/aggDenied)` +
+        (staleFailuresSkipped > 0 ? `; ${staleFailuresSkipped} out-of-window failure(s) skipped` : "") +
+        `. FILE#/ENV#/TURN#/INTENT# loaded in full.`,
+      );
     }
 
     const instructionLoads: InstructionLoadRecord[] = instrItems.map((r) => ({
