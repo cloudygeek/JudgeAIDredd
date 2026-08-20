@@ -92,12 +92,15 @@ import {
   MAX_PROMPT_BYTES,
   MAX_TOOL_INPUT_BYTES,
   MAX_FILE_CONTENT_BYTES,
+  MAX_TURN_IMAGE_BYTES,
   TOUCH_FLUSH_MS,
   INTENT_SK_PREFIX,
   MAX_INTENT_ENTRY_FIELD_BYTES,
   deterministicLegacyId,
   truncString,
   truncToolInput,
+  capImages,
+  imageBytes,
   now,
   ttl,
   pad,
@@ -158,6 +161,36 @@ export class DynamoSessionStore implements SessionStore {
   }
 
   // ---- helpers ----------------------------------------------------------
+
+  /**
+   * Image payload for a row, capped to MAX_TURN_IMAGE_BYTES. An
+   * uncapped pasted screenshot is ~330KB of base64 and on its own
+   * busts DynamoDB's 400KB per-item limit — which used to surface as
+   * `ValidationException` out of registerIntent and a 500 on
+   * `POST /intent`.
+   *
+   * Logs whenever anything is cleared so an operator reading a session
+   * can tell "the dashboard shows no image because it was too big to
+   * store" from "there was never an image".
+   */
+  private storedImages(
+    sessionId: string,
+    rowLabel: string,
+    images?: ImageBlock[],
+  ): ImageBlock[] | undefined {
+    if (!images?.length) return undefined;
+    const capped = capImages(images);
+    // capImages returns the input by identity when nothing was over budget.
+    if (capped !== images) {
+      console.warn(
+        `  [SESSION ${sessionId.substring(0, 8)}] ${rowLabel}: image payload ` +
+        `${imageBytes(images)}B over the ${MAX_TURN_IMAGE_BYTES}B row budget — ` +
+        `storing ${images.length} block(s) with oversize data cleared ` +
+        `(the judge already saw the live bytes)`,
+      );
+    }
+    return capped;
+  }
 
   /**
    * Build an empty SessionState for sessions that don't yet exist in
@@ -521,6 +554,7 @@ export class DynamoSessionStore implements SessionStore {
       embedding: t.embedding ?? [],
       images: t.images,
       isConfirmation: t.isConfirmation,
+      isCoordination: t.isCoordination,
     }));
 
     const filesRead: FileReadRecord[] = filesReadItems.map((f) => ({
@@ -1211,8 +1245,11 @@ export class DynamoSessionStore implements SessionStore {
 
   /**
    * Write a single IntentEntry as its own DynamoDB item. Truncates
-   * prompt + contextual to MAX_INTENT_ENTRY_FIELD_BYTES so a giant
-   * pasted prompt can't break the per-item budget.
+   * prompt + contextual to MAX_INTENT_ENTRY_FIELD_BYTES and caps
+   * `images` to MAX_TURN_IMAGE_BYTES so neither a giant pasted prompt
+   * nor a pasted screenshot can break the per-item budget. An INTENT#
+   * row carries a 1024-d embedding on top of both, so its headroom is
+   * tighter than a TURN# row's.
    *
    * Idempotent on (sessionId, registeredAt, id): re-writing the same
    * entry is a PutItem that overwrites — used by activateIntent /
@@ -1227,6 +1264,7 @@ export class DynamoSessionStore implements SessionStore {
       ...entry,
       prompt: truncString(entry.prompt, MAX_INTENT_ENTRY_FIELD_BYTES),
       contextual: truncString(entry.contextual, MAX_INTENT_ENTRY_FIELD_BYTES),
+      images: this.storedImages(sessionId, `INTENT#${entry.id}`, entry.images),
     };
     await this.client.send(
       new PutCommand({
@@ -1395,6 +1433,7 @@ export class DynamoSessionStore implements SessionStore {
     skipDrift = false,
     images?: ImageBlock[],
     isConfirmation?: boolean,
+    isCoordination?: boolean,
   ): Promise<{
     isOriginal: boolean;
     turnNumber: number;
@@ -1419,7 +1458,10 @@ export class DynamoSessionStore implements SessionStore {
         timestamp,
         prompt: storedPrompt,
         embedding: promptEmbedding ?? [],
-        images: images?.length ? images : undefined,
+        // The originalIntent rides on the META row, so an uncapped
+        // screenshot on the session's FIRST prompt breaks META
+        // creation — not just one turn row.
+        images: this.storedImages(sessionId, "META originalIntent", images),
       };
       if (!meta) {
         await this.putMeta(sessionId, {
@@ -1459,8 +1501,9 @@ export class DynamoSessionStore implements SessionStore {
       timestamp,
       prompt: storedPrompt,
       embedding: promptEmbedding ?? [],
-      images: images?.length ? images : undefined,
+      images: this.storedImages(sessionId, `TURN#${pad(nextTurn)}`, images),
       isConfirmation,
+      isCoordination,
     };
 
     let driftFromOriginal: number | null = null;

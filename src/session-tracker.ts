@@ -282,7 +282,7 @@ export class InMemorySessionStore implements SessionStore {
     // toolHistory and turnMetrics are preserved for the full session log
   }
 
-  async registerIntent(sessionId: string, prompt: string, skipDrift = false, images?: ImageBlock[], isConfirmation?: boolean): Promise<{
+  async registerIntent(sessionId: string, prompt: string, skipDrift = false, images?: ImageBlock[], isConfirmation?: boolean, isCoordination?: boolean): Promise<{
     isOriginal: boolean;
     turnNumber: number;
     driftFromOriginal: number | null;
@@ -305,6 +305,9 @@ export class InMemorySessionStore implements SessionStore {
       // Only meaningful for non-original turns; for the original turn
       // there's no prior goal to confirm.
       isConfirmation: session.originalIntent === null ? false : isConfirmation,
+      // Same shape as isConfirmation: only meaningful once a goal
+      // exists, since the original turn is by definition the goal.
+      isCoordination: session.originalIntent === null ? false : isCoordination,
     };
 
     let driftFromOriginal: number | null = null;

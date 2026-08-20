@@ -49,6 +49,10 @@ import {
   type ClaudeMdScanResult,
 } from "../claudemd-scanner.js";
 import {
+  isCoordinationPrompt,
+  shouldUpdateSessionGoal,
+} from "../coordination-prompt.js";
+import {
   setPendingClassification,
 } from "../intent-classifier.js";
 import {
@@ -58,6 +62,93 @@ import {
   INTENT_CLASSIFIER_LLM_ENABLED,
   CLASSIFIER_EVALUATE_WAIT_MS,
 } from "./_shared.js";
+
+/** What `registerIntent` reports back, plus whether it actually persisted. */
+export interface RegisterIntentOutcome {
+  isOriginal: boolean;
+  turnNumber: number;
+  driftFromOriginal: number | null;
+  driftFromPrevious: number | null;
+  /** True when persistence failed and these values are synthesised. */
+  degraded: boolean;
+}
+
+/** Structural slice of SessionStore that `registerIntentOrDegrade` needs. */
+type IntentRegistrar = {
+  registerIntent(
+    sessionId: string,
+    prompt: string,
+    skipDrift?: boolean,
+    images?: ImageBlock[],
+    isConfirmation?: boolean,
+    isCoordination?: boolean,
+  ): Promise<Omit<RegisterIntentOutcome, "degraded">>;
+};
+
+/**
+ * Persist the turn, but never let a persistence failure fail the
+ * request.
+ *
+ * Registering the turn and anchoring the judge are two different jobs
+ * that happen to sit next to each other. If the DynamoDB write blows
+ * up — the 400KB item limit on a pasted screenshot was how this
+ * surfaced in prod (session d72f9c44, 2026-08-20) — `/intent` used to
+ * return 500 and BOTH jobs were lost. Losing the turn row costs a
+ * dashboard entry. Losing the anchor costs far more: `interceptor.
+ * registerGoal` below never runs, so every tool call for the rest of
+ * the session is judged against a stale goal, drifts, and surfaces a
+ * spurious approval prompt to the user — the exact friction this whole
+ * workstream exists to remove.
+ *
+ * So: swallow the persistence failure, log it loudly, and hand the
+ * caller a result shaped so the anchoring path downstream still does
+ * the right thing.
+ *
+ * `alreadyRegistered` is the caller's `registeredSessions.has(id)`. On
+ * failure it decides `isOriginal`, which is what the two goal-anchoring
+ * branches below key off:
+ *   - not yet registered → `isOriginal: true` → the handler calls
+ *     `registerGoal` with this prompt, so the judge is anchored even
+ *     though nothing persisted.
+ *   - already registered → `isOriginal: false` → the existing anchor
+ *     stands, and neither the fresh-goal nor the rehydrate branch fires.
+ *
+ * Drift is reported as null (not 0): we genuinely don't know it, and
+ * null keeps the autonomous topic-switch branch — which would
+ * re-anchor the judge on a guess — from firing. `turnNumber: -1` marks
+ * the turn as unknown rather than impersonating a real one.
+ */
+export async function registerIntentOrDegrade(
+  store: IntentRegistrar,
+  sessionId: string,
+  prompt: string,
+  skipDrift: boolean,
+  images: ImageBlock[] | undefined,
+  isConfirmation: boolean,
+  isCoordination: boolean,
+  alreadyRegistered: boolean,
+): Promise<RegisterIntentOutcome> {
+  try {
+    const result = await store.registerIntent(
+      sessionId, prompt, skipDrift, images, isConfirmation, isCoordination,
+    );
+    return { ...result, degraded: false };
+  } catch (err) {
+    const e = err as Error;
+    console.error(
+      `  [${sessionId.substring(0, 8)}] [INTENT] DEGRADED — persisting the turn failed; ` +
+      `continuing so the judge still gets anchored (turn not recorded): ` +
+      `${e?.name ?? "Error"}: ${e?.message ?? String(err)}`,
+    );
+    return {
+      isOriginal: !alreadyRegistered,
+      turnNumber: -1,
+      driftFromOriginal: null,
+      driftFromPrevious: null,
+      degraded: true,
+    };
+  }
+}
 
 // =========================================================================
 // POST /intent — UserPromptSubmit
@@ -244,14 +335,53 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   // from real goal pivots).
   const isConfirmation = isConfirmationPrompt(prompt);
 
+  // Sibling of isConfirmation for agent-team traffic. Under
+  // CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, Claude Code delivers
+  // sub-agent completion notifications and peer messages as user
+  // turns, so they arrive here indistinguishable from a typed prompt
+  // and used to be registered as the session's new goal — after which
+  // every legitimate follow-up tool call looked off-task and the judge
+  // denied it. Predicate + evidence live in src/coordination-prompt.ts.
+  //
+  // Like isConfirmation, the classification is computed up-front,
+  // persisted on the TurnIntent for the dashboard, and used below to
+  // suppress the goal-mutating side effects.
+  const isCoordination = isCoordinationPrompt(prompt);
+
   // Read the prior turn-state markers BEFORE we register this prompt;
   // the stack classifier needs to see "what was the state when the user
   // hit Enter?", not "what is it now we've recorded the new event?".
   const prevTimings = await tracker.noteUserPromptSubmit(session_id);
 
-  const result = await tracker.registerIntent(session_id, prompt, mode === "interactive", transcriptImages, isConfirmation);
+  // Degrades instead of throwing: a lost turn row is far cheaper than a
+  // lost goal anchor. See registerIntentOrDegrade.
+  const result = await registerIntentOrDegrade(
+    tracker,
+    session_id,
+    prompt,
+    mode === "interactive",
+    transcriptImages,
+    isConfirmation,
+    isCoordination,
+    registeredSessions.has(session_id),
+  );
 
   const contextualGoal = buildContextualIntent(prompt, priorAssistant);
+
+  // Whether this prompt may mutate the session's goal (the intent stack
+  // and the interceptor's registered anchor). Evaluated against the
+  // state AFTER registerIntent so `result.isOriginal` tells us whether
+  // a goal already existed: a coordination envelope on a session with
+  // no goal at all still registers, because leaving the judge
+  // anchorless is worse than anchoring on coordination noise.
+  const mayUpdateGoal = shouldUpdateSessionGoal(prompt, !result.isOriginal);
+  if (!mayUpdateGoal) {
+    console.log(
+      `  [${session_id.substring(0, 8)}] [INTENT] coordination message ` +
+      `(agent-team) — recorded as turn ${result.turnNumber}, goal left unchanged: ` +
+      `"${prompt.substring(0, 60).replace(/\n/g, "\\n")}..."`,
+    );
+  }
 
   if (transcriptImages.length) {
     console.log(
@@ -302,9 +432,13 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   // new-task: re-register the goal so the judge sees the right
   // anchor. Skip on confirmations (those don't carry a new goal)
   // and on the first prompt of the session (already handled above).
+  // mayUpdateGoal keeps agent-team coordination traffic out of this
+  // branch for the same reason isConfirmation does: neither carries a
+  // new goal, and re-anchoring on one strands the judge on an artifact.
   if (
     mode === "autonomous" &&
     !isConfirmation &&
+    mayUpdateGoal &&
     !result.isOriginal &&
     result.driftFromOriginal !== null &&
     result.driftFromOriginal > NEW_TASK_DRIFT_MIN
@@ -321,7 +455,15 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   // Hoisted so the feed entry below can include the classification —
   // null in autonomous mode (single-goal, no stack semantics).
   let stackUpdate: import("../server-core.js").IntentStackUpdateResult | null = null;
-  if (mode === "interactive" || mode === "learn") {
+  // Coordination envelopes skip the stack entirely rather than being
+  // pushed onto it as a low-priority entry. Two reasons: the classifier
+  // scores them as a full topic switch (drift 1.0 → kind="new-task",
+  // which wipes resolved entries and re-anchors the interceptor), and
+  // even as a benign "continuation" they'd consume an active-intent
+  // slot — enough of them would LRU-evict the human's actual goal. The
+  // turn is still recorded via registerIntent above, so the dashboard
+  // and audit trail keep it.
+  if ((mode === "interactive" || mode === "learn") && mayUpdateGoal) {
     // Stack-aware intent update. The stack absorbs queued prompts (the
     // LLM combines them at the next generation boundary), adopts the
     // assistant proposal on confirmation, and only clears prior intents
@@ -492,10 +634,15 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
     type: "intent",
     prompt: prompt.substring(0, 500),
     sessionId: session_id,
-    reason: `Turn ${result.turnNumber}: ${classification}${result.driftFromOriginal !== null ? ` (drift: ${result.driftFromOriginal.toFixed(3)})` : ""}`,
+    reason: !mayUpdateGoal
+      ? `Turn ${result.turnNumber}: agent-team coordination message — goal unchanged`
+      : `Turn ${result.turnNumber}: ${classification}${result.driftFromOriginal !== null ? ` (drift: ${result.driftFromOriginal.toFixed(3)})` : ""}`,
     ownerSub: identity.ownerSub,
     authStage: authStageForFeed(identity),
-    intentKind: stackUpdate?.kind,
+    // "coordination" is not an intent-stack kind — the stack never saw
+    // this turn. It's a distinct feed tag so telemetry can count how
+    // much agent-team noise the suppression is absorbing.
+    intentKind: mayUpdateGoal ? stackUpdate?.kind : "coordination",
     intentStackSize: stackUpdate?.stack.length,
   });
 

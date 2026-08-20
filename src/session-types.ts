@@ -43,6 +43,19 @@ export interface TurnIntent {
    * intent there).
    */
   isConfirmation?: boolean;
+  /**
+   * Sibling of `isConfirmation`: the prompt was a machine-generated
+   * agent-team coordination envelope (a sub-agent `<task-notification>`
+   * or a peer `<teammate-message>` / `<agent-message>`), not something
+   * the user asked for. Classified by `isCoordinationPrompt` at the
+   * time `/intent` ran. Such a turn is recorded for the audit trail but
+   * is NOT allowed to update the session's goal, so the dashboard's
+   * Goals view should mute it the same way it mutes confirmations.
+   *
+   * Optional for the same reasons `isConfirmation` is: older session
+   * records predate it, and the original turn never carries it.
+   */
+  isCoordination?: boolean;
 }
 
 /**

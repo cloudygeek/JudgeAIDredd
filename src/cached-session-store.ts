@@ -25,6 +25,11 @@
 import { randomUUID } from "node:crypto";
 import { DriftDetector } from "./drift-detector.js";
 import { MAX_INSTRUCTION_LOADS } from "./session-types.js";
+// Persisted-prompt cap. Imported rather than re-declared so the in-place
+// patch below can never drift from the truncation the store actually
+// applies — a cached prompt longer than the stored one is exactly the
+// kind of silent divergence this cache must not introduce.
+import { MAX_PROMPT_BYTES } from "./dynamo-session-marshal.js";
 import type {
   SessionStore,
   DriftClassification,
@@ -388,19 +393,105 @@ export class CachedSessionStore implements SessionStore {
     skipDrift?: boolean,
     images?: ImageBlock[],
     isConfirmation?: boolean,
+    isCoordination?: boolean,
   ): Promise<{
     isOriginal: boolean;
     turnNumber: number;
     driftFromOriginal: number | null;
     driftFromPrevious: number | null;
   }> {
-    const result = await this.backend.registerIntent(sessionId, prompt, skipDrift, images, isConfirmation);
+    // Snapshot the pre-write cache state. `drop()` + `getOrLoad()` used to
+    // run unconditionally here, on the assumption it was "a Dynamo
+    // round-trip". It is not: getOrLoad → DynamoSessionStore.loadSession
+    // Querys the ENTIRE session partition (34,015 items on one measured
+    // prod session = 20.8s), and backfill calls registerIntent once per
+    // historical prompt — 59 rebuilds inside a single request, past the
+    // hook's 30s curl budget. So: patch the cached snapshot in place when
+    // we can prove the patch matches what the backend persisted, and fall
+    // back to the reload when we can't.
+    const cached = this.cache.get(sessionId);
+    const patchable = this.canPatchIntent(cached, prompt, skipDrift);
+    const turnBefore = cached?.currentTurn ?? -1;
+    const intentsBefore = cached?.turnIntents.length ?? -1;
+
+    const result = await this.backend.registerIntent(sessionId, prompt, skipDrift, images, isConfirmation, isCoordination);
+
+    if (patchable && cached && !result.isOriginal && this.cache.get(sessionId) === cached) {
+      if (
+        cached.currentTurn === result.turnNumber &&
+        cached.turnIntents.length === intentsBefore + 1
+      ) {
+        // The backend shares this object with us (InMemorySessionStore
+        // hands its live SessionState back from loadSession) and has
+        // already applied the mutation. Patching again would duplicate
+        // the turn.
+        this.touch(sessionId);
+        return result;
+      }
+      if (cached.currentTurn === turnBefore && result.turnNumber === turnBefore + 1) {
+        // Cache was exactly one turn behind the write we just made — the
+        // only case where a local patch reproduces the stored row.
+        cached.turnIntents.push({
+          turnNumber: result.turnNumber,
+          timestamp: new Date().toISOString(),
+          prompt,
+          // Guaranteed by canPatchIntent: with skipDrift set on a session
+          // that already has an originalIntent, neither backend computes
+          // an embedding — both persist [].
+          embedding: [],
+          images: images?.length ? images : undefined,
+          isConfirmation,
+          isCoordination,
+        });
+        cached.currentTurn = result.turnNumber;
+        this.touch(sessionId);
+        return result;
+      }
+      // Turn numbers don't line up: the cache was already stale (another
+      // container advanced the session). Fall through and reload rather
+      // than paper over the gap.
+    }
+
     // Re-read the state from the backend to keep the cache in sync with
     // all the derived fields (originalEmbedding, turn counters, ...).
-    // A Dynamo round-trip here is fine — registerIntent isn't hot.
     this.drop(sessionId);
     await this.getOrLoad(sessionId);
     return result;
+  }
+
+  /**
+   * Can `registerIntent` be reflected into the cached snapshot without
+   * re-reading the backend? Only when every field of the persisted
+   * TurnIntent is derivable from the arguments:
+   *
+   *   - cache hit           — nothing to patch otherwise.
+   *   - a goal already exists — the first-prompt path also writes
+   *     originalIntent + originalEmbedding + drift-detector priming,
+   *     and its embedding is computed backend-side.
+   *   - skipDrift          — the interactive-mode path. Both backends
+   *     skip the embed for a non-first turn, so the stored embedding is
+   *     deterministically []. Without it the backend embeds the prompt
+   *     and the cache has no way to reproduce that vector.
+   *   - prompt under the store's cap — DynamoSessionStore persists
+   *     truncString(prompt, MAX_PROMPT_BYTES); below the cap that's the
+   *     identity, above it the cache would hold a longer string than the
+   *     store.
+   *
+   * The remaining divergence is `timestamp`: the cache stamps its own,
+   * microseconds after the backend stamped the row. It is a display-only
+   * field (session log rendering), never compared or ordered against.
+   */
+  private canPatchIntent(
+    cached: SessionState | undefined,
+    prompt: string,
+    skipDrift: boolean | undefined,
+  ): boolean {
+    return (
+      cached !== undefined &&
+      skipDrift === true &&
+      cached.originalIntent !== null &&
+      prompt.length <= MAX_PROMPT_BYTES
+    );
   }
 
   async replaceOriginalIntent(sessionId: string, prompt: string): Promise<void> {

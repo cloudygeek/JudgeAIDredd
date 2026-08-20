@@ -1090,6 +1090,51 @@ export function isUsableGoalText(text: string | null | undefined): boolean {
   return typeof text === "string" && text.trim().length > 0;
 }
 
+/**
+ * Default number of pre-goal prompts replayed through registerIntent
+ * during backfill. Override with DREDD_BACKFILL_MAX_HISTORY_TURNS.
+ */
+export const BACKFILL_MAX_HISTORY_TURNS = 10;
+
+function historyCap(): number {
+  const raw = process.env.DREDD_BACKFILL_MAX_HISTORY_TURNS;
+  if (!raw) return BACKFILL_MAX_HISTORY_TURNS;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : BACKFILL_MAX_HISTORY_TURNS;
+}
+
+/**
+ * Which of the pre-goal prompts to replay, given the goal's index.
+ *
+ * Backfill used to replay EVERY historical prompt serially through
+ * registerIntent, inside the request. A traced prod session ("59 user
+ * prompts, 50 tools") was still writing 94s after the hook's 30s curl
+ * had given up — and it does this on every cold container, re-registering
+ * prompts that are already durable in Dynamo as brand-new turns. That is
+ * how one session reached TURN 470 / 27K tool rows, which is in turn what
+ * makes the full-partition reload slow. The two bugs feed each other.
+ *
+ * Only the goal turn matters to /evaluate, so the window is bounded:
+ *
+ *   - index 0 is always kept when anything is dropped. It is the
+ *     session's true first prompt, and the first registerIntent of a
+ *     fresh session becomes `originalIntent` — the "original task" shown
+ *     on the dashboard and quoted in goal reminders. Dropping it would
+ *     silently rewrite the session's origin to a mid-conversation prompt.
+ *   - the `cap` prompts immediately before the goal are kept, because
+ *     recent context is what a reconstructed session log needs.
+ *
+ * Indices are returned in ascending order: registerIntent assigns turn
+ * numbers in call order and the goal must remain the last turn.
+ */
+export function backfillReplayIndices(goalIdx: number, cap: number): number[] {
+  if (goalIdx <= 0) return [];
+  if (goalIdx <= cap) return Array.from({ length: goalIdx }, (_, i) => i);
+  const window: number[] = [];
+  for (let i = goalIdx - cap; i < goalIdx; i++) window.push(i);
+  return window[0] === 0 ? window : [0, ...window];
+}
+
 async function applyBackfill(
   sessionId: string,
   parts: {
@@ -1129,15 +1174,19 @@ async function applyBackfill(
   const goalImages = lastImages.length ? lastImages : goalEntry.images;
   const contextualGoal = buildContextualIntent(goalPrompt, priorAssistant);
 
+  const replay = backfillReplayIndices(goalIdx, historyCap());
+  const skipped = goalIdx - replay.length;
+
   console.log(
     `  [BACKFILL] Session ${sessionId.substring(0, 8)}: ` +
     `${userPrompts.length} user prompts, ${toolCalls.length} tools, ` +
     `${filesRead.length} reads, ${filesWritten.length} writes` +
     `${goalImages.length ? `, ${goalImages.length} image(s)` : ""}` +
-    ` from ${source}`
+    ` from ${source}` +
+    `${skipped > 0 ? ` (replaying ${replay.length} of ${goalIdx} historical prompts, ${skipped} skipped)` : ""}`
   );
 
-  for (let i = 0; i < goalIdx; i++) {
+  for (const i of replay) {
     const p = userPrompts[i];
     await tracker.registerIntent(sessionId, p.text, true, p.images);
   }

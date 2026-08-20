@@ -252,6 +252,14 @@ export interface SessionStore {
      * confirmation noise.
      */
     isConfirmation?: boolean,
+    /**
+     * Whether the prompt was a machine-generated agent-team coordination
+     * envelope (sub-agent `<task-notification>`, peer `<teammate-message>` /
+     * `<agent-message>`) rather than a user goal. Computed by the caller
+     * (handlers/intent.ts) via `isCoordinationPrompt` and persisted on the
+     * TurnIntent so the dashboard can mute it the way it mutes confirmations.
+     */
+    isCoordination?: boolean,
   ): Promise<{
     isOriginal: boolean;
     turnNumber: number;

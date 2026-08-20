@@ -16,7 +16,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { IntentEntry } from "./session-types.js";
+import type { IntentEntry, ImageBlock } from "./session-types.js";
 
 // ---- constants --------------------------------------------------------------
 
@@ -38,6 +38,24 @@ export const GSI_PK = "SESSION";
 export const MAX_PROMPT_BYTES = 100_000;    // user prompt text
 export const MAX_TOOL_INPUT_BYTES = 50_000; // serialised tool_input
 export const MAX_FILE_CONTENT_BYTES = 10_000; // already truncated in sanitisers; belt-and-braces
+
+/**
+ * Total base64 budget for the images persisted on one row (a TurnIntent
+ * on META/TURN#, or an IntentEntry on INTENT#).
+ *
+ * A single pasted screenshot is ~330KB of base64 — on its own ~80% of
+ * DynamoDB's 400KB per-item hard limit. Measured on prod session
+ * d72f9c44 (2026-08-20), where two consecutive turns carried 342,464B
+ * and 326,940B of image against a 58- and 39-character prompt, and
+ * `registerIntent` failed with `ValidationException: Item size has
+ * exceeded the maximum allowed size` — 500ing `POST /intent` and
+ * dropping the turn's intent entirely.
+ *
+ * 120KB leaves room for everything else on the row: a 1024-d Cohere
+ * embedding (~20KB), the prompt (capped at MAX_PROMPT_BYTES), and the
+ * assorted small fields.
+ */
+export const MAX_TURN_IMAGE_BYTES = 120_000;
 
 /**
  * Window for coalescing touchActiveIntent calls. Every /evaluate
@@ -98,6 +116,53 @@ export function truncToolInput(input: Record<string, unknown>): Record<string, u
       : v;
   }
   return clipped;
+}
+
+/** Total base64 bytes across a set of image blocks. */
+export function imageBytes(images?: ImageBlock[]): number {
+  if (!images) return 0;
+  let total = 0;
+  for (const img of images) {
+    total += typeof img?.data === "string" ? img.data.length : 0;
+  }
+  return total;
+}
+
+/**
+ * Cap the image payload that goes onto a row to MAX_TURN_IMAGE_BYTES
+ * in total, spending the budget in array order.
+ *
+ * Blocks past the budget keep their `mediaType` and their POSITION —
+ * only `data` is cleared. Preserving the block count matters: readers
+ * count images (the `/intent` log line, the dashboard) and branch on
+ * shape, and `imageToBedrockContent` already skips a block with empty
+ * data, so a cleared block degrades to "an image was here" rather than
+ * to a crash or a silently shorter list.
+ *
+ * Dropping the stored bytes does not weaken the judge. Stored images
+ * exist for embedding and dashboard display; the judge saw the live
+ * image in the `/intent` request body long before persistence ran.
+ *
+ * Never mutates its input — the same array is handed on to the
+ * interceptor and the judge after the store call. Idempotent: capping
+ * an already-capped array is a no-op that returns it unchanged.
+ */
+export function capImages(images?: ImageBlock[]): ImageBlock[] | undefined {
+  if (!images || images.length === 0) return images;
+  let budget = MAX_TURN_IMAGE_BYTES;
+  let capped = false;
+  const out = images.map((img) => {
+    const size = typeof img?.data === "string" ? img.data.length : 0;
+    if (size <= budget) {
+      budget -= size;
+      return img;
+    }
+    capped = true;
+    return { ...img, data: "" };
+  });
+  // Return the original reference when nothing was over budget so
+  // callers can cheaply detect "was anything dropped?" by identity.
+  return capped ? out : images;
 }
 
 export function now(): number {
