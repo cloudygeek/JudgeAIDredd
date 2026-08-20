@@ -18,6 +18,7 @@
 import { readFileSync } from "node:fs";
 import type { ImageBlock } from "./session-types.js";
 import { safeServerReadablePath } from "./server-core.js";
+import { isCoordinationPrompt } from "./coordination-prompt.js";
 
 /**
  * Single source of truth for "is this short user reply a confirmation
@@ -159,7 +160,15 @@ export function extractLastUserAndPriorAssistant(
     if (userTurns.length === 0) return { lastUser: null, priorAssistant: null, images: [] };
 
     for (let i = userTurns.length - 1; i >= 0; i--) {
-      if (!isConfirmationPrompt(userTurns[i].user)) {
+      // Skip coordination envelopes as well as confirmations. On a cold
+      // container mid-session the newest user turn is very often a
+      // <task-notification> or peer message — machine-generated frames that
+      // arrive as user turns under agent teams. Anchoring the rebuilt goal on
+      // one of those makes every later tool call score against a notification
+      // instead of the human's task, which is the same bug isCoordination
+      // closes on the live /intent path. Falls through to the newest turn if
+      // EVERY turn is coordination, so the judge is never left anchorless.
+      if (!isConfirmationPrompt(userTurns[i].user) && !isCoordinationPrompt(userTurns[i].user)) {
         return { lastUser: userTurns[i].user, priorAssistant: userTurns[i].prior, images: userTurns[i].images };
       }
     }
