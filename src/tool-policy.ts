@@ -189,6 +189,109 @@ function isGitSubcommand(command: string, subcommands: readonly string[]): boole
 }
 
 /**
+ * Commands that consume a heredoc as DATA — the body is file content or text
+ * to filter, never a program. Everything NOT on this list keeps having its
+ * heredoc body scanned as commands.
+ *
+ * Deliberately a whitelist. The tempting inverse — blacklisting interpreters —
+ * fails open on every one we forget: `zsh`, `deno`, `osascript`, `Rscript`,
+ * `ssh host`, `docker exec -i`, `kubectl exec -i`, `sudo bash`, `xargs sh`.
+ * A whitelist fails closed: an unrecognised consumer just keeps today's
+ * (over-strict) behaviour.
+ */
+const HEREDOC_DATA_SINKS = new Set([
+  "cat", "tee", "grep", "egrep", "fgrep", "rg", "head", "tail", "wc",
+  "diff", "jq", "cut", "sort", "uniq", "column", "shasum", "md5", "sha256sum",
+]);
+
+/**
+ * Heredoc occurrence, split so the body is separable from its command line:
+ *   1 `-`        tab-stripping variant (`<<-EOF`)
+ *   2 quote      `'` / `"` / empty — quoted means NO shell expansion
+ *   3 tag        the delimiter word
+ *   4 restOfLine remainder of the COMMAND line after `<<TAG` (e.g. ` | bash`)
+ *   5 body       everything up to the terminator line
+ *
+ * Splitting out group 4 matters: in `cat <<'EOF' | bash`, the `| bash` sits on
+ * the command line, not in the body, and it is what decides whether the body
+ * is data or a program.
+ */
+const HEREDOC_RE = /<<(-?)\s*(['"]?)(\w+)\2([^\n]*)\n([\s\S]*?)\n[ \t]*\3(?=\s|$)/g;
+
+/**
+ * Which command consumes the heredoc that starts at `offset`? Returns the
+ * bare executable name (`/bin/cat` → `cat`), or "" if it can't be determined.
+ */
+function heredocConsumer(command: string, offset: number): string {
+  const segment = command.slice(0, offset).split(/\n|&&|\|\||[;|]/).pop() ?? "";
+  for (const token of segment.trim().split(/\s+/).filter(Boolean)) {
+    if (/^\w+=/.test(token)) continue;        // env-assignment prefix: FOO=bar cat
+    if (/^\d*[<>]/.test(token)) continue;     // redirection: > out.sh, 2>err
+    if (token.startsWith("-")) continue;      // flag
+    return token.replace(/^.*\//, "");
+  }
+  return "";
+}
+
+/**
+ * The `$(...)` / backtick substitutions inside an UNQUOTED heredoc body. The
+ * shell expands these before the body is ever written, so they really do
+ * execute and must survive redaction to stay visible to the deny/review scan.
+ */
+function heredocExpansions(body: string): string {
+  const found: string[] = [];
+  for (const m of body.matchAll(/\$\([^()]*\)/g)) found.push(m[0]);
+  for (const m of body.matchAll(/`[^`]*`/g)) found.push(m[0]);
+  return found.length > 0 ? ` ${found.join(" ")}` : "";
+}
+
+/**
+ * Replace inert heredoc BODIES with a placeholder so pattern matching sees the
+ * command that runs, not the bytes it writes.
+ *
+ * `cat > scripts/deploy.sh <<'SCRIPT' … rm -rf "$ARCHIVE" … SCRIPT` writes a
+ * file. Nothing in the body executes, yet the raw text tripped the destructive-
+ * rm hard deny — and DENY is unappealable, so neither the judge nor a prior
+ * approval could rescue it. (10 denies / 43 in the 2026-08 review came from
+ * heredoc bodies; the shipped one read "Chained command denied: Destructive rm
+ * with force/recursive flags" from line 37 of a deploy script.)
+ *
+ * A body is only redacted when BOTH execution channels are closed:
+ *
+ *   1. CONSUMPTION — the command reading stdin must be a known data sink
+ *      (HEREDOC_DATA_SINKS), and nothing on the rest of its command line may
+ *      hand the body onward (`| bash`, a substitution). `bash <<'EOF'` has a
+ *      quoted delimiter and still runs every line, so quoting alone is NOT
+ *      sufficient — the consumer decides what the body IS.
+ *
+ *   2. EXPANSION — a quoted delimiter (`<<'EOF'` / `<<"EOF"`) disables all
+ *      shell expansion, so the body is literal bytes. An UNQUOTED delimiter
+ *      (`<<EOF`) expands `$(...)`/backticks at write time, so those are
+ *      carried through into the placeholder and keep being matched.
+ *
+ * Anything else is returned untouched and keeps today's behaviour. Terminator
+ * matching is intentionally lenient about indentation: ending a heredoc early
+ * only exposes MORE text to the command scanners, never less.
+ */
+function redactHeredocBodies(command: string): string {
+  if (!command.includes("<<")) return command;
+  return command.replace(
+    HEREDOC_RE,
+    (match, dash: string, quote: string, tag: string, restOfLine: string, body: string, offset: number) => {
+      if (!HEREDOC_DATA_SINKS.has(heredocConsumer(command, offset))) return match;
+      // A pipe or a substitution on the heredoc's own command line hands the
+      // body to a second consumer that may execute it (`cat <<'EOF' | bash`).
+      // `&&` / `;` / `&` do NOT: they start a new command that never receives
+      // this stdin, and the text after them is preserved below and scanned as
+      // usual — so `cat <<'EOF' > x.sh && chmod +x x.sh` stays analysable.
+      if (/[|`]|\$\(/.test(restOfLine)) return match;
+      const preserved = quote ? "" : heredocExpansions(body);
+      return `<<${dash}${quote}${tag}${quote}${restOfLine}\n<heredoc-body>${preserved}\n${tag}`;
+    },
+  );
+}
+
+/**
  * Git commit/tag messages are free-form text that often legitimately contains
  * strings like destructive-delete commands or bare words like "env var" when
  * describing a change. Those are payload, not executable — but naive regex
@@ -201,6 +304,11 @@ function isGitSubcommand(command: string, subcommands: readonly string[]): boole
  * dangerous content.
  */
 function sanitizeForMatching(command: string): string {
+  // Heredoc bodies destined for a data sink are content, not commands — strip
+  // them before anything else, while the newlines that delimit them still
+  // exist (the redirect-stripping step below collapses all whitespace).
+  const heredocsRedacted = redactHeredocBodies(command);
+
   // VCS removals first: `git rm`, `svn rm`, `hg rm`, `jj rm`, `bzr rm`
   // are version-control operations — the removal is staged and fully
   // recoverable via the VCS, not the destructive filesystem `rm`. Rewrite
@@ -208,7 +316,7 @@ function sanitizeForMatching(command: string): string {
   // patterns in policy-patterns.ts can't match the "rm -r" substring.
   // Handles intervening global flags (`git -C /path rm -r`, `git -c k=v
   // rm …`). Confirmed false positive on sessions 8eaf2d7f / 654fa809.
-  const vcsNeutralised = command.replace(
+  const vcsNeutralised = heredocsRedacted.replace(
     // VCS verb, then any run of global flags — including git's
     // value-taking globals `-C <path>` / `-c <key=val>` (space-separated
     // value), `=`-fused long opts, and boolean short/long flags — then
@@ -710,10 +818,23 @@ function checkSandbox(
 /**
  * Extract the write target from a bash redirect expression (> path or >> path).
  * Returns null if no redirect to an absolute path is found.
+ *
+ * `/dev/null` is skipped: it is a discard sink, not a file write, so it must
+ * not trip the out-of-sandbox review — the same carve-out `sanitizeForMatching`
+ * already applies before the deny/review scan. Without this skip, any command
+ * ending `>/dev/null 2>&1` reviewed purely because /dev/null sits outside the
+ * project root (e.g. the `security … >/dev/null && echo exists` presence probe
+ * from the 2026-08 deny review). Matching is exact, so a traversal like
+ * `>/dev/null/../etc/passwd` is a genuine path and still reviews. We scan all
+ * redirects rather than just the first so `> real.log 2>/dev/null` and
+ * `>/dev/null 2>err.log` both surface the real target.
  */
 function extractRedirectTarget(command: string): string | null {
-  const m = command.match(/>>?\s*(\/[^\s;|&]+)/);
-  return m ? m[1] : null;
+  for (const m of command.matchAll(/>>?\s*(\/[^\s;|&]+)/g)) {
+    if (m[1] === "/dev/null") continue;
+    return m[1];
+  }
+  return null;
 }
 
 /**

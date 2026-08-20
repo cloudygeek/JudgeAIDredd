@@ -166,6 +166,30 @@ export const ALLOWED_BASH_PATTERNS: PatternRule[] = [
   // ONLY: `aws configure get aws_secret_access_key` reads the actual secret
   // and MUST still fall through to review/deny.
   { pattern: /^(?:AWS_[A-Z_]+=\S+\s+)*aws\s+configure\s+get\s+(?:region|output)(\s|$)/, reason: "Read AWS region/output config (read-only; not a secret)" },
+
+  // --- 2026-08-20: macOS keychain PRESENCE probes (read-only) ---
+  // `security find-generic-password -s NAME` (and the -internet- variant)
+  // print the item's ATTRIBUTES — class, service, account, timestamps — and
+  // NOT the secret. Surfacing the stored password requires `-g` (dumps it to
+  // stderr) or `-w` (stdout); without either flag the output contains zero
+  // occurrences of "password:". `list-keychains` / `default-keychain` print
+  // keychain FILE PATHS only. So these are existence checks ("is the token
+  // configured on this machine?") — the keychain equivalent of
+  // `aws sts get-caller-identity` — and they were the dominant judge-deny
+  // false positive of the 2026-08 review (10 of 43 denies), with verdicts
+  // wrongly asserting the command "extracts actual credential values".
+  //
+  // ANCHORING — this is what keeps the entry narrow, so read before editing:
+  //  * Only four read-only subcommands are listed. The `security` BINARY is
+  //    deliberately NOT blanket-allowed: dump-keychain, unlock-keychain,
+  //    add-/delete-generic-password, export and import are all absent and
+  //    keep falling through to review/deny.
+  //  * The negative lookahead rejects the entire command if ANY token is a
+  //    short/long flag whose letters include `g` or `w`. That covers `-g`,
+  //    `-w`, `--g`, and clustered forms (`-gs`, `-sg`, `-wa`) — the obvious
+  //    bypass — while leaving `-s`, `-a`, `-d`, `-c` untouched. It scans
+  //    across newlines so a flag on a continuation line can't slip past.
+  { pattern: /^security\s+(?![\s\S]*\s--?[A-Za-z]*[gw])(?:find-(?:generic|internet)-password|list-keychains|default-keychain)(?:\s|$)/, reason: "macOS keychain presence/attribute probe (read-only; printing the secret needs -g/-w, which this excludes)" },
 ];
 
 // =========================================================================
