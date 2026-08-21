@@ -40,6 +40,7 @@ import { checkBedrock, bedrockChat, bedrockEmbed } from "./bedrock-client.js";
 import type { ImageBlock, IntentEntry, UserPermissionsLists } from "./session-tracker.js";
 import { matchUserAllow, matchUserDeny } from "./user-permission-matcher.js";
 import type { ApprovalRecord } from "./approval-store.js";
+import { describeToolCall, describeToolCallForJudge, describeHistoryEntryForJudge } from "./tool-description.js";
 
 // Phase 8b pattern-trust thresholds. Tuned conservatively for v1; once
 // telemetry shows how soft signal shifts judge verdicts these become
@@ -702,11 +703,20 @@ export class PreToolInterceptor {
     // mislead the judge into thinking the agent has drifted.
     const currentGoalTools = s.toolLog.slice(s.goalStartIndex);
     const recentTools = currentGoalTools.slice(-5).map(
-      (r) => `${r.tool}(${this.describeToolCall(r.tool, r.input).substring(0, 80)})`
+      (r) => describeHistoryEntryForJudge(r.tool, r.input)
     );
 
-    // Build the current action description, enriched with file context
-    let currentAction = `${tool}(${toolDescription})`;
+    // Build the current action description, enriched with file context.
+    //
+    // NOTE: deliberately NOT `toolDescription` — that is the drift-facing
+    // rendering, capped at 200 chars with a silent cut. 53.7% of real Bash
+    // commands exceed it (median 221), so the judge was adjudicating a
+    // fragment on more than half of Bash calls, without being told it was a
+    // fragment. The judge gets its own 2,000-char rendering with explicit
+    // truncation; drift keeps the frozen 200-char one so its similarity
+    // thresholds stay calibrated. See src/tool-description.ts.
+    const judgeDescription = describeToolCallForJudge(tool, input);
+    let currentAction = `${tool}(${judgeDescription})`;
     if (fileContext) {
       currentAction += `\n\nFILE CONTEXT (files written during this session):\n${fileContext}`;
     }
@@ -797,26 +807,14 @@ export class PreToolInterceptor {
   /**
    * Create a text description of a tool call for embedding.
    */
-  private describeToolCall(
-    tool: string,
-    input: Record<string, unknown>
-  ): string {
-    switch (tool) {
-      case "Read":
-        return `Read file: ${input.file_path}`;
-      case "Write":
-        return `Write file: ${input.file_path} with content about ${String(input.content ?? "").substring(0, 100)}`;
-      case "Edit":
-        return `Edit file: ${input.file_path}`;
-      case "Bash":
-        return `Execute command: ${String(input.command ?? "").substring(0, 200)}`;
-      case "Glob":
-        return `Find files matching: ${input.pattern}`;
-      case "Grep":
-        return `Search for: ${input.pattern}`;
-      default:
-        return `${tool}: ${JSON.stringify(input).substring(0, 200)}`;
-    }
+  /**
+   * FROZEN drift-facing rendering. Delegates to the shared module so the
+   * judge-facing variant cannot drift away from it — see src/tool-description.ts
+   * for why the two must differ and why THIS one must not change (the
+   * similarity thresholds are calibrated against its exact 200-char shape).
+   */
+  private describeToolCall(tool: string, input: Record<string, unknown>): string {
+    return describeToolCall(tool, input);
   }
 
   private log(
