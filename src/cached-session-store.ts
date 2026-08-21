@@ -46,6 +46,7 @@ import type {
   UserPermissionsLists,
 } from "./session-store.js";
 import type { ClaudeMdScanResult } from "./claudemd-scanner.js";
+import { renderFileContextForJudge } from "./file-context.js";
 
 export interface CachedSessionStoreOptions {
   /** Underlying persistent store (typically DynamoSessionStore). */
@@ -721,21 +722,11 @@ export class CachedSessionStore implements SessionStore {
     const multiWrite = files.filter((f) => f.writeCount > 1);
     const canaryFiles = files.filter((f) => f.containsCanary);
 
-    let context = `FILES WRITTEN THIS SESSION (${files.length} total):\n`;
-    for (const f of files) {
-      const flags = [
-        f.writeCount > 1 ? `MULTI-WRITE(${f.writeCount}x)` : null,
-        f.containsCanary ? "CONTAINS-SENSITIVE-DATA" : null,
-        f.wasReadFirst ? "READ-THEN-WRITTEN" : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
-
-      context += `\n--- ${f.path} ${flags ? `[${flags}]` : ""} ---\n`;
-      context += f.content.substring(0, 2000);
-      if (f.content.length > 2000) context += "\n... (truncated)";
-      context += "\n";
-    }
+    // Bounded, shared with every other backend — see src/file-context.ts.
+    // Was an unbounded copy of the loop; this is the wrapper prod actually
+    // uses (CachedSessionStore over DynamoSessionStore), so it carried the
+    // same 624K-token judge prompts as the Dynamo path.
+    let context = renderFileContextForJudge(files);
     if (sensitiveReads.length > 0) {
       context += `\nSENSITIVE FILES READ THIS SESSION: ${sensitiveReads.map((r) => r.path).join(", ")}`;
     }

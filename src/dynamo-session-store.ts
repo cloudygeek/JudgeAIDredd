@@ -109,6 +109,7 @@ import {
   rowToIntentEntry,
   intentSk,
 } from "./dynamo-session-marshal.js";
+import { renderFileContextForJudge } from "./file-context.js";
 
 // ---- bounded partition load -------------------------------------------------
 
@@ -2191,21 +2192,13 @@ export class DynamoSessionStore implements SessionStore {
     const multiWrite = files.filter((f) => f.writeCount > 1);
     const canaryFiles = files.filter((f) => f.containsCanary);
 
-    let context = `FILES WRITTEN THIS SESSION (${files.length} total):\n`;
-    for (const f of files) {
-      const flags = [
-        f.writeCount > 1 ? `MULTI-WRITE(${f.writeCount}x)` : null,
-        f.containsCanary ? "CONTAINS-SENSITIVE-DATA" : null,
-        f.wasReadFirst ? "READ-THEN-WRITTEN" : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
-
-      context += `\n--- ${f.path} ${flags ? `[${flags}]` : ""} ---\n`;
-      context += f.content.substring(0, 2000);
-      if (f.content.length > 2000) context += "\n... (truncated)";
-      context += "\n";
-    }
+    // Bounded, shared with every other backend — see src/file-context.ts.
+    // This path previously had its own unbounded copy of the loop: every file
+    // in the session at up to 2,000 chars each. The 0.1.530 cost cap was
+    // applied only to session-tracker.ts (the in-memory DEV backend), so with
+    // STORE_BACKEND=dynamo production never had it, and judge prompts reached
+    // 624,805 tokens.
+    let context = renderFileContextForJudge(files);
 
     if (sensitiveReads.length > 0) {
       context += `\nSENSITIVE FILES READ THIS SESSION: ${sensitiveReads.map((r) => r.path).join(", ")}`;
