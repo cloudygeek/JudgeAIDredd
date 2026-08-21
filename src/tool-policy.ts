@@ -22,6 +22,7 @@ import {
   REVIEW_BASH_PATTERNS,
   SENSITIVE_FILE_PATTERNS,
   SENSITIVE_WRITE_PATTERNS,
+  DEVTOOL_KILL_RE,
 } from "./policy-patterns.js";
 
 export {
@@ -695,6 +696,21 @@ function evaluateSingleBashCommand(
     return { decision: "review", reason: "Recursive rm inside the project sandbox — judge/user adjudicates", matchedRule: "REVIEW:Bash:rm-in-sandbox", command };
   }
 
+  // Clearing your OWN stalled build/test process. Checked BEFORE the deny
+  // list, like the rm carve-out above and for the same reason: `/kill\s+-9/`
+  // matches the `kill -9` substring inside `pkill -9`, and deny beats allow,
+  // so an allow-list entry could never fire. See DEVTOOL_KILL_RE for what this
+  // deliberately excludes (sshd/auditd/dredd, bare `pkill NAME`, `pkill -u`,
+  // `$VAR` patterns).
+  if (DEVTOOL_KILL_RE.test(command.trim())) {
+    return {
+      decision: "allow",
+      reason: "Clear own stalled build/test process (allow-listed dev tool, literal pattern)",
+      matchedRule: "ALLOW:Bash:devtool-kill",
+      command,
+    };
+  }
+
   // Match rules against the sanitized command (commit-message bodies
   // stripped); the returned `command` and reason still use the original.
   const matchTarget = sanitizeForMatching(command);
@@ -867,6 +883,19 @@ export function evaluateToolPolicy(
     // operators inside quoted strings or heredoc bodies don't fool us into
     // taking the chained path.
     const unchained = !hasTopLevelChain(command);
+    // Dev-tool kill carve-out, mirrored here for the same reason as the rm one
+    // below: this outer path runs its own deny scan before delegating to
+    // evaluateSingleBashCommand, so a carve-out placed only there never fires
+    // for an UNCHAINED command — which is most of them
+    // (`pkill -9 -f flutter_tester`).
+    if (unchained && DEVTOOL_KILL_RE.test(command.trim())) {
+      return {
+        decision: "allow",
+        tool,
+        reason: "Clear own stalled build/test process (allow-listed dev tool, literal pattern)",
+        matchedRule: "ALLOW:Bash:devtool-kill",
+      };
+    }
     if (unchained) {
       const rm = classifyRmCarveout(command, base, sandbox);
       if (rm === "allow") {

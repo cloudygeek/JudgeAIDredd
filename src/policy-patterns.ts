@@ -190,7 +190,53 @@ export const ALLOWED_BASH_PATTERNS: PatternRule[] = [
   //    bypass — while leaving `-s`, `-a`, `-d`, `-c` untouched. It scans
   //    across newlines so a flag on a continuation line can't slip past.
   { pattern: /^security\s+(?![\s\S]*\s--?[A-Za-z]*[gw])(?:find-(?:generic|internet)-password|list-keychains|default-keychain)(?:\s|$)/, reason: "macOS keychain presence/attribute probe (read-only; printing the secret needs -g/-w, which this excludes)" },
+
+  // --- 2026-08-21: clearing your OWN stalled build/test process ---
+  // `kill -9` is denied wholesale below ("Force kill process"). That rule fires
+  // on a dev-loop idiom with no security content — clearing a hung test runner
+  // before re-running the suite:
+  //
+  //     pkill -9 -f flutter_tester; sleep 1; flutter test --concurrency=1 …
+  //
+  // Of 730 approval prompts shown to a human 2026-07-01..08-20, force-kill was
+  // 59 (8.1%) and 57 of those were this exact shape.
+  //
+  // Killing a process is an AVAILABILITY action, outside the goal-hijack threat
+  // model — except when the target would blind or unhook a defence, so this
+  // deliberately allow-lists TARGETS, never `pkill` itself. `pkill -f sshd`,
+  // `-f dredd`, `-f auditd` remain denied: that is evasion, not tidying.
+  //
+  // ANCHORING — read before widening:
+  //  * Only the build/test tools actually observed, longest-alternative first
+  //    so `flutter` cannot shadow `flutter_tester`. Adding a name here grants
+  //    kill rights over every process whose command line starts with it.
+  //  * `-f` is REQUIRED. `pkill -9 node` (bare name) and `pkill -u root` (kill
+  //    by user) both fall through to the deny.
+  //  * The pattern must be a LITERAL: `$`/backtick are excluded, so
+  //    `pkill -f "$PROC"` cannot name an arbitrary process at run time.
+  //  * The tool name must be the START of the pattern, so a crafted string
+  //    cannot smuggle another target in front of it.
+  //
+  // NOTE: this lives OUTSIDE the allow list on purpose — see DEVTOOL_KILL_RE
+  // below. The deny list is scanned before the allow list, and the deny rule
+  // `/kill\s+-9/` matches `pkill -9` as a substring, so an allow-list entry
+  // could never fire. It is applied as a pre-deny carve-out instead, exactly
+  // like classifyRmCarveout.
 ];
+
+/**
+ * Clearing your OWN stalled build/test process — a pre-deny carve-out.
+ *
+ * Applied by tool-policy.ts BEFORE the deny list, at both the single-command
+ * and chained-segment sites, because `/kill\s+-9/` matches the `kill -9`
+ * substring inside `pkill -9` and deny beats allow.
+ *
+ * See the comment block above for the anchoring rationale and the list of what
+ * this deliberately does NOT cover (sshd/auditd/dredd, bare `pkill NAME`,
+ * `pkill -u`, `$VAR` patterns).
+ */
+export const DEVTOOL_KILL_RE =
+  /^(?:pkill|killall)(?:\s+-(?:[0-9]+|[A-Za-z]+))*\s+-f\s+(?:"(?:flutter_tester|flutter_tools|flutter|tofu|terraform|gradle|dart)[^"$`]*"|'(?:flutter_tester|flutter_tools|flutter|tofu|terraform|gradle|dart)[^'$`]*'|(?:flutter_tester|flutter_tools|flutter|tofu|terraform|gradle|dart)[A-Za-z0-9_./-]*)\s*(?:2>\s*\S+)?$/;
 
 // =========================================================================
 // DENY LIST — always blocked, destructive or dangerous
