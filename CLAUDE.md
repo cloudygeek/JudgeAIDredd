@@ -502,33 +502,89 @@ Current Claude Code routes a tool call that *fails* at runtime to the `PostToolU
 
 ### Test surface
 
-```
-hooks/tests/test_user_permissions_upload.sh         # Phase 1: hook hash-cache + upload protocol  (34)
-hooks/tests/test_phase7a_managed_allow.sh           # primitives                                   (35)
-hooks/tests/test_phase7b_reconcile.sh               # UserPromptSubmit reconcile                   (21)
-hooks/tests/test_phase7c_cleanup.sh                 # SessionEnd + stale sweep                     (22)
-hooks/tests/test_phase7d_cleanup_cli.sh             # hooks/dredd-cleanup.sh CLI                   (17)
-hooks/tests/test_phase2b_intent.ts                  # server store + tracker round-trip           (17, npx tsx)
-hooks/tests/test_phase3_matcher.ts                  # pattern matcher                              (46, npx tsx)
-hooks/tests/test_phase4_pipeline.ts                 # interceptor integration                      (17, npx tsx)
-hooks/tests/test_phase8a_approval_embedding.ts      # ApprovalRecord.inputEmbedding round-trip      (8, npx tsx)
-hooks/tests/test_phase8b_pattern_trust.ts           # Stage 0.5 against stub /api/embed           (10, npx tsx)
-hooks/tests/test_byot_crypto.ts                     # FakeByotCrypto encrypt/decrypt + context      (3, npx tsx)
-hooks/tests/test_byot_store.ts                      # InMemoryByotStore + DynamoByotStore           (9, npx tsx)
-hooks/tests/test_byot_provider.ts                   # BearerCredentialProvider cache + fail-soft    (9, npx tsx)
-hooks/tests/test_byot_client.ts                     # per-credential Bedrock client cache keying    (4, npx tsx)
-hooks/tests/test_byot_probe.ts                      # capability probe against stub Bedrock         (varies, npx tsx)
-hooks/tests/test_byot_pipeline.ts                   # provider + service end-to-end round-trip      (5, npx tsx)
-hooks/tests/test_provenance_taint.ts                # buildTaintEvidence detection (incl. long-horizon)  (npx tsx)
-hooks/tests/test_provenance_pipeline.ts             # render block + interceptor→judge threading          (npx tsx)
-hooks/tests/test_posttoolfailure.ts                 # recordToolFailure decorate/fallback/cap            (16, npx tsx)
-hooks/tests/test_instruction_evidence.ts            # build + render + store + interceptor→judge thread  (20, npx tsx)
-hooks/tests/test_new_hook_events.sh                 # hook routing: PostToolUseFailure + InstructionsLoaded (13)
-hooks/tests/test_trust_store.ts                     # TrustStore + resolver + parseTrustToggle           (17, npx tsx)
-hooks/tests/test_trust_pipeline.ts                  # interceptor trust-allow short-circuit + ordering    (6, npx tsx)
+Run everything (`.ts` via `npx tsx`, `.sh` via `bash`; no runner script — note `timeout(1)` is absent on macOS):
+
+```bash
+for f in hooks/tests/test_*.ts; do npx tsx "$f" || echo "FAILED: $f"; done
+for f in hooks/tests/test_*.sh; do bash   "$f" || echo "FAILED: $f"; done
 ```
 
-All green at last full run. The bash suites are self-contained (mktemp sandboxes + python stub HTTP server); the `.ts` ones run via `npx tsx`.
+```
+# --- policy engine -------------------------------------------------------
+test_policy_allowlist.ts            # ALLOWED/DENIED/REVIEW bash patterns          (64)
+test_policy_rm_sandbox.ts           # /tmp + /private/tmp scratch carve-out        (49)
+test_policy_credential_probe.ts     # keychain presence-probe allowlist            (39)
+test_policy_heredoc.ts              # heredoc bodies are data, not commands        (33)
+test_policy_devtool_kill.ts         # force-kill pre-deny carve-out, both sites    (22)
+test_policy_vcs_rm.ts               # git rm / vcs delete handling                 (16)
+test_credential_flow.ts             # credential→sink dataflow                     (16)
+test_credential_url_expansion.ts    # $VAR expansion to fixed point; $-host reject (12)
+test_credential_consent.ts          # (principal, exact-host) consent              (11)
+test_ssh_host_fingerprint.ts        # ssh/scp/rsync fingerprints pin the host      (13)
+test_commit_msg_substitution.ts     # commit-message argument handling             (10)
+
+# --- judge prompt + file context -----------------------------------------
+test_file_context_backends.ts       # ALL THREE backends agree — see note below    (32)
+test_file_context_scoping.ts        # command-scoped tiers; the 0.1.541 pin        (20)
+test_file_context_budget.ts         # bounded rendering, flagged-first             (12)
+test_judge_prompt_calibration.ts    # B7.1 verdicts on a fixture corpus            (20)
+test_judge_undefined_intent.ts      # judge with no/blank intent                   (20)
+test_judge_action_truncation.ts     # 2,000-char judge action + TRUNCATED marker   (15)
+test_bedrock_image_block.ts         # image blocks, incl. undefined mediaType      (16)
+test_bedrock_metrics.ts            # per-caller cost/cache accounting              (24)
+
+# --- session state + storage ---------------------------------------------
+test_dynamo_image_cap.ts            # 400KB per-item limit                         (53)
+test_intent_stack_degrade.ts        # active-intent stack eviction                 (49)
+test_loadsession_bounded.ts         # partition query stays bounded                (38)
+test_intent_latency.ts              # /intent hot-path latency (hits Bedrock)      (35)
+test_coordination_intent.ts         # sub-agent/peer envelopes muted as goals      (33)
+test_intent_option_pick.ts          # "option 2"-style confirmations               (28)
+test_lightweight_sessions.ts        # list-aggregate maintenance on META           (24)
+test_phase2b_intent.ts              # store + tracker round-trip                   (17)
+test_posttoolfailure.ts             # recordToolFailure decorate/fallback/cap      (16)
+test_backfill_coordination.ts       # transcript backfill of coordination turns    (12)
+test_taint_field.ts                 # provenance field round-trip                   (4)
+
+# --- approvals + trust ----------------------------------------------------
+test_phase3_matcher.ts              # permissions.{allow,deny} matcher             (46)
+test_user_permissions_upload.sh     # hook hash-cache + upload protocol            (34)
+test_phase9_tacit_approval.ts       # tacit approval promotion                     (21)
+test_trust_store.ts                 # TrustStore + resolver + parseTrustToggle     (20)
+test_approval_fingerprint.ts        # fingerprint shape + stability                (18)
+test_phase4_pipeline.ts             # interceptor integration (hits Bedrock)       (17)
+test_phase8b_pattern_trust.ts       # Stage 0.5 against stub /api/embed            (14)
+test_phase8a_approval_embedding.ts  # ApprovalRecord.inputEmbedding round-trip      (8)
+test_trust_pipeline.ts              # trust-allow short-circuit + stage ordering    (8)
+
+# --- judge evidence blocks ------------------------------------------------
+test_instruction_evidence.ts        # InstructionsLoaded → <instructions_loaded>   (20)
+test_provenance_taint.ts            # buildTaintEvidence, incl. long-horizon       (18)
+test_provenance_pipeline.ts         # render block + interceptor→judge threading    (9)
+
+# --- BYOT -----------------------------------------------------------------
+test_byot_store.ts                  # InMemoryByotStore + DynamoByotStore          (12)
+test_byot_admin_target.ts           # admin-on-behalf write path                    (8)
+test_byot_pipeline.ts               # provider + service end-to-end                 (8)
+test_byot_provider.ts               # BearerCredentialProvider cache + fail-soft    (8)
+test_byot_client.ts                 # per-credential Bedrock client cache keying    (7)
+test_byot_crypto.ts                 # FakeByotCrypto encrypt/decrypt + context      (3)
+test_byot_probe.ts                  # capability probe against stub Bedrock         (3)
+
+# --- hook script ----------------------------------------------------------
+test_phase7a_managed_allow.sh       # managed-allow primitives                     (35)
+test_phase7c_cleanup.sh             # SessionEnd + stale sweep                     (22)
+test_phase7b_reconcile.sh           # UserPromptSubmit reconcile                   (21)
+test_phase7d_cleanup_cli.sh         # hooks/dredd-cleanup.sh CLI                   (17)
+test_new_hook_events.sh             # PostToolUseFailure + InstructionsLoaded      (13)
+test_hook_bundle_selfcontained.ts   # baked hook has no external `source`           (8)
+test_transcript_summary_bounded.sh  # build_transcript_summary is O(1) in size      (6)
+test_integration_bundle_skill.ts    # bundle contents                               (3)
+```
+
+57 files, 1,160 assertions, all green at last full run (2026-08-21). The bash suites are self-contained (mktemp sandboxes + python stub HTTP server). Two tests — `test_phase4_pipeline` and `test_intent_latency` — call **real Bedrock**; an expired AWS SSO token makes them fail in a way that looks like a code regression, so re-auth before believing them.
+
+**`test_file_context_backends.ts` is load-bearing and cannot be replaced by types.** `SessionStore.getFileContextForJudge` takes optional `command`/`cwd`, and TypeScript accepts an implementation declaring *fewer* parameters — so a backend that silently ignores `command` compiles clean. Verified by mutation: dropping the argument in `dynamo-session-store.ts` leaves `tsc` green and turns this test red in 8 places. That is the same class of defect as the 0.1.530 cost cap, which was written into one of three backends and was a no-op in production for seven weeks.
 
 ## Versioning
 

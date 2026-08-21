@@ -736,7 +736,7 @@ export class InMemorySessionStore implements SessionStore {
    * Build a context summary of all written files for the judge.
    * Used when evaluating execution commands (Bash, git commit, etc.).
    */
-  async getFileContextForJudge(sessionId: string): Promise<string> {
+  async getFileContextForJudge(sessionId: string, command?: string, cwd?: string | null): Promise<string> {
     const files = await this.getWrittenFiles(sessionId);
     if (files.length === 0) return "No files written this session.";
 
@@ -749,7 +749,7 @@ export class InMemorySessionStore implements SessionStore {
     // is exactly why the 0.1.530 cap never reached production: this class is
     // the in-memory DEV backend, and prod runs STORE_BACKEND=dynamo. Keeping
     // one copy is the fix for that class of divergence.
-    let context = renderFileContextForJudge(files);
+    let context = renderFileContextForJudge(files, { command, cwd });
 
     if (sensitiveReads.length > 0) {
       context += `\nSENSITIVE FILES READ THIS SESSION: ${sensitiveReads.map((r) => r.path).join(", ")}`;

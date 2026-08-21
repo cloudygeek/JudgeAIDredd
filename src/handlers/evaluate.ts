@@ -60,6 +60,7 @@ import {
   CLASSIFIER_EVALUATE_WAIT_MS,
   DREDD_TAG,
 } from "./_shared.js";
+import { referencedWrittenFiles } from "../file-context.js";
 
 // =========================================================================
 // BYOT runtime-fallback recording (throttled, module-scope)
@@ -272,12 +273,22 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     const command = String(tool_input?.command ?? "");
     const writtenFiles = await tracker.getWrittenFiles(session_id);
 
-    const referencesWritten = writtenFiles.some((f) =>
-      command.includes(f.path) || command.includes(f.path.split("/").pop()!)
-    );
+    // One matcher, two consumers. The trigger used to ask "does this command
+    // touch any written file?" using a raw substring test, while the renderer
+    // answered "here is EVERY file written this session" — so a command
+    // referencing a median of 1 file was answered with all 1,026 of them.
+    // Both now agree, and the renderer scopes to what the command names.
+    //
+    // The substring→token change is a small correctness tidy (~1.5% of
+    // firings were accidents like a basename glued inside a longer word). The
+    // firings themselves are legitimate: developers really do run commands
+    // against files they wrote earlier, and that is exactly when
+    // payload-splitting evidence matters. So the payload is scoped, not the
+    // trigger narrowed.
+    const referenced = referencedWrittenFiles(command, writtenFiles, cwdForEval);
 
-    if (referencesWritten || /git\s+(add|commit|push)/.test(command)) {
-      fileContext = await tracker.getFileContextForJudge(session_id);
+    if (referenced.length > 0 || /git\s+(add|commit|push)/.test(command)) {
+      fileContext = await tracker.getFileContextForJudge(session_id, command, cwdForEval);
     }
   }
 

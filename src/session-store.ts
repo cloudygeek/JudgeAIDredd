@@ -367,7 +367,18 @@ export interface SessionStore {
   getMultiWriteFiles(sessionId: string): Promise<FileRecord[]>;
   getCanaryFiles(sessionId: string): Promise<FileRecord[]>;
 
-  getFileContextForJudge(sessionId: string): Promise<string>;
+  /** Judge's "files written this session" block.
+   *
+   *  `command` + `cwd` scope the output to what this command actually touches;
+   *  without them the caller gets the unscoped, flagged-first rendering.
+   *  Widened 2026-08-21. WARNING — widening this signature does NOT make tsc
+   *  break until the backends follow: TypeScript accepts an implementation
+   *  that declares FEWER parameters than the interface, so a backend that
+   *  silently ignores `command` compiles clean and ships. A cap applied to only
+   *  one backend is exactly how the 0.1.530 fix was a no-op in production for
+   *  seven weeks. The guard is hooks/tests/test_file_context_backends.ts, which
+   *  drives all three classes; keep it passing. */
+  getFileContextForJudge(sessionId: string, command?: string, cwd?: string | null): Promise<string>;
 
   // ---- env vars -----------------------------------------------------------
   recordEnvVar(sessionId: string, command: string): Promise<void>;

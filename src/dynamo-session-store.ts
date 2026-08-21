@@ -2183,7 +2183,7 @@ export class DynamoSessionStore implements SessionStore {
     return (await this.getWrittenFiles(sessionId)).filter((f) => f.containsCanary);
   }
 
-  async getFileContextForJudge(sessionId: string): Promise<string> {
+  async getFileContextForJudge(sessionId: string, command?: string, cwd?: string | null): Promise<string> {
     const state = (await this.loadSession(sessionId)) ?? this.emptyState(sessionId);
     const files = Array.from(state.filesWritten.values());
     if (files.length === 0) return "No files written this session.";
@@ -2198,7 +2198,7 @@ export class DynamoSessionStore implements SessionStore {
     // applied only to session-tracker.ts (the in-memory DEV backend), so with
     // STORE_BACKEND=dynamo production never had it, and judge prompts reached
     // 624,805 tokens.
-    let context = renderFileContextForJudge(files);
+    let context = renderFileContextForJudge(files, { command, cwd });
 
     if (sensitiveReads.length > 0) {
       context += `\nSENSITIVE FILES READ THIS SESSION: ${sensitiveReads.map((r) => r.path).join(", ")}`;

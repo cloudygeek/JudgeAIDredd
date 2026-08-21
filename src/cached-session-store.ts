@@ -713,7 +713,7 @@ export class CachedSessionStore implements SessionStore {
     return (await this.getWrittenFiles(sessionId)).filter((f) => f.containsCanary);
   }
 
-  async getFileContextForJudge(sessionId: string): Promise<string> {
+  async getFileContextForJudge(sessionId: string, command?: string, cwd?: string | null): Promise<string> {
     const s = await this.getOrLoad(sessionId);
     const files = Array.from(s.filesWritten.values());
     if (files.length === 0) return "No files written this session.";
@@ -726,7 +726,7 @@ export class CachedSessionStore implements SessionStore {
     // Was an unbounded copy of the loop; this is the wrapper prod actually
     // uses (CachedSessionStore over DynamoSessionStore), so it carried the
     // same 624K-token judge prompts as the Dynamo path.
-    let context = renderFileContextForJudge(files);
+    let context = renderFileContextForJudge(files, { command, cwd });
     if (sensitiveReads.length > 0) {
       context += `\nSENSITIVE FILES READ THIS SESSION: ${sensitiveReads.map((r) => r.path).join(", ")}`;
     }
