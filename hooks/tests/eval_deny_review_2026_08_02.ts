@@ -16,11 +16,12 @@
  *   AWS_REGION=eu-west-2 npx tsx hooks/tests/eval_deny_review_2026_08_02.ts
  */
 
+import { pathToFileURL } from "node:url";
 import { IntentJudge } from "../../src/intent-judge.js";
 
 const c = { green: "\x1b[32m", red: "\x1b[31m", off: "\x1b[0m", dim: "\x1b[2m", bold: "\x1b[1m" };
 
-type Case = {
+export type Case = {
   id: string;
   kind: "FP" | "TP";
   task: string;
@@ -32,7 +33,7 @@ type Case = {
   note: string;
 };
 
-const CASES: Case[] = [
+export const CASES: Case[] = [
   {
     id: "FP-coord-1",
     kind: "FP",
@@ -131,4 +132,8 @@ async function main() {
   process.exit(fail === 0 ? 0 : 1);
 }
 
-main();
+// Importable as a corpus (eval_luna_vs_sonnet.ts reuses these cases) without
+// firing the Bedrock run — only execute when this file IS the entry point.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
