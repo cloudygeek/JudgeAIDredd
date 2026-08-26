@@ -9,6 +9,34 @@
 const OLLAMA_BASE = process.env.OLLAMA_HOST ?? "http://localhost:11434";
 
 /**
+ * How long Ollama keeps the model resident after a request.
+ *
+ * Ollama's default is 5 MINUTES. Measured on the Studio: a warm judge call is
+ * 1.3s, a cold one ~22s because the 23GB model has to be re-read. Five idle
+ * minutes is nothing on a developer's machine, so in practice most sessions
+ * pay that 22s at least once — on a call that blocks the agent's tool use.
+ *
+ * The documented fix is `launchctl setenv OLLAMA_KEEP_ALIVE 24h` on the host,
+ * and it is a poor one: it does not survive being set from an SSH session (that
+ * lands in launchd's Background domain while Ollama.app runs in Aqua), it needs
+ * the app restarted, and it silently reverts if the app is reinstalled. None of
+ * that is discoverable — you just get a slow call now and then.
+ *
+ * Sending `keep_alive` on the request instead makes residency a property of the
+ * CALLER, which is where it belongs: no host configuration, survives app
+ * restarts, and works on any Ollama the deployment happens to talk to.
+ * Verified against Ollama: /api/chat honours it, and /api/ps then reports
+ * expires_at 24h out.
+ *
+ * Unset (the default) omits the field, so behaviour is unchanged for anyone
+ * relying on their own server-side setting.
+ */
+const OLLAMA_KEEP_ALIVE: string | undefined =
+  process.env.DREDD_OLLAMA_KEEP_ALIVE && process.env.DREDD_OLLAMA_KEEP_ALIVE.length > 0
+    ? process.env.DREDD_OLLAMA_KEEP_ALIVE
+    : undefined;
+
+/**
  * Whether to let a reasoning model emit thinking tokens.
  *
  * Suppressing reasoning is normally a quality trade. On the judge task,
@@ -26,8 +54,8 @@ const OLLAMA_BASE = process.env.OLLAMA_HOST ?? "http://localhost:11434";
  *
  * Latency matters here more than it looks: this call BLOCKS the agent's tool
  * call, and Dredd judges roughly half of them. 7.9s is unusable; 1.3s is not.
- * Both assume a resident model — cold start is ~22s, so a local deployment
- * wants OLLAMA_KEEP_ALIVE set long.
+ * Both assume a resident model — cold start is ~22s. See DREDD_OLLAMA_KEEP_ALIVE
+ * below, which pins residency from the client so the host needs no setup.
  *
  * Unset (the default) omits the field entirely, so behaviour is byte-identical
  * to before this was added and non-reasoning models are unaffected. Set
@@ -71,7 +99,14 @@ export async function embed(
   const res = await fetch(`${OLLAMA_BASE}/api/embed`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, input }),
+    body: JSON.stringify({
+      model,
+      input,
+      // The embedding model is subject to the same 5-minute eviction as the
+      // chat model, and drift runs on every judged call — so a cold embed is a
+      // latency spike on the identical hot path.
+      ...(OLLAMA_KEEP_ALIVE === undefined ? {} : { keep_alive: OLLAMA_KEEP_ALIVE }),
+    }),
   });
 
   if (!res.ok) {
@@ -100,6 +135,7 @@ export async function chat(
       messages,
       stream: false,
       ...(OLLAMA_THINK === undefined ? {} : { think: OLLAMA_THINK }),
+      ...(OLLAMA_KEEP_ALIVE === undefined ? {} : { keep_alive: OLLAMA_KEEP_ALIVE }),
     }),
   });
 

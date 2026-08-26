@@ -46,11 +46,23 @@ ollama pull qwen3.6          # judge
 ollama pull nomic-embed-text # drift embeddings
 ```
 
-**Keep the model resident.** Cold start is ~22s against 1.3s warm; an evicted
-model turns the first judged tool call of the day into a 22-second stall.
+**Model residency is handled for you.** Ollama evicts after 5 minutes by
+default, and a cold 23GB model costs ~22s against 1.3s warm — on a call that
+blocks the agent. Dredd sends `keep_alive` on every request
+(`DREDD_OLLAMA_KEEP_ALIVE`, default `24h` in `docker-compose.yml`), so there is
+**nothing to configure on the host**.
+
+That is deliberate. The usual advice — `launchctl setenv OLLAMA_KEEP_ALIVE 24h`
+— is a poor fix: it silently does nothing when set over SSH (that lands in
+launchd's `Background` domain while Ollama.app runs in `Aqua`), it needs the app
+restarted, and it reverts on reinstall. None of which is discoverable; you just
+get an occasional slow call. Making residency a property of the caller removes
+the whole class of problem.
+
+Check what is resident and until when:
 
 ```bash
-launchctl setenv OLLAMA_KEEP_ALIVE 24h
+curl -s http://127.0.0.1:11434/api/ps | jq '.models[] | {name, expires_at}'
 ```
 
 ---
