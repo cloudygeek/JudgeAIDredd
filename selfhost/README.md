@@ -235,6 +235,28 @@ avoid.
 
 ## Operational notes
 
+**Client IPs are not captured; the access log records the gateway.** Two of the
+three hops that destroyed the source address are fixed (`selfhost/pf-client-ip.sh`
+removes Lima's userspace forwarder and Docker's rewrite). The third is the UniFi
+gateway: classic Port Forwarding source-NATs, so every internet client arrives as
+`172.16.0.1`. Verified twice with genuinely external requests — a LAN test
+hairpins through the router and proves nothing.
+
+UniFi's `Dest. NAT` rule type preserves the source and is the fix in principle,
+but on this network a Dest. NAT rule for :443 never matched and the gateway
+answered with its own admin UI instead, so the port forward was restored to keep
+the service up. Working service was judged worth more than attributable logs.
+
+This also affects the hook's `[REQ]` lines and the `clientIp` stamped onto
+session META in DynamoDB — same constant, same caveat. Do not rate-limit, ban,
+or geolocate on any of them. Everything else in the logs is accurate.
+
+If you want real client IPs later, the options are: get a Dest. NAT rule
+matching on the gateway, or put a reverse proxy in front that injects
+`X-Forwarded-For` (which means a third party terminating TLS for a service whose
+selling point is that data stays on your hardware — weigh that carefully).
+
+
 **Judge health is observed, not probed.** It is derived from real judge traffic
 rather than by pinging the model on a timer. A probe would burn GPU on a
 schedule and — worse — could report a backend healthy on a trivial synthetic
