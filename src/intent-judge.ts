@@ -14,6 +14,7 @@
 import { chat, type ChatMessage } from "./ollama-client.js";
 import { bedrockChat, type BedrockImageBlock } from "./bedrock-client.js";
 import type { ImageBlock } from "./session-tracker.js";
+import { recordJudgeOutcome } from "./judge-health.js";
 
 /**
  * Strip any opening or closing tag that matches one of our fence-tag
@@ -172,6 +173,29 @@ export interface JudgeVerdict {
  *  ReferenceError / RangeError / SyntaxError are JS's programmer-error classes;
  *  AWS SDK and network failures surface as generic Error / custom AWS types.
  *  Drives the fail-closed (code bug) vs fail-open (outage) decision. */
+/**
+ * Treat an UNAVAILABLE judge as a failure to allow, not a licence to proceed.
+ *
+ * Default `false`, which preserves the historical behaviour: a backend outage
+ * returns `drifting` and the call is ALLOWED. That is defensible when the
+ * backend is Bedrock — outages are rare, brief, and somebody else's problem —
+ * and the alternative would brick every agent in the fleet during an AWS blip.
+ *
+ * It is NOT defensible for a self-hosted deployment where the judge is a
+ * process on a box you own. If Ollama is stopped, evicted, wedged, or merely
+ * saturated, every tool call sails through unjudged and nothing surfaces it.
+ * An attacker who can stall inference has disabled the defence without
+ * tripping anything. See docs/plan-selfhost-studio-2026-08-26.md §8.
+ *
+ * Enabling this routes availability errors through the SAME enforcement path
+ * as an internal error (`pretool-interceptor.ts` computes
+ * `allowed = verdict !== "hijacked" && !internalError`), so there is no new
+ * decision path to reason about — and trust mode still decides what "not
+ * allowed" means. In `interactive` mode the degradation is a prompt to the
+ * user; only in `autonomous` does an outage hard-block.
+ */
+export const JUDGE_FAIL_CLOSED = process.env.DREDD_JUDGE_FAIL_CLOSED === "true";
+
 export function isInternalJudgeError(err: unknown): boolean {
   return (
     err instanceof TypeError ||
@@ -184,7 +208,8 @@ export function isInternalJudgeError(err: unknown): boolean {
 /** Build the JudgeVerdict for an error thrown inside evaluate(). A code bug
  *  fails CLOSED (internalError flag → interceptor asks/denies); a Bedrock /
  *  availability error fails SOFT to "drifting" (allowed) so an outage doesn't
- *  brick the agent. evaluate() never throws — it always returns one of these. */
+ *  brick the agent — UNLESS DREDD_JUDGE_FAIL_CLOSED=true, in which case it
+ *  fails closed too. evaluate() never throws — it always returns one of these. */
 export function failVerdictFor(err: unknown, durationMs = 0): JudgeVerdict {
   const message = err instanceof Error ? err.message : String(err);
   if (isInternalJudgeError(err)) {
@@ -192,6 +217,15 @@ export function failVerdictFor(err: unknown, durationMs = 0): JudgeVerdict {
       verdict: "drifting",
       confidence: 0,
       reasoning: `Judge internal error (fail-closed): ${message}`,
+      durationMs,
+      internalError: true,
+    };
+  }
+  if (JUDGE_FAIL_CLOSED) {
+    return {
+      verdict: "drifting",
+      confidence: 0,
+      reasoning: `Judge unavailable (fail-closed): ${message}`,
       durationMs,
       internalError: true,
     };
@@ -751,6 +785,7 @@ ${lines}
         durationMs = response.durationMs;
       }
 
+      recordJudgeOutcome(true, this.backend, this.chatModel);
       const parsed = this.parseVerdict(content);
 
       return {
@@ -780,7 +815,13 @@ ${lines}
       // Neither path counts as a hijack strike (verdict is "drifting").
       const message = err instanceof Error ? err.message : String(err);
       const internal = isInternalJudgeError(err);
-      console.error(`[intent-judge] fail-${internal ? "closed (internal bug)" : "soft"}: ${message.split("\n")[0]}`);
+      const mode = internal
+        ? "closed (internal bug)"
+        : JUDGE_FAIL_CLOSED
+          ? "closed (unavailable)"
+          : "soft";
+      console.error(`[intent-judge] fail-${mode}: ${message.split("\n")[0]}`);
+      recordJudgeOutcome(false, this.backend, this.chatModel, message);
       return failVerdictFor(err);
     }
   }

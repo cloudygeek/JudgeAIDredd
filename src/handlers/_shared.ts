@@ -42,10 +42,28 @@ export const INTENT_CLASSIFIER_LLM_ENABLED =
   process.env.INTENT_CLASSIFIER_LLM_ENABLED === "true"
   && INTENT_HISTORY_MODE === "history-active";
 
-export const intentClassifier = new IntentClassifier(
-  (process.env.INTENT_CLASSIFIER_BACKEND as "bedrock" | "ollama" | undefined) ?? "bedrock",
-  process.env.INTENT_CLASSIFIER_MODEL ?? "eu.anthropic.claude-sonnet-4-6",
-);
+/**
+ * The classifier follows the deployment's backend unless explicitly overridden.
+ *
+ * It used to default to Bedrock independently of `CONFIG.judgeBackend`, which
+ * made `BACKEND=ollama` a half-measure: the judge went local, the classifier
+ * silently kept calling Bedrock, and on a deployment with no AWS credentials
+ * every classify() failed. That failure is quiet by design — classify()
+ * returns null on any error and the caller falls back to embedding-only intent
+ * tracking — so a fully-local deployment would have run indefinitely with the
+ * LLM classifier dead and nothing in the logs but a warn line.
+ *
+ * INTENT_CLASSIFIER_BACKEND / INTENT_CLASSIFIER_MODEL still override, for
+ * running a cheap local classifier alongside a Bedrock judge or vice versa.
+ */
+const classifierBackend =
+  (process.env.INTENT_CLASSIFIER_BACKEND as "bedrock" | "ollama" | undefined) ??
+  CONFIG.judgeBackend;
+const classifierModel =
+  process.env.INTENT_CLASSIFIER_MODEL ??
+  (classifierBackend === "bedrock" ? "eu.anthropic.claude-sonnet-4-6" : CONFIG.judgeModel);
+
+export const intentClassifier = new IntentClassifier(classifierBackend, classifierModel);
 
 /** How long /evaluate waits for an in-flight classifier verdict
  *  before falling back to the existing active state. Cap chosen to

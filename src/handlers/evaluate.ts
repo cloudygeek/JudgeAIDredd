@@ -379,10 +379,18 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
         activeIntents && activeIntents.length > 0
           ? activeIntents[activeIntents.length - 1].embedding
           : null;
+      // Dimension equality is part of the guard, not an assumption. An
+      // approval stored under a previous EMBEDDING_MODEL carries a vector of
+      // different length; cosineSimilarity throws on mismatch and this call
+      // site is not inside a try, so the throw would escape and 500 the
+      // /evaluate request. Skipping the backstop is the correct degradation:
+      // it only ever REJECTS an otherwise-valid approval match, so declining
+      // to run it cannot turn a deny into an allow.
       if (
         currentEmbedding &&
         currentEmbedding.length > 0 &&
-        record.goalEmbedding.length > 0
+        record.goalEmbedding.length > 0 &&
+        currentEmbedding.length === record.goalEmbedding.length
       ) {
         const sim = cosineSimilarity(currentEmbedding, record.goalEmbedding);
         const distance = 1 - sim;

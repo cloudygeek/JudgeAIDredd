@@ -202,6 +202,9 @@ docker run -p 3000:3000 \
 | `DREDD_MANAGED_ALLOW_RULES` | (unset) | **Hook-side env var.** Optional operator override — a raw JSON array that replaces the scope-driven defaults. e.g. `'["Bash(awk:*)","Read"]'` |
 | `DREDD_MANAGED_DIR` | `$HOME/.claude/dredd/managed` | **Hook-side env var.** Where Dredd writes per-(project, session) sidecars tracking which allow rules it has injected. Also holds `manage.log` for audit |
 | `DREDD_MANAGED_SIDECAR_STALE_SECS` | `86400` | **Hook-side env var.** Sidecar age (seconds) before the next UserPromptSubmit sweeps it as a crash-recovery measure. Lower for tests |
+| `DREDD_JUDGE_FAIL_CLOSED` | `false` | When `true`, a judge **availability** error (backend unreachable, timeout, throttle) is treated as not-allowed instead of returning `drifting` (allowed). Routes through the existing `internalError` path in `pretool-interceptor.ts`, so trust mode still decides what "not allowed" means — `interactive` asks the user, `autonomous` denies. Default `false` preserves the fail-soft behaviour that is correct when the backend is Bedrock; set `true` for self-hosted deployments where the judge is a process you own and an attacker who stalls it would otherwise disable the defence silently. A code bug (`TypeError` etc.) fails closed regardless |
+| `INTENT_CLASSIFIER_BACKEND` | follows `BACKEND` | Override the classifier's backend independently of the judge. Previously defaulted to `bedrock` regardless of `BACKEND`, which made `BACKEND=ollama` a half-measure — the classifier kept calling Bedrock and failed silently (`classify()` returns null on error) |
+| `INTENT_CLASSIFIER_MODEL` | follows `JUDGE_MODEL` (or the Sonnet default on Bedrock) | Override the classifier's model |
 | `DREDD_ROLE` | `hook` | Container role: `hook` (hot path + feed + mode) or `dashboard` (UI + session listing) |
 | `DREDD_HOOK_URL` | (unset) | On the dashboard container, the URL the browser will POST /api/feed + /api/mode to |
 | `DREDD_DASHBOARD_ORIGIN` | (unset) | On the hook container, the CORS Origin the dashboard is served from |
@@ -563,6 +566,7 @@ test_phase8a_approval_embedding.ts  # ApprovalRecord.inputEmbedding round-trip  
 test_trust_pipeline.ts              # trust-allow short-circuit + stage ordering    (8)
 
 # --- judge evidence blocks ------------------------------------------------
+test_judge_fail_closed.ts           # DREDD_JUDGE_FAIL_CLOSED + judge health      (35)
 test_instruction_evidence.ts        # InstructionsLoaded → <instructions_loaded>   (20)
 test_provenance_taint.ts            # buildTaintEvidence, incl. long-horizon       (18)
 test_provenance_pipeline.ts         # render block + interceptor→judge threading    (9)
@@ -587,7 +591,7 @@ test_transcript_summary_bounded.sh  # build_transcript_summary is O(1) in size  
 test_integration_bundle_skill.ts    # bundle contents                               (3)
 ```
 
-57 files, 1,160 assertions, all green at last full run (2026-08-21). The bash suites are self-contained (mktemp sandboxes + python stub HTTP server). Two tests — `test_phase4_pipeline` and `test_intent_latency` — call **real Bedrock**; an expired AWS SSO token makes them fail in a way that looks like a code regression, so re-auth before believing them.
+58 files, 1,195 assertions, all green at last full run (2026-08-26). The bash suites are self-contained (mktemp sandboxes + python stub HTTP server). Two tests — `test_phase4_pipeline` and `test_intent_latency` — call **real Bedrock**; an expired AWS SSO token makes them fail in a way that looks like a code regression, so re-auth before believing them.
 
 **`test_file_context_backends.ts` is load-bearing and cannot be replaced by types.** `SessionStore.getFileContextForJudge` takes optional `command`/`cwd`, and TypeScript accepts an implementation declaring *fewer* parameters — so a backend that silently ignores `command` compiles clean. Verified by mutation: dropping the argument in `dynamo-session-store.ts` leaves `tsc` green and turns this test red in 8 places. That is the same class of defect as the 0.1.530 cost cap, which was written into one of three backends and was a no-op in production for seven weeks.
 

@@ -36,6 +36,7 @@ import {
   type TrustMode,
 } from "./server-core.js";
 import { CLERK_PUBLISHABLE_KEY, isAdminEmail } from "./clerk-auth.js";
+import { getJudgeHealth } from "./judge-health.js";
 import {
   INTENT_HISTORY_MODE,
   INTENT_CLASSIFIER_LLM_ENABLED,
@@ -335,12 +336,19 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
     // /health (ALB target-group health check) — never CORSed, never auth'd.
     if (req.method === "GET" && url.pathname === "/health") {
       const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+      // Stays 200 even when the judge is down. A judge outage is GLOBAL, so
+      // failing this check would pull every task out of the load balancer and
+      // turn a degraded service into no service at all. Report it in the body
+      // and let monitoring decide what to do about it.
+      const jh = getJudgeHealth();
       return json(res, 200, {
         status: "ok",
+        degraded: jh.status === "down" || jh.status === "degraded",
         version: pkg.version,
         role: "hook",
         config: CONFIG,
         activeSessions: registeredSessions.size,
+        judge: jh,
       });
     }
 
@@ -351,11 +359,14 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
       if (applyCors(req, res)) return;
       if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
       const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+      const jhApi = getJudgeHealth();
       return json(res, 200, {
         status: "ok",
+        degraded: jhApi.status === "down" || jhApi.status === "degraded",
         version: pkg.version,
         role: "hook",
         config: CONFIG,
+        judge: jhApi,
         activeSessions: registeredSessions.size,
         uptimeSeconds: Math.floor(process.uptime()),
         intentMode: INTENT_HISTORY_MODE,

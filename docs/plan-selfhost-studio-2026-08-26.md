@@ -1,6 +1,6 @@
 # Self-hosted Dredd on the Mac Studio — replacing Bedrock and Fargate
 
-**Status:** design, not yet implemented
+**Status:** code items T-1..T-5 implemented (2026-08-26); deployment items T-6..T-10 outstanding
 **Date:** 2026-08-26
 **Supersedes nothing. Runs in parallel with the (currently torn-down) AWS stack.**
 
@@ -252,18 +252,65 @@ Bedrock preflight at startup and nothing checks the judge backend thereafter. Wi
 
 ### Code
 
-- **T-1 — classifier backend switch.** `intent-classifier.ts:203` hardcodes
-  `backend: JudgeBackend = "bedrock"` and `model = "eu.anthropic.claude-sonnet-4-6"`. Must honour
-  `BACKEND` / a classifier model env var the way the judge does.
-- **T-2 — skip the Bedrock preflight when `BACKEND=ollama`.** It currently runs unconditionally on
-  the hook role and will fail (or hang) with no Bedrock credentials.
-- **T-3 — `DREDD_JUDGE_FAIL_CLOSED`** in `failVerdictFor`, per §8. Test: availability error with
-  the flag on yields `allowed === false`; with the flag off yields the current `drifting`-allowed.
-- **T-4 — Ollama reachability in `/api/health`,** with the resident model name and last-success
-  timestamp.
-- **T-5 — embedding path check.** `EMBEDDING_MODEL=nomic-embed-text` should route via
-  `isBedrockModel()`, but the drift detector and the Phase 8b pattern-trust embed call must both
-  be exercised end-to-end, not assumed.
+- **T-1 — classifier backend switch. DONE.** The classifier already supported Ollama and already
+  had `INTENT_CLASSIFIER_BACKEND` / `INTENT_CLASSIFIER_MODEL`; the defect was narrower than this
+  plan claimed. It defaulted to Bedrock *independently of* `CONFIG.judgeBackend`, so `BACKEND=ollama`
+  was a half-measure: the judge went local and the classifier kept calling Bedrock. Because
+  `classify()` returns null on any error and the caller silently falls back to embedding-only
+  intent tracking, a fully-local deployment would have run indefinitely with the LLM classifier
+  dead and nothing but a warn line to show for it. Now defaults to `CONFIG.judgeBackend` /
+  `CONFIG.judgeModel`; the env vars still override.
+- **T-2 — NOT NEEDED.** `interceptor.preflight()` is already fully backend-conditional
+  (`usingBedrockEmbed` / `usingBedrockJudge`), including the live judge and embedding probes.
+  This plan was wrong; verified by reading it.
+- **T-3 — `DREDD_JUDGE_FAIL_CLOSED`. DONE.** Per §8, routed through the existing `internalError`
+  path. Covered by `hooks/tests/test_judge_fail_closed.ts` (35 assertions), which pins that the
+  flag off preserves fail-soft exactly, that a code bug still fails closed either way, and that an
+  outage never escalates to `hijacked` (which would increment hijack strikes and could session-lock
+  a user because Ollama restarted).
+- **T-4 — judge health. DONE.** New `src/judge-health.ts`, recorded from real judge traffic on both
+  the success and failure paths and surfaced as `judge` + `degraded` on `/health` and `/api/health`.
+  Health is OBSERVED, not probed: a check that ran inference would burn GPU on a timer and, worse,
+  could report a backend healthy on a trivial synthetic prompt while real judge calls timed out on
+  their much larger ones. On an idle server the status is `unknown`, not `ok` — no traffic is no
+  evidence. `/health` deliberately still returns 200 when the judge is down: it is the LB
+  target-group check, and a judge outage is global, so failing it would pull every task and turn a
+  degraded service into no service.
+- **T-5 — embedding path. DONE, and it surfaced a migration blocker (see below).** Verified
+  end-to-end against a live local Ollama: `isBedrockModel("nomic-embed-text") === false`, embeddings
+  return 768-dim vectors in ~576ms, and `DriftDetector` produces sane similarities.
+
+### T-5a — embedding dimension change is a hard migration hazard (FIXED)
+
+`cosineSimilarity` **throws** on dimension mismatch. `jaid-sessions` and `jaid-approvals` hold
+vectors produced by `eu.cohere.embed-v4:0`; `nomic-embed-text` is 768-dimensional. Every session
+or approval that predates the switch therefore carries vectors that cannot be compared with a
+fresh one.
+
+Two of the three comparison sites were **not** inside a `try`:
+
+| Site | Guarded before? | Consequence |
+|---|---|---|
+| `pretool-interceptor.ts:430` (pattern-trust) | yes | degrades to no prior approvals |
+| `pretool-interceptor.ts:638` → `drift-detector.evaluate` | **no** | throw escapes `interceptor.evaluate`, 500s `/evaluate` |
+| `handlers/evaluate.ts:387` (approval drift backstop) | **no** | same |
+
+So flipping `EMBEDDING_MODEL` with live sessions in the table would have 500'd the hot path for
+every pre-existing session — Dredd effectively offline, failing open to ordinary permission
+prompts, with the cause looking nothing like the change that caused it.
+
+Fixed by treating a mismatched vector as UNUSABLE rather than as an error:
+
+- `drift-detector.evaluate` skips mismatched goal vectors and, if none remain comparable, reports
+  similarity `0` with a warning. Zero similarity ESCALATES to the judge, so the degradation runs
+  toward more scrutiny, never less. The session re-embeds its goal on the next `/intent`, so this
+  lasts a turn rather than permanently.
+- `handlers/evaluate.ts` makes dimension equality part of the existing guard. Skipping that
+  backstop can only ever decline to REJECT an approval match, so it cannot turn a deny into an
+  allow.
+
+Verified against a simulated 1024-dim rehydrated session: no throw, escalates; matched dimensions
+unaffected; a mix of usable and unusable vectors uses the usable one.
 
 ### Deployment — new `selfhost/` directory
 
@@ -313,9 +360,8 @@ Bedrock preflight at startup and nothing checks the judge backend thereafter. Wi
 
 ## 12. Open questions
 
-- **Router/firewall ownership** — who controls the static IP's port forwarding, and is `:80`
-  acceptable to open for ACME? If not, §4 changes to DNS-01 and the IAM user gains a
-  narrowly-scoped Route53 statement.
+- ~~Router/firewall ownership — is `:80` acceptable to open for ACME?~~ **RESOLVED 2026-08-26:
+  port 80 can be configured. HTTP-01 stands; the IAM user stays DynamoDB-only.**
 - **Backup and egress** — DynamoDB PITR covers state, but nothing covers the VM. Should the VM be
   reproducible from `selfhost/` alone (preferred) or snapshotted?
 - **Dashboard hostname** — `dredd.soteriacyber.com` is proposed, not confirmed.

@@ -120,9 +120,42 @@ export class DriftDetector {
 
     const turnEmbedding = embeddings[0];
     let similarity = -Infinity;
+    let skippedDimMismatch = 0;
     for (const ge of this.goalEmbeddings) {
+      // A goal embedding of a different dimensionality is UNUSABLE, not an
+      // error. This happens whenever the deployment's EMBEDDING_MODEL changes
+      // while sessions persisted under the old one are still live: a session
+      // rehydrated from Dynamo carries goal vectors made by, say,
+      // eu.cohere.embed-v4:0, and gets compared against a fresh
+      // nomic-embed-text vector (768 dims). cosineSimilarity throws on
+      // mismatch, and this call site is NOT inside a try — the throw would
+      // escape interceptor.evaluate, 500 the /evaluate request, and leave the
+      // hook with no decision. Dredd would be effectively offline for every
+      // pre-existing session, which is exactly the shape of failure the
+      // self-host migration would have produced. See
+      // docs/plan-selfhost-studio-2026-08-26.md.
+      if (ge.length !== turnEmbedding.length) {
+        skippedDimMismatch++;
+        continue;
+      }
       const s = cosineSimilarity(ge, turnEmbedding);
       if (s > similarity) similarity = s;
+    }
+
+    if (similarity === -Infinity) {
+      // No comparable goal vector survived. Report maximum drift rather than
+      // inventing a similarity: downstream, low similarity ESCALATES to the
+      // judge, so the safe direction is "we don't know, go look" — never
+      // "looks fine". The session re-embeds its goal on the next /intent, so
+      // this degrades for a turn rather than permanently.
+      similarity = 0;
+      if (skippedDimMismatch > 0) {
+        console.warn(
+          `  [drift] all ${skippedDimMismatch} goal embedding(s) have a different ` +
+          `dimension to ${this.embeddingModel} (${turnEmbedding.length}) — ` +
+          `treating as max drift and escalating. Embedding model changed mid-session?`,
+        );
+      }
     }
 
     this.turnSimilarities.push(similarity);
