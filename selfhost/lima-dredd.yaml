@@ -26,12 +26,23 @@ cpus: 4
 memory: "6GiB"
 disk: "40GiB"
 
-# Shared network so the guest can reach the host's Ollama on a private
-# interface. Verify the actual host-side address after first boot — see the
-# README: do NOT assume it, and do NOT reach for OLLAMA_HOST=0.0.0.0 as a
-# shortcut, which would expose the model endpoint to your whole LAN.
+# vzNAT gives the guest its own address on a private bridge that the host also
+# sits on, which is exactly the host-only path we want for reaching Ollama.
+#
+# NOT `lima: shared`: that one runs through socket_vmnet and needs a sudoers
+# file installed by `limactl sudoers`, i.e. an interactive root password. vzNAT
+# is provided by Virtualization.framework directly and needs no privilege at
+# all — which also means one less privileged component around a box that is
+# about to face the internet.
+#
+# MEASURED on the Studio: the guest reaches the host's LOOPBACK-bound Ollama
+# through `host.lima.internal` (192.168.5.2, the vz user-mode gateway), while
+# the vzNAT bridge address 192.168.64.1 is NOT reachable. So Ollama needs no
+# reconfiguration at all — it stays on 127.0.0.1, exposed neither to the LAN
+# nor to the bridge. Use OLLAMA_HOST=http://host.lima.internal:11434 and never
+# 0.0.0.0.
 networks:
-  - lima: shared
+  - vzNAT: true
 
 # Guest ports published on the host. hostIP 0.0.0.0 is required: the default
 # binds 127.0.0.1, which the router cannot forward to.
@@ -61,9 +72,15 @@ provision:
     script: |
       #!/bin/bash
       set -eux -o pipefail
-      command -v docker >/dev/null 2>&1 && exit 0
-      curl -fsSL https://get.docker.com | sh
+      if ! command -v docker >/dev/null 2>&1; then
+        curl -fsSL https://get.docker.com | sh
+      fi
       systemctl enable --now docker
+      # Without this the guest user cannot reach /var/run/docker.sock and every
+      # docker command fails with "permission denied while trying to connect to
+      # the docker API". get.docker.com creates the group but adds nobody to it.
+      groupadd -f docker
+      usermod -aG docker "${LIMA_CIDATA_USER}"
   - mode: system
     script: |
       #!/bin/bash

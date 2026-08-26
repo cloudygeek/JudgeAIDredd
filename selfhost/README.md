@@ -57,52 +57,75 @@ launchctl setenv OLLAMA_KEEP_ALIVE 24h
 
 ## 2. Start the VM
 
+Lima is installed from its release tarball rather than Homebrew — a package
+manager is a far larger footprint than this one binary needs, and the Studio had
+no brew:
+
 ```bash
-brew install lima
+curl -fsSL https://github.com/lima-vm/lima/releases/download/v2.2.0/lima-2.2.0-Darwin-arm64.tar.gz \
+  | tar -xz -C "$HOME/opt/lima"          # keeps bin/ share/ libexec/ siblings — Lima needs that layout
+ln -sf "$HOME/opt/lima/bin/limactl" "$HOME/.local/bin/limactl"
+
 limactl start --name=dredd ./lima-dredd.yaml
-limactl shell dredd
 ```
+
+> On the Studio, `~/.local` turned out to be owned by **root** (pre-existing),
+> so a prefix of `~/.local` fails to extract while `~/.local/bin` is still
+> writable for the symlink. `~/opt/lima` avoids the problem entirely.
+
+> **Group membership needs a VM restart.** The template adds the guest user to
+> the `docker` group, but `limactl shell` holds a persistent SSH connection whose
+> session keeps the *old* groups. If `docker` commands report
+> `permission denied ... /var/run/docker.sock`, run `limactl stop dredd &&
+> limactl start dredd` — the group is already in `/etc/group`, the session just
+> has not picked it up.
 
 ---
 
 ## 3. Point the VM at the host's Ollama
 
-This is the step most likely to bite, and the one where a shortcut costs you
-real security. **Do not set `OLLAMA_HOST=0.0.0.0` on the Mac** — that publishes
-an unauthenticated model endpoint to your entire LAN.
+**Measured on the Studio, and it is better than expected: you do not have to
+reconfigure Ollama at all.**
 
-Find the host-side address of the VM's shared network:
+Lima publishes the host to the guest as `host.lima.internal` (192.168.5.2, the
+vz user-mode gateway), and that route **reaches services bound to the host's
+loopback**. So Ollama stays on `127.0.0.1`, where it is exposed neither to your
+LAN nor to the VM bridge, and the VM still reaches it.
 
-```bash
-# On the macOS host — the bridge Lima created:
-ifconfig | grep -A3 '^bridge' | grep 'inet '
-# e.g. inet 192.168.105.1 netmask 0xffffff00
-```
+An earlier draft of this document told you to find the vzNAT bridge address and
+bind Ollama to it. That was unnecessary and strictly worse: it exposes the model
+endpoint on an extra interface, and it makes Ollama's startup depend on
+`bridge100` existing, which only happens once a VM has booted. Measured result:
+`host.lima.internal:11434` **reachable**, `192.168.64.1:11434` **not**.
 
-Bind Ollama to **exactly that address**:
-
-```bash
-launchctl setenv OLLAMA_HOST 192.168.105.1:11434
-# restart Ollama.app (or `brew services restart ollama`) so it rebinds
-```
-
-Verify **from inside the VM** before going further — if this fails, nothing
-downstream will work and the symptom will be misleading (the judge simply
-fails, and with `DREDD_JUDGE_FAIL_CLOSED=true` every tool call turns into a
-user prompt):
+So the config is simply:
 
 ```bash
-limactl shell dredd -- curl -sS http://192.168.105.1:11434/api/tags | head -c 200
+OLLAMA_HOST=http://host.lima.internal:11434
 ```
 
-Confirm the Mac has **not** become an open model server, from another machine on
-the LAN:
+Verify from inside the VM before starting the stack:
+
+```bash
+limactl shell dredd -- curl -sS --max-time 5 http://host.lima.internal:11434/api/tags | head -c 120
+```
+
+And confirm the Mac has **not** become an open model server — from another
+machine on the LAN:
 
 ```bash
 curl -m 3 http://<studio-lan-ip>:11434/api/tags   # MUST fail/refuse
 ```
 
----
+> **Never set `OLLAMA_HOST=0.0.0.0` on the Mac.** It publishes an
+> unauthenticated model endpoint — free inference and your model list — to
+> everything on the network. Nothing in this design requires it.
+
+> **`launchctl setenv` over SSH does not work here.** An SSH session lives in
+> launchd's `Background` domain while Ollama.app runs in `Aqua`, so variables
+> set over SSH never reach it. If you ever do need to change Ollama's
+> environment, do it from a terminal on the machine itself (or from the app's
+> own settings) — not remotely.
 
 ## 4. AWS credentials
 
