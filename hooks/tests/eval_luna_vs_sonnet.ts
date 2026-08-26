@@ -71,6 +71,7 @@ const c = { green: "\x1b[32m", red: "\x1b[31m", yellow: "\x1b[33m", off: "\x1b[0
 
 const REPS = Number(process.env.REPS ?? 3);
 const LEGS = (process.env.LEGS ?? "luna,sonnet").split(",").map((s) => s.trim());
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "qwen3.6";
 const LUNA_MODEL = process.env.LUNA_MODEL ?? "gpt-5.6-luna";
 const SONNET_MODEL = process.env.JUDGE_MODEL ?? "eu.anthropic.claude-sonnet-4-6";
 
@@ -78,6 +79,9 @@ const SONNET_MODEL = process.env.JUDGE_MODEL ?? "eu.anthropic.claude-sonnet-4-6"
 const RATES: Record<string, { in: number; out: number }> = {
   luna: { in: 0.2, out: 1.2 },
   sonnet: { in: 3.0, out: 15.0 },
+  // Local inference has no per-token price. The real cost is WALL-CLOCK on the
+  // PreToolUse hot path — every judge call blocks a tool call — plus the box.
+  ollama: { in: 0, out: 0 },
 };
 
 type Verdict = "consistent" | "drifting" | "hijacked" | "ERROR";
@@ -228,6 +232,29 @@ async function callLuna(system: string, user: string): Promise<Run> {
   };
 }
 
+/**
+ * Local leg. Uses the REAL IntentJudge with backend="ollama", so unlike the
+ * Luna leg there is no copied prompt to drift — this is exactly what a
+ * BACKEND=ollama deployment would send.
+ */
+async function callOllama(t: Case): Promise<Run> {
+  const { IntentJudge } = await import("../../src/intent-judge.js");
+  const judge = new IntentJudge(OLLAMA_MODEL, "ollama", undefined, "B7.1");
+  const t0 = Date.now();
+  try {
+    const r: any = await judge.evaluate(t.task, t.history, t.action, undefined, undefined, undefined, t.taint);
+    return {
+      verdict: r.verdict as Verdict,
+      ms: Date.now() - t0,
+      inTok: 0,
+      outTok: 0,
+      reasoning: (r.reasoning ?? "").slice(0, 130),
+    };
+  } catch (e: any) {
+    return { verdict: "ERROR", ms: Date.now() - t0, inTok: 0, outTok: 0, reasoning: (e?.message ?? String(e)).slice(0, 130) };
+  }
+}
+
 async function callSonnet(t: Case): Promise<Run> {
   const { IntentJudge } = await import("../../src/intent-judge.js");
   const judge = new IntentJudge(SONNET_MODEL, "bedrock", undefined, "B7.1");
@@ -247,7 +274,7 @@ async function callSonnet(t: Case): Promise<Run> {
 }
 
 // ---------------------------------------------------------------------------
-function summarise(leg: string, results: Map<string, Run[]>) {
+function summarise(leg: string, results: Map<string, Run[]>, rateKey = leg) {
   let correct = 0, total = 0, unstable = 0, errors = 0;
   let inTok = 0, outTok = 0, ms = 0;
   let fpMiss = 0, tpMiss = 0;
@@ -277,15 +304,19 @@ function summarise(leg: string, results: Map<string, Run[]>) {
     console.log(`     ${c.dim}${runs[0].reasoning}${c.off}`);
   }
 
-  const rate = RATES[leg] ?? { in: 0, out: 0 };
+  const rate = RATES[rateKey] ?? { in: 0, out: 0 };
   const costPer10k = ((inTok / total) * 10_000 * rate.in + (outTok / total) * 10_000 * rate.out) / 1e6;
   console.log(
     `\n  ${correct}/${total} correct  |  FP-missed ${fpMiss}  TP-MISSED ${tpMiss}  |  ` +
       `unstable cases ${unstable}/${CASES.length}  |  errors ${errors}`,
   );
+  const costNote =
+    rateKey === "ollama"
+      ? `local — no per-token cost; ${(ms / total / 1000).toFixed(1)}s BLOCKS each tool call`
+      : `~$${costPer10k.toFixed(2)} per 10k judge calls`;
   console.log(
-    `  ${c.dim}avg ${Math.round(inTok / total)} in / ${Math.round(outTok / total)} out tok, ` +
-      `${Math.round(ms / total)}ms  →  ~$${costPer10k.toFixed(2)} per 10k judge calls${c.off}`,
+    `\n  ${c.dim}avg ${Math.round(inTok / total)} in / ${Math.round(outTok / total)} out tok, ` +
+      `${Math.round(ms / total)}ms  →  ${costNote}${c.off}`,
   );
   return { correct, total, tpMiss, fpMiss, unstable, errors, costPer10k, avgMs: Math.round(ms / total) };
 }
@@ -310,6 +341,16 @@ async function main() {
       results.set(t.id, runs);
     }
     out.luna = summarise("luna", results);
+  }
+
+  if (LEGS.includes("ollama")) {
+    const results = new Map<string, Run[]>();
+    for (const t of CASES) {
+      const runs: Run[] = [];
+      for (let i = 0; i < REPS; i++) runs.push(await callOllama(t));
+      results.set(t.id, runs);
+    }
+    out.ollama = summarise(`ollama:${OLLAMA_MODEL}`, results, "ollama");
   }
 
   if (LEGS.includes("sonnet")) {
