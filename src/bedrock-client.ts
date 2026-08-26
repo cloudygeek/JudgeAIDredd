@@ -209,12 +209,18 @@ export async function bedrockChat(
   // caching it would invalidate every time. The system prompt is the
   // static 90%+ of every judge request.
   //
-  // KNOWN ISSUE (deferred — see CLAUDE.md "Cost & cache-engagement notes"):
-  // On `eu.anthropic.claude-sonnet-4-6` the empirical cache-engagement
-  // threshold is ~2048 tokens, not the documented 1024. Our B7.1 system
-  // prompt is ~1766 tokens — under the real threshold — so this marker
-  // is silently a no-op in prod today. Fix when we scale: pad the
-  // system prompt to >2048 tokens with static content.
+  // This marker WORKS — verified on live traffic 2026-08-26, where every
+  // judge call reported `cacheRead=1805` against a 7,953-char B7.1 system
+  // prompt. An earlier comment here claimed the opposite: that an empirical
+  // ~2,048-token engagement threshold on `eu.anthropic.claude-sonnet-4-6` made
+  // the marker a silent no-op, and that the fix was to pad the prompt past it.
+  // Caching engages at 1,805 tokens, so that threshold claim was wrong or no
+  // longer holds. Do not add padding.
+  //
+  // Note the counters are DISJOINT: totalTokens == inputTokens + cacheRead +
+  // cacheWrite + outputTokens, and `inputTokens` is the full-rate remainder
+  // only. See src/bedrock-metrics.ts, which got this backwards and undercounted
+  // cost until the same date.
   const systemBlocks: any[] = [
     { text: systemPrompt },
     { cachePoint: { type: "default" } },

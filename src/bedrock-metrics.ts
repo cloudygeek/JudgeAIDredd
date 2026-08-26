@@ -29,8 +29,12 @@ export interface BedrockCallStats {
   cacheHits: number;
   /** Number of calls where cacheWriteInputTokens > 0 (cold write). */
   cacheWrites: number;
-  /** Sum of `inputTokens` across all calls. Includes the cache-read
-   *  portion (Bedrock reports input as the full prompt size). */
+  /** Sum of `inputTokens` across all calls. EXCLUDES the cache-read and
+   *  cache-write portions — Bedrock reports the three as disjoint, and
+   *  `totalTokens == inputTokens + cacheRead + cacheWrite + outputTokens`.
+   *  Verified 2026-08-26 against eu.anthropic.claude-sonnet-4-6: a 2,409-token
+   *  cached prefix reported inputTokens=13, cacheWrite=2409, totalTokens=2426.
+   *  These are the tokens billed at FULL input rate. */
   totalInputTokens: number;
   /** Sum of cached input portion (billed at ~10% of normal). */
   totalCacheReadTokens: number;
@@ -102,10 +106,14 @@ export interface BedrockMetricsSnapshot {
   perCaller: Record<string, BedrockCallStats & {
     /** Derived: cacheHits / calls. */
     cacheHitRate: number;
-    /** Derived: cached-portion / total-input. Tells you what fraction
-     *  of input tokens were billed at the discounted rate. */
+    /** Derived: cacheRead / (input + cacheRead + cacheWrite). The fraction of
+     *  the PROMPT billed at the discounted rate. Denominator is the full
+     *  prompt, not `totalInputTokens` — those counters are disjoint, so the
+     *  old ratio could exceed 1 (observed 1805/218 = 8.3). */
     cachedTokenShare: number;
-    /** Derived: average input tokens per call. */
+    /** Derived: average PROMPT tokens per call — input + cacheRead +
+     *  cacheWrite. Not `totalInputTokens / calls`, which counts only the
+     *  full-rate portion and understates prompt size whenever caching hits. */
     avgInputTokens: number;
     /** Derived: estimated USD cost on Claude Sonnet 4.6 EU rates
      *  ($3.30/M input, $0.33/M cache-read, $4.125/M cache-write,
@@ -132,19 +140,27 @@ const PRICE_OUTPUT_PER_M = 16.50;
 
 function deriveExtras(s: BedrockCallStats) {
   const cacheHitRate = s.calls > 0 ? s.cacheHits / s.calls : 0;
-  const cachedTokenShare =
-    s.totalInputTokens > 0 ? s.totalCacheReadTokens / s.totalInputTokens : 0;
-  const avgInputTokens = s.calls > 0 ? s.totalInputTokens / s.calls : 0;
-  // Cost: the cached-read portion is already included in inputTokens
-  // (Bedrock reports the full prompt size as input). Bill the cached
-  // fraction at the discount rate and the rest at normal input rate.
+  // The three input counters are DISJOINT: Bedrock reports
+  //   totalTokens == inputTokens + cacheRead + cacheWrite + outputTokens
+  // Verified 2026-08-26 on eu.anthropic.claude-sonnet-4-6 — a 2,409-token
+  // cached prefix returned inputTokens=13, cacheWrite=2409, totalTokens=2426.
+  //
+  // This code previously subtracted cacheRead+cacheWrite out of inputTokens,
+  // believing input carried the whole prompt. That clamped uncached input to
+  // ZERO whenever the cached prefix exceeded the per-call user prompt — the
+  // normal case for the judge, whose ~1.8K system prompt caches while the user
+  // prompt is a few hundred tokens (observed: input=218, cacheRead=1805). The
+  // meter therefore billed no full-rate input at all and read low by
+  // min(input, cacheRead+cacheWrite) x $3.30/M. August 2026's overspend went
+  // unnoticed precisely because nobody was watching a cost meter; a meter that
+  // reads low is the wrong bug to have.
+  const promptTokens =
+    s.totalInputTokens + s.totalCacheReadTokens + s.totalCacheWriteTokens;
+  const cachedTokenShare = promptTokens > 0 ? s.totalCacheReadTokens / promptTokens : 0;
+  const avgInputTokens = s.calls > 0 ? promptTokens / s.calls : 0;
   const cacheReadCost = (s.totalCacheReadTokens / 1_000_000) * PRICE_CACHE_READ_PER_M;
   const cacheWriteCost = (s.totalCacheWriteTokens / 1_000_000) * PRICE_CACHE_WRITE_PER_M;
-  const uncachedInputTokens = Math.max(
-    0,
-    s.totalInputTokens - s.totalCacheReadTokens - s.totalCacheWriteTokens,
-  );
-  const uncachedInputCost = (uncachedInputTokens / 1_000_000) * PRICE_INPUT_PER_M;
+  const uncachedInputCost = (s.totalInputTokens / 1_000_000) * PRICE_INPUT_PER_M;
   const outputCost = (s.totalOutputTokens / 1_000_000) * PRICE_OUTPUT_PER_M;
   const estimatedCostUsd = cacheReadCost + cacheWriteCost + uncachedInputCost + outputCost;
   return { cacheHitRate, cachedTokenShare, avgInputTokens, estimatedCostUsd };

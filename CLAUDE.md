@@ -343,15 +343,20 @@ Configurable in tracker: `<0.2` on-task, `0.2–0.3` scope-creep (inject reminde
 
 `GET /api/bedrock-metrics` (admin-only Bearer API key) returns in-process per-caller stats: calls, cacheHits, cachedTokenShare, avgInputTokens, estimatedCostUsd. The judge log line in `pretool-interceptor.ts` also carries `in=N/cr=N/cw=N out=N` per call for ad-hoc CloudWatch greps.
 
-**Known issue (2026-05-21, deferred — apply when scaling): prompt cache silently disabled on `eu.anthropic.claude-sonnet-4-6`.** The AWS docs say Sonnet 4.6's minimum cacheable prefix is 1,024 tokens. Empirically on the EU cross-region inference profile the cutoff is closer to **~2,048 tokens**. Our B7.1 system prompt is ~1,766 tokens — under the real threshold — so Bedrock silently skips the cache point and the entire system prompt is billed as uncached input on every call. Confirmed via direct boto3 test: 1,994-token prefix → 0 cache writes; 2,108-token prefix → 2,096 written then read on the next call.
+**RESOLVED 2026-08-26 — prompt caching IS engaging; the padding fix is NOT needed.** A note here previously claimed the cache point was "silently a no-op in prod" because the B7.1 system prompt (~1,766 tokens) sat under an empirical ~2,048-token cutoff on `eu.anthropic.claude-sonnet-4-6`, and proposed padding the prompt by ~300 tokens. Measured on live traffic during the 2026-08-26 judge model comparison, every judge call reported:
 
-When we scale beyond a single user it'll be worth fixing. The cheapest fix is to add ~300 tokens of static "operating notes / reference examples" at the END of the B7.1 system prompt (`intent-judge.ts` HARDENED_V2_SYSTEM_PROMPT). Padding must be byte-identical across calls to keep the cache key stable. Cost math on the deferred fix:
+```
+inputTokens=218 outputTokens=69 cacheRead=1805 cacheWrite=0
+```
 
-- One-time write per 5-minute window: 300 padding tokens × $4.125/M = $0.0012
-- Savings per cache read: ~2,200 cached tokens × ($3.30 − $0.33)/M = $0.0065
-- Break-even at <1 cache hit per write window; with the current judge rate the cache discount drops Sonnet input cost by roughly 40–50% on steady-state traffic.
+The 7,953-char B7.1 system prompt caches at **1,805 tokens — below the supposed 2,048 cutoff** — so the threshold claim was wrong, or no longer holds on the current inference profile. Do not spend time padding the system prompt.
 
-If we ever cut over to a different model ID (e.g. `anthropic.claude-sonnet-4-6` without the `eu.` prefix, or Claude Sonnet 4.7), re-run the threshold probe via the boto3 snippet in commit history before relying on the documented minimum.
+Two facts worth keeping, both verified 2026-08-26 by direct `Converse` probe:
+
+- **The input counters are DISJOINT.** `totalTokens == inputTokens + cacheRead + cacheWrite + outputTokens`. A 2,409-token cached prefix returned `inputTokens=13, cacheWrite=2409, totalTokens=2426`. `inputTokens` is the full-rate remainder ONLY — it does not carry the cached portion. `src/bedrock-metrics.ts` assumed the opposite and consequently billed zero full-rate input whenever the cached prefix exceeded the user prompt (the judge's normal shape); fixed the same day, with a regression guard in `test_bedrock_metrics.ts`.
+- **Cache economics at judge prompt sizes.** With ~1,805 of ~2,023 prompt tokens served from cache, Sonnet 4.6 costs ~$32.55 per 10k judge calls at fixture prompt size and ~$225 per 10k at production size (~8K tokens), where the extra 6K is uncached user-prompt content. Caching only ever discounts the static system prefix — file context is injected into the USER prompt by design (to keep the system prefix byte-stable), so it is always billed at full rate. That is why the August 2026 overspend was unaffected by caching.
+
+If you cut over to a different model ID or inference profile, re-measure rather than assuming either the documented minimum or the numbers above.
 
 ## User permissions — Claude Code allow/deny/ask integration
 
