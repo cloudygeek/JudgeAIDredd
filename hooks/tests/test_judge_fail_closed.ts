@@ -118,6 +118,57 @@ async function main() {
   }
 
   // ---------------------------------------------------------------------
+  section("a network failure is NOT a code bug (Node hands it to us as TypeError)");
+  // ---------------------------------------------------------------------
+  {
+    // Node's fetch throws a genuine `TypeError: fetch failed` for ANY transport
+    // failure. Classifying that as an internal error made every Ollama outage
+    // fail closed regardless of the flag, and made the flag a no-op on that
+    // backend. Bedrock was unaffected — the SDK throws its own types.
+    const j = await loadJudge(false, "net");
+
+    const realFetchErr = await fetch("http://127.0.0.1:9/x").then(() => null).catch((e) => e);
+    ok("the probe really did produce a TypeError", realFetchErr instanceof TypeError);
+    ok("...classified as availability, not internal", j.isInternalJudgeError(realFetchErr) === false);
+    ok("...so with the flag OFF it is ALLOWED (fail-soft, as documented)", allowedBy(j.failVerdictFor(realFetchErr)) === true);
+
+    // Shapes undici actually produces, including nesting.
+    const nested = new TypeError("fetch failed");
+    (nested as any).cause = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    ok("nested cause with ECONNREFUSED → availability", j.isInternalJudgeError(nested) === false);
+
+    const agg = new TypeError("fetch failed");
+    (agg as any).cause = Object.assign(new Error("all attempts failed"), {
+      errors: [Object.assign(new Error("x"), { code: "ENOTFOUND" })],
+    });
+    ok("AggregateError-style nesting → availability", j.isInternalJudgeError(agg) === false);
+
+    const timeout = Object.assign(new Error("Headers Timeout Error"), { code: "UND_ERR_HEADERS_TIMEOUT" });
+    ok("undici timeout code → availability", j.isInternalJudgeError(timeout) === false);
+
+    // The whole point is that REAL bugs still fail closed.
+    ok("a genuine TypeError is still internal", j.isInternalJudgeError(new TypeError("x.y is not a function")) === true);
+    ok("ReferenceError still internal", j.isInternalJudgeError(new ReferenceError("z is not defined")) === true);
+    ok("SyntaxError still internal", j.isInternalJudgeError(new SyntaxError("Unexpected token")) === true);
+    ok(
+      "a genuine bug fails CLOSED even with the flag off",
+      allowedBy(j.failVerdictFor(new TypeError("x.y is not a function"))) === false,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  section("flag ON still fails closed on a network outage");
+  // ---------------------------------------------------------------------
+  {
+    const j = await loadJudge(true, "neton");
+    const nested = new TypeError("fetch failed");
+    (nested as any).cause = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    const v = j.failVerdictFor(nested);
+    ok("network outage is not allowed", allowedBy(v) === false);
+    ok("...and is labelled unavailability, not an internal bug", /unavailable/i.test(v.reasoning));
+  }
+
+  // ---------------------------------------------------------------------
   section("judge health — observed, not probed");
   // ---------------------------------------------------------------------
   {

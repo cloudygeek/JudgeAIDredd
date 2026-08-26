@@ -13,20 +13,20 @@
 #     -e AWS_REGION=eu-west-2 \
 #     judge-ai-dredd-judge
 
-FROM 891377407345.dkr.ecr.eu-west-1.amazonaws.com/cko-pull-through/docker-hub/library/node:22-bookworm-slim
+# Public Docker Hub base. This deliberately does NOT use the
+# cko-pull-through ECR mirror the Fargate images use: that registry lives in
+# a different AWS account, so anyone self-hosting this image outside that org
+# cannot authenticate to pull it.
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 
-# ── AWS CLI v2 (for Bedrock backend) ────────────────────────────────────────
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl unzip ca-certificates \
-    && ARCH=$(uname -m) \
-    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" \
-         -o /tmp/awscliv2.zip \
-    && unzip -q /tmp/awscliv2.zip -d /tmp \
-    && /tmp/aws/install \
-    && rm -rf /tmp/aws /tmp/awscliv2.zip \
-    && apt-get remove -y unzip \
+# ── No AWS CLI ──────────────────────────────────────────────────────────────
+# Every AWS call goes through the SDK (@aws-sdk/client-bedrock-runtime,
+# @aws-sdk/client-dynamodb). Nothing in src/ shells out to `aws`, so the
+# ~150MB CLI install this image used to carry was dead weight. The zip-based
+# Fargate images already dropped it; this one had not caught up.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Node dependencies ───────────────────────────────────────────────────────
@@ -36,6 +36,11 @@ RUN npm install --registry https://registry.npmjs.org
 # ── Application source (server + dashboard only) ───────────────────────────
 COPY tsconfig.json ./
 COPY src/ ./src/
+# hooks/ is a RUNTIME dependency, not just build tooling: src/hook-bake.ts reads
+# hooks/dredd-hook.sh and hooks/dredd-managed-allow.sh to bake the client hook
+# served by GET /api/hook-script and the dashboard's integration bundle. Without
+# it those endpoints throw ENOENT — this image shipped without them.
+COPY hooks/ ./hooks/
 
 # ── Build provenance ────────────────────────────────────────────────────────
 ARG GIT_COMMIT=unknown

@@ -1,0 +1,118 @@
+# Dredd, self-hosted — runs INSIDE the Linux VM on the Mac Studio.
+#
+# See docs/plan-selfhost-studio-2026-08-26.md. The short version: the model does
+# NOT run here. Apple's Hypervisor.framework exposes no virtual GPU, so Ollama
+# inside this VM would be CPU-only (~3-5x slower, which puts a 1.3s judge call
+# at 4-7s on a call that blocks the agent). Ollama stays on the macOS host with
+# Metal; this VM is the internet-facing blast radius and reaches the host over
+# one port.
+#
+#   docker compose --env-file .env up -d --build
+#
+# Build context is the repo root (..) because the image needs src/ and hooks/.
+
+name: dredd-selfhost
+
+x-dredd-common: &dredd-common
+  build:
+    context: ..
+    dockerfile: fargate/Dockerfile.judge
+    args:
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+  restart: unless-stopped
+  environment: &dredd-env
+    # ---- inference: local, on the macOS host --------------------------------
+    BACKEND: ollama
+    JUDGE_MODEL: ${JUDGE_MODEL:-qwen3.6}
+    EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+    OLLAMA_HOST: ${OLLAMA_HOST:?set this to the host-only address of the Mac's Ollama}
+    # Reasoning suppressed: measured 34/36 at 1.3s with it off vs 19/24 at 7.9s
+    # with it on, same box and model. See the spec, section 7.
+    DREDD_OLLAMA_THINK: "false"
+
+    # ---- an unavailable judge must not mean "allowed" ------------------------
+    # Self-hosted, the judge is a process you own. Without this, stopping Ollama
+    # silently removes the judge from the defence stack. Interactive mode turns
+    # that into a prompt for the user rather than a broken agent.
+    DREDD_JUDGE_FAIL_CLOSED: "true"
+    MODE: ${MODE:-interactive}
+
+    # ---- state: still DynamoDB in AWS ---------------------------------------
+    STORE_BACKEND: dynamo
+    DYNAMO_REGION: ${DYNAMO_REGION:-eu-west-1}
+    AWS_REGION: ${DYNAMO_REGION:-eu-west-1}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?dredd-selfhost IAM user}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?dredd-selfhost IAM user}
+
+    # ---- auth ----------------------------------------------------------------
+    DREDD_AUTH_MODE: required
+    CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:-}
+
+    HARDENED: B7.1
+    DATA_DIR: /data
+
+services:
+  hook:
+    <<: *dredd-common
+    environment:
+      <<: *dredd-env
+      DREDD_ROLE: hook
+      PORT: "3000"
+      # CORS: the dashboard page calls the hook cross-origin for the live feed,
+      # the mode toggle, and the version badge.
+      DREDD_DASHBOARD_ORIGIN: https://${DASHBOARD_HOST:?}
+    volumes:
+      - hook-data:/data
+    expose:
+      - "3000"
+    # No `ports:` — nothing reaches these containers except through Caddy.
+    healthcheck:
+      # Deliberately checks liveness only. `judge.status` in this payload can be
+      # "down" while the process is perfectly healthy, and restarting the
+      # container would not bring Ollama back — it would just add a restart loop
+      # to an existing outage. Watch the judge field via monitoring instead.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  dashboard:
+    <<: *dredd-common
+    environment:
+      <<: *dredd-env
+      DREDD_ROLE: dashboard
+      PORT: "3001"
+      # Browser-side URL: the dashboard HTML tells the page where the hook is.
+      DREDD_HOOK_URL: https://${HOOK_HOST:?}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:?dashboard /api/* returns 503 without this}
+      CLERK_JWT_PUBLIC_KEY: ${CLERK_JWT_PUBLIC_KEY:-}
+    volumes:
+      - dashboard-data:/data
+    expose:
+      - "3001"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      # :80 is required for the ACME HTTP-01 challenge, not just redirects.
+      - "80:80"
+      - "443:443"
+    environment:
+      HOOK_HOST: ${HOOK_HOST:?}
+      DASHBOARD_HOST: ${DASHBOARD_HOST:?}
+      ACME_EMAIL: ${ACME_EMAIL:?Let's Encrypt expiry notices}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data      # certificates and ACME account key — DO NOT prune
+      - caddy-config:/config
+    depends_on:
+      - hook
+      - dashboard
+
+volumes:
+  hook-data:
+  dashboard-data:
+  caddy-data:
+  caddy-config:

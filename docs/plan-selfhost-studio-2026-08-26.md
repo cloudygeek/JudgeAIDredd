@@ -1,6 +1,6 @@
 # Self-hosted Dredd on the Mac Studio — replacing Bedrock and Fargate
 
-**Status:** code items T-1..T-5 implemented (2026-08-26); deployment items T-6..T-10 outstanding
+**Status:** T-1..T-10 implemented and T-12 verified in-container (2026-08-26). T-11 (end-to-end against the real hostname) needs the VM provisioned.
 **Date:** 2026-08-26
 **Supersedes nothing. Runs in parallel with the (currently torn-down) AWS stack.**
 
@@ -312,17 +312,106 @@ Fixed by treating a mismatched vector as UNUSABLE rather than as an error:
 Verified against a simulated 1024-dim rehydrated session: no throw, escalates; matched dimensions
 unaffected; a mix of usable and unusable vectors uses the usable one.
 
-### Deployment — new `selfhost/` directory
+### Deployment — `selfhost/` (DONE)
 
-- **T-6** — VM definition (Apple Virtualization via Lima or equivalent), pinned image, resource
-  limits, host-only network to the host's Ollama.
-- **T-7** — `docker-compose.yml`: `dredd-hook`, `dredd-dashboard`, `caddy`.
-- **T-8** — `Caddyfile`: two hostnames, HTTP-01, HSTS, sane timeouts. Proxy read timeout must
-  exceed the hook's `--max-time 60` on `/evaluate` or long judge calls will be cut at the edge —
-  the same ordering invariant that bit the ALB (`idle_timeout` vs `deregistration_delay`).
-- **T-9** — `iam-policy.json` per §5, plus a `terraform/` module or documented console steps.
-- **T-10** — `README.md`: provisioning, model pull, DNS, router forwarding, key rotation,
-  `OLLAMA_KEEP_ALIVE`, and how to verify the whole chain.
+- **T-6 — `lima-dredd.yaml`.** Apple Virtualization (`vmType: vz`), Ubuntu 24.04 arm64, shared
+  network, `:80`/`:443` forwarded with `hostIP: 0.0.0.0` (the Lima default binds 127.0.0.1, which
+  a router cannot forward to), repo mounted READ-ONLY, and ufw denying everything except 80/443
+  plus SSH from RFC1918. Sized 4 CPU / 6GiB deliberately: this VM runs two Node processes and
+  Caddy, and the Studio's RAM belongs to the resident model.
+- **T-7 — `docker-compose.yml`.** hook + dashboard + Caddy from one image
+  (`fargate/Dockerfile.judge`, `DREDD_ROLE` picks the role). Neither app container publishes a
+  port — Caddy is the only ingress. `OLLAMA_HOST`, the AWS keys and `CLERK_SECRET_KEY` use
+  `${VAR:?}` so a missing one fails at `compose config` rather than booting a half-configured
+  service. The hook healthcheck deliberately tests liveness only: `judge.status` can be `down`
+  while the process is fine, and restarting the container would not bring Ollama back — it would
+  add a restart loop to an existing outage.
+- **T-8 — `Caddyfile`.** Two hostnames, HTTP-01, HSTS, and 120s proxy timeouts against the hook's
+  `curl --max-time 60` and Claude Code's 60s PreToolUse budget. If the proxy cut first, the hook
+  would see a truncated response instead of a decision and fail open to an ordinary permission
+  prompt — indistinguishable, from the user's side, from Dredd not running. Same ordering
+  invariant as the ALB's `idle_timeout` vs `deregistration_delay`.
+- **T-9 — `iam-policy.json`.** Seven DynamoDB actions, seven resource ARNs, nothing else.
+  **Validated by AWS Access Analyzer: zero findings.**
+- **T-10 — `README.md`.** Provisioning, both model pulls (`nomic-embed-text` is easy to miss —
+  the judge starts fine without it and drift fails on every call), `OLLAMA_KEEP_ALIVE`, DNS,
+  router forwarding, the Ollama binding recipe, and the fail-closed drill.
+
+### T-6a — `fargate/Dockerfile.judge` was not self-hostable (FIXED)
+
+CLAUDE.md documents this image as the option for "self-hosted setups that want one image". It
+had three problems, all found by reading it rather than at runtime:
+
+1. **Base image was a private ECR pull-through cache in a different AWS account**
+   (`891377407345...cko-pull-through`). Nobody outside that org can authenticate to pull it.
+   Now `node:22-bookworm-slim` from Docker Hub.
+2. **It never copied `hooks/`.** `src/hook-bake.ts` reads `hooks/dredd-hook.sh` and
+   `hooks/dredd-managed-allow.sh` **at runtime** to bake the client hook served by
+   `GET /api/hook-script` and the dashboard's integration bundle. Both would have thrown ENOENT.
+   The zip-based Fargate images already copied it; this one had not caught up.
+3. **It installed the AWS CLI (~150MB) for nothing.** Every AWS call goes through the SDK;
+   nothing in `src/` shells out to `aws`. Verified by grep.
+
+### Verification
+
+- **T-11 — partially done.** The image was built and run against a live local Ollama: preflight
+  passed Ollama-only (no Bedrock), `/health` carried the new `judge` block, a real `/evaluate`
+  reached the judge and returned a sensible verdict, and `judge.status` moved `unknown` → `ok`
+  with backend/model recorded. What remains needs the VM: the real hostname, Caddy, TLS, and
+  DynamoDB-backed state.
+- **T-12 — DONE, and it found two bugs that a passing unit test would not have.** Drill: boot with
+  a live judge (preflight must pass), then kill the backend mid-session and issue a tool call.
+
+### T-12a — the outage killed the pipeline at STAGE 2, not stage 3 (FIXED)
+
+The first drill returned **HTTP 500** and `judge.totalCalls = 0`. Stack trace:
+`DriftDetector.evaluate → embed → ECONNREFUSED`, escaping `interceptor.evaluate` (that call was
+not inside a `try`) and becoming a 500. The hook then receives **no decision at all**, and Claude
+Code falls back to the user's own permission config — a silent fail-open that
+`DREDD_JUDGE_FAIL_CLOSED` was powerless to prevent, because the judge was never reached.
+
+This is specifically a self-hosting problem: when Ollama goes down it takes the **embedding**
+endpoint down with the judge, so the pipeline dies at stage 2 on every call and stage 3's
+fail-closed logic never runs. On Bedrock the two are separate services, which is why it was never
+observed.
+
+Fixed by catching the drift failure and treating it as "escalate to the judge" (similarity 0 —
+never a fabricated high similarity, which would ALLOW). The outcome is then governed by the same
+single knob: the judge either answers, or fails and `failVerdictFor` decides.
+
+### T-12b — every Ollama outage was misclassified as a code bug (FIXED)
+
+With T-12a fixed, the drill produced `ask` under **both** flag states — the flag was inert. Cause:
+**Node's `fetch` throws a genuine `TypeError: fetch failed` for any transport failure** (verified
+directly), and `isInternalJudgeError` returned true for any `TypeError`. So on the Ollama backend:
+
+- the documented "availability errors fail SOFT" behaviour **never applied** — it always failed
+  closed, whatever the config said; and
+- `DREDD_JUDGE_FAIL_CLOSED` was a **no-op** on that backend, since the internal-error branch fired
+  first.
+
+Bedrock was unaffected (the AWS SDK throws its own error types), which is why this survived.
+
+`isInternalJudgeError` now checks for a transport failure first, walking the `cause` chain and
+`AggregateError.errors` for `fetch failed` / `ECONNREFUSED` / undici codes. Genuine `TypeError`s
+still fail closed. Covered by 12 new assertions, including one that provokes a real `fetch`
+failure rather than trusting a hand-built fixture.
+
+**Verified after both fixes**, same drill, judge and embeddings both unreachable:
+
+| `DREDD_JUDGE_FAIL_CLOSED` | HTTP | decision | reason |
+|---|---|---|---|
+| `true` | 200 | **`ask`** | judge could not evaluate — failing closed |
+| `false` | 200 | `allow` | `Judge error (fail-soft): fetch failed` |
+
+Minor, not fixed: with the flag on the user-facing reason says "(internal error)" where
+"unavailable" would be more accurate. Cosmetic; the verdict is right.
+
+**Not yet verified, and flagged in the README rather than assumed:** the exact host-side address
+the VM uses to reach the Mac's Ollama. Lima's shared network creates a `bridge*` interface whose
+address must be read off the host after first boot; the README gives the recipe and a
+verification command. Do NOT shortcut this with `OLLAMA_HOST=0.0.0.0`, which would publish an
+unauthenticated model endpoint to the whole LAN.
 
 ### Verification
 

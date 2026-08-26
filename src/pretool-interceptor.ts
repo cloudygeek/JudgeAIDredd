@@ -27,7 +27,7 @@ import {
   type PolicyResult,
 } from "./tool-policy.js";
 import { evaluateDomainPolicy } from "./domain-policy.js";
-import { DriftDetector } from "./drift-detector.js";
+import { DriftDetector, type DriftScore } from "./drift-detector.js";
 import {
   IntentJudge,
   type JudgeVerdict,
@@ -635,7 +635,47 @@ export class PreToolInterceptor {
     }
 
     const toolDescription = this.describeToolCall(tool, input);
-    const drift = await s.driftDetector.evaluate(toolDescription, bedrockAuth);
+
+    // A FAILED drift stage must not escape this function.
+    //
+    // Stage 2 embeds the tool description, and when the embedding backend is
+    // unreachable that call throws. Before this catch the throw escaped
+    // interceptor.evaluate → handleEvaluate → the server's top-level handler
+    // and became an HTTP 500. The hook then gets no decision at all and Claude
+    // Code falls back to the user's own permission config — a silent fail-open,
+    // and one that DREDD_JUDGE_FAIL_CLOSED could not prevent because the judge
+    // was never reached.
+    //
+    // That matters most exactly where the judge is self-hosted: when Ollama
+    // goes down it takes the embedding endpoint down WITH the judge, so the
+    // pipeline dies at stage 2 every time and stage 3's fail-closed logic never
+    // runs. Verified 2026-08-26 by killing the backend mid-session: 500,
+    // no decision, judge.totalCalls = 0.
+    //
+    // Treating the failure as "escalate to the judge" rather than as fatal
+    // composes correctly with the existing policy: the judge then either
+    // answers (backend partially up) or fails, and failVerdictFor decides —
+    // fail-soft to allowed by default, not-allowed under
+    // DREDD_JUDGE_FAIL_CLOSED. One knob still governs the whole outage story.
+    let drift: DriftScore;
+    try {
+      drift = await s.driftDetector.evaluate(toolDescription, bedrockAuth);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `  [${sessionId.substring(0, 8)}] [DRIFT] stage failed (${message.split("\n")[0]}) — escalating to judge`,
+      );
+      // similarity 0 = maximum drift, which is the escalate-to-judge branch
+      // below. Never fabricate a high similarity here: that would ALLOW.
+      drift = {
+        similarity: 0,
+        meanSimilarity: 0,
+        cumulativeDrift: 1,
+        turnDelta: 0,
+        turnCount: 0,
+        embedTimeMs: 0,
+      };
+    }
 
     if (drift.similarity >= this.config.reviewThreshold) {
       // High similarity to original task — allow

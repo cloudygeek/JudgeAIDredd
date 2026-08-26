@@ -566,7 +566,7 @@ test_phase8a_approval_embedding.ts  # ApprovalRecord.inputEmbedding round-trip  
 test_trust_pipeline.ts              # trust-allow short-circuit + stage ordering    (8)
 
 # --- judge evidence blocks ------------------------------------------------
-test_judge_fail_closed.ts           # DREDD_JUDGE_FAIL_CLOSED + judge health      (35)
+test_judge_fail_closed.ts           # DREDD_JUDGE_FAIL_CLOSED + judge health      (47)
 test_instruction_evidence.ts        # InstructionsLoaded → <instructions_loaded>   (20)
 test_provenance_taint.ts            # buildTaintEvidence, incl. long-horizon       (18)
 test_provenance_pipeline.ts         # render block + interceptor→judge threading    (9)
@@ -591,7 +591,7 @@ test_transcript_summary_bounded.sh  # build_transcript_summary is O(1) in size  
 test_integration_bundle_skill.ts    # bundle contents                               (3)
 ```
 
-58 files, 1,195 assertions, all green at last full run (2026-08-26). The bash suites are self-contained (mktemp sandboxes + python stub HTTP server). Two tests — `test_phase4_pipeline` and `test_intent_latency` — call **real Bedrock**; an expired AWS SSO token makes them fail in a way that looks like a code regression, so re-auth before believing them.
+58 files, 1,207 assertions, all green at last full run (2026-08-26). The bash suites are self-contained (mktemp sandboxes + python stub HTTP server). Two tests — `test_phase4_pipeline` and `test_intent_latency` — call **real Bedrock**; an expired AWS SSO token makes them fail in a way that looks like a code regression, so re-auth before believing them.
 
 **`test_file_context_backends.ts` is load-bearing and cannot be replaced by types.** `SessionStore.getFileContextForJudge` takes optional `command`/`cwd`, and TypeScript accepts an implementation declaring *fewer* parameters — so a backend that silently ignores `command` compiles clean. Verified by mutation: dropping the argument in `dynamo-session-store.ts` leaves `tsc` green and turns this test red in 8 places. That is the same class of defect as the 0.1.530 cost cap, which was written into one of three backends and was a no-op in production for seven weeks.
 

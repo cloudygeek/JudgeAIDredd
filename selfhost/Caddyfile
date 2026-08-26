@@ -1,0 +1,93 @@
+# Caddy — TLS termination for the self-hosted Dredd.
+#
+# Two hostnames, one static IP, certificates via Let's Encrypt HTTP-01.
+#
+# WHY HTTP-01 AND NOT DNS-01. DNS-01 would avoid needing inbound :80 and would
+# allow wildcards, but it needs route53:ChangeResourceRecordSets on the zone —
+# which widens the deployment's AWS credential beyond the DynamoDB-only boundary
+# that is the whole point of the IAM design. The credential boundary decides,
+# not convenience. Consequence: :80 must be reachable from the internet for the
+# ACME challenge, not merely for the redirect.
+
+{
+	email {$ACME_EMAIL}
+	# Uncomment while testing to avoid burning Let's Encrypt rate limits — five
+	# failed issuances per account per hostname per hour will lock you out for
+	# the rest of that hour, which is a miserable way to debug a port forward.
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+(hardening) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Hook — the hot path Claude Code's hook script POSTs to.
+# ---------------------------------------------------------------------------
+{$HOOK_HOST} {
+	import hardening
+	encode zstd gzip
+
+	reverse_proxy hook:3000 {
+		# TIMEOUT ORDERING IS LOAD-BEARING, and getting it wrong is subtle.
+		#
+		#   dredd-hook.sh   curl --max-time 60   on POST /evaluate
+		#   Claude Code     PreToolUse hook timeout 60s
+		#   here            must EXCEED both
+		#
+		# A judge call on a cold model can take ~22s; a saturated one longer. If
+		# this proxy cut the connection first, the hook would see a truncated
+		# response rather than a decision, and Dredd would fail open to an
+		# ordinary permission prompt — indistinguishable, from the user's side,
+		# from Dredd simply not running. The AWS stack hit exactly this class of
+		# bug with the ALB's idle_timeout vs deregistration_delay.
+		transport http {
+			read_timeout 120s
+			write_timeout 120s
+			dial_timeout 5s
+		}
+		# The app reads the RIGHTMOST X-Forwarded-For hop (getClientIp in
+		# server-core.ts) because the leftmost is client-spoofable. Caddy
+		# appends rather than replaces, matching what the ALB did.
+		header_up X-Forwarded-For {http.request.remote.host}
+	}
+
+	log {
+		output file /data/access-hook.log {
+			roll_size 50MiB
+			roll_keep 10
+		}
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Dashboard — operator UI, Clerk-gated at the application layer.
+# ---------------------------------------------------------------------------
+{$DASHBOARD_HOST} {
+	import hardening
+	encode zstd gzip
+
+	reverse_proxy dashboard:3001 {
+		# Session-detail views reconstruct a whole session from DynamoDB on
+		# demand and can be slow on large sessions.
+		transport http {
+			read_timeout 120s
+			write_timeout 120s
+			dial_timeout 5s
+		}
+		header_up X-Forwarded-For {http.request.remote.host}
+	}
+
+	log {
+		output file /data/access-dashboard.log {
+			roll_size 50MiB
+			roll_keep 10
+		}
+	}
+}

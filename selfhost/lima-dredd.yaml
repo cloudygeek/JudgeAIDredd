@@ -1,0 +1,91 @@
+# Lima VM for the self-hosted Dredd, on a Mac Studio (Apple Silicon).
+#
+#   limactl start --name=dredd ./lima-dredd.yaml
+#   limactl shell dredd
+#
+# THIS VM DOES NOT RUN THE MODEL. Apple's Hypervisor.framework exposes no
+# virtual GPU, so Ollama in here would be CPU-only — roughly 3-5x slower, which
+# turns a 1.3s judge call into 4-7s on a call that blocks the agent's tool use.
+# Ollama stays on the macOS host with Metal. This VM exists to be the thing the
+# internet touches, so that a compromise of the exposed service yields a Linux
+# guest rather than the Studio.
+
+vmType: "vz"          # Apple Virtualization.framework — native, no QEMU
+rosetta:
+  enabled: false      # arm64 guest on arm64 host; nothing to translate
+  binfmt: false
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+# Sized for two Node processes and Caddy, NOT for inference. Leave the Studio's
+# RAM for the model — a 35B at Q4 wants ~24GB resident, and the whole point of
+# keeping it on the host is that it has room to stay warm.
+cpus: 4
+memory: "6GiB"
+disk: "40GiB"
+
+# Shared network so the guest can reach the host's Ollama on a private
+# interface. Verify the actual host-side address after first boot — see the
+# README: do NOT assume it, and do NOT reach for OLLAMA_HOST=0.0.0.0 as a
+# shortcut, which would expose the model endpoint to your whole LAN.
+networks:
+  - lima: shared
+
+# Guest ports published on the host. hostIP 0.0.0.0 is required: the default
+# binds 127.0.0.1, which the router cannot forward to.
+#
+# :80 is not optional — Let's Encrypt HTTP-01 needs it for the challenge, not
+# just for the HTTPS redirect.
+portForwards:
+  - guestPort: 80
+    hostIP: "0.0.0.0"
+    hostPort: 80
+  - guestPort: 443
+    hostIP: "0.0.0.0"
+    hostPort: 443
+
+# The repo is mounted read-only: the VM builds the image from it and must never
+# be able to modify the source it was built from.
+mounts:
+  - location: "~/IdeaProjects/JudgeAIDredd"
+    writable: false
+
+containerd:
+  system: false
+  user: false
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      command -v docker >/dev/null 2>&1 && exit 0
+      curl -fsSL https://get.docker.com | sh
+      systemctl enable --now docker
+  - mode: system
+    script: |
+      #!/bin/bash
+      # Host firewall as defence in depth. The router should only forward 80 and
+      # 443 here, but a misconfigured forward should not silently expose SSH or
+      # the Docker API to the internet.
+      set -eux -o pipefail
+      apt-get update && apt-get install -y ufw
+      ufw --force reset
+      ufw default deny incoming
+      ufw default allow outgoing
+      ufw allow 80/tcp
+      ufw allow 443/tcp
+      ufw allow from 192.168.0.0/16 to any port 22 proto tcp
+      ufw --force enable
+
+probes:
+  - description: "docker to be installed"
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      if ! timeout 30s bash -c "until command -v docker; do sleep 3; done"; then
+        echo >&2 "docker is not installed yet"
+        exit 1
+      fi

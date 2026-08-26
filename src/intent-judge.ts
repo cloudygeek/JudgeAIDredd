@@ -196,7 +196,52 @@ export interface JudgeVerdict {
  */
 export const JUDGE_FAIL_CLOSED = process.env.DREDD_JUDGE_FAIL_CLOSED === "true";
 
+/** Transport-level failure codes, from Node's net stack and undici. */
+const NETWORK_ERROR_CODES = new Set([
+  "ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH",
+  "ETIMEDOUT", "EPIPE", "EAI_AGAIN", "ECONNABORTED",
+  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET", "UND_ERR_CLOSED", "UND_ERR_ABORTED",
+]);
+
+/**
+ * Is this a transport failure rather than a programming mistake?
+ *
+ * This exists because **Node's `fetch` reports every transport failure as
+ * `TypeError: fetch failed`** — verified: connecting to a closed port throws a
+ * genuine `TypeError`, not a subclass, with the real cause nested underneath
+ * (and sometimes wrapped in an `AggregateError`).
+ *
+ * `isInternalJudgeError` used to return true for any `TypeError`, so on the
+ * OLLAMA backend — which reaches the model over `fetch` — every outage was
+ * classified as a code bug. Two consequences, both latent until the
+ * 2026-08-26 self-host drill made them visible:
+ *
+ *  1. The documented "availability errors fail SOFT" behaviour never actually
+ *     applied to Ollama. It failed closed, always, regardless of intent.
+ *  2. DREDD_JUDGE_FAIL_CLOSED was therefore a no-op on that backend: the
+ *     internal-error branch fired first and the flag never got a say.
+ *
+ * Bedrock was unaffected — the AWS SDK throws its own error types.
+ *
+ * Walks the `cause` chain (and `AggregateError.errors`) because the useful
+ * signal is usually one or two levels down from the TypeError.
+ */
+function isNetworkFailure(err: unknown, depth = 0): boolean {
+  if (!err || depth > 5) return false;
+  const e = err as { message?: unknown; code?: unknown; cause?: unknown; errors?: unknown };
+  if (typeof e.message === "string" && /fetch failed|socket hang up|network|other side closed/i.test(e.message)) {
+    return true;
+  }
+  if (typeof e.code === "string" && NETWORK_ERROR_CODES.has(e.code)) return true;
+  if (Array.isArray(e.errors) && e.errors.some((sub) => isNetworkFailure(sub, depth + 1))) return true;
+  return isNetworkFailure(e.cause, depth + 1);
+}
+
 export function isInternalJudgeError(err: unknown): boolean {
+  // A transport failure is an availability problem, never a code bug — even
+  // though Node hands it to us as a TypeError. Check this FIRST.
+  if (isNetworkFailure(err)) return false;
   return (
     err instanceof TypeError ||
     err instanceof ReferenceError ||
