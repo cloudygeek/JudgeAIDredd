@@ -34,6 +34,19 @@ never learn from refusals.
 
 **Design — three capture channels, one per decision kind:**
 
+> **2026-08-27 verification finding (claude-code-guide):** `PermissionDenied`
+> may fire on AUTOMATED denials only (auto-mode classifier, policy rules,
+> PreToolUse-hook deny) — NOT when the user rejects an interactive prompt
+> (no dedicated event exists for that; `PermissionRequest` is the prompt
+> event). If the soak confirms this, channel 1 below captures
+> **denial-enforcement** telemetry (Dredd's deny provably took effect
+> client-side — still worth keeping, under an accurate label), and true
+> user-rejection capture becomes phase 1b: infer it from a Dredd "ask"
+> whose pending approval expires with neither PostToolUse nor
+> PermissionDenied arriving — the mirror of Phase 9's tacit-approval
+> inference. The shipped machinery is flag-gated telemetry either way;
+> the Studio soak's paired-row data decides which reading is true.
+
 1. **Explicit deny → the `PermissionDenied` hook event.** Claude Code fires
    `PermissionDenied` when the user rejects a permission prompt. Wire it in
    `dredd-hook.sh` exactly like `PostToolUseFailure`: fire-and-forget POST to
