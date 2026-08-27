@@ -164,6 +164,17 @@ export interface ApprovalStore {
    *  expected steady-state of approvals per project. */
   listForScope(scope: ApprovalScope, limit?: number): Promise<ApprovalRecord[]>;
 
+  /** Decision capture — relabel an approval's decision post-hoc (the
+   *  allow-always snapshot-diff upgrade). Returns false when no live
+   *  record exists. Telemetry only: MUST NOT touch lastUsedAt/useCount
+   *  or lookup semantics. */
+  updateDecision(
+    scope: ApprovalScope,
+    fingerprintHash: string,
+    decision: "allow-once" | "allow-tacit" | "allow-always",
+    decidedVia: "posttooluse" | "snapshot-diff",
+  ): Promise<boolean>;
+
   /** Soft-revoke. Sets revokedAt/revokedBy; returns true if a live
    *  record was found and revoked, false otherwise. */
   revoke(scope: ApprovalScope, fingerprintHash: string, revokedBy: string): Promise<boolean>;
@@ -284,4 +295,70 @@ export class InMemoryApprovalStore implements ApprovalStore {
     record.revokedBy = revokedBy;
     return true;
   }
+
+  async updateDecision(
+    scope: ApprovalScope,
+    fingerprintHash: string,
+    decision: "allow-once" | "allow-tacit" | "allow-always",
+    decidedVia: "posttooluse" | "snapshot-diff",
+  ): Promise<boolean> {
+    const record = this.records.get(recordKey(scope, fingerprintHash));
+    if (!record || record.revokedAt) return false;
+    record.decision = decision;
+    record.decidedVia = decidedVia;
+    return true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Decision capture — allow-always detection (plan-consent-completion §1.2).
+// ---------------------------------------------------------------------------
+
+/** grantedAt window inside which a newly-added user allow rule is taken
+ *  as the "always" form of a just-promoted approval. Deliberately loose
+ *  v1 matching (tool name + time window, not rule-pattern-to-input): the
+ *  label is telemetry, and a false "always" costs nothing at lookup. */
+export const ALLOW_ALWAYS_WINDOW_MS = 10 * 60 * 1000;
+
+/** Tool a Claude Code permission rule applies to: "Bash(curl:*)" → "Bash",
+ *  bare "Read" → "Read", MCP names pass through whole. */
+export function ruleToolOf(rule: string): string {
+  const i = rule.indexOf("(");
+  return (i === -1 ? rule : rule.slice(0, i)).trim();
+}
+
+/**
+ * Upgrade approvals promoted within the window to "allow-always" when the
+ * user's permissions snapshot gained a rule for the same tool. Called from
+ * /intent when a changed snapshot arrives (rare path — full payloads only
+ * ship on hash change or heartbeat). Best-effort by contract: callers
+ * wrap in try/catch; a store blip loses a label, never a behaviour.
+ * Returns the number of records upgraded.
+ */
+export async function upgradeRecentApprovalsToAlways(
+  store: ApprovalStore,
+  scope: ApprovalScope,
+  addedAllowRules: string[],
+  windowMs: number = ALLOW_ALWAYS_WINDOW_MS,
+): Promise<number> {
+  if (addedAllowRules.length === 0) return 0;
+  const addedTools = new Set(addedAllowRules.map(ruleToolOf).filter((t) => t.length > 0));
+  if (addedTools.size === 0) return 0;
+
+  const cutoff = Date.now() - windowMs;
+  const recent = (await store.listForScope(scope)).filter(
+    (r) =>
+      !r.revokedAt &&
+      r.decision !== "allow-always" &&
+      new Date(r.grantedAt).getTime() >= cutoff &&
+      addedTools.has(r.tool),
+  );
+
+  let upgraded = 0;
+  for (const r of recent) {
+    if (await store.updateDecision(scope, r.fingerprintHash, "allow-always", "snapshot-diff")) {
+      upgraded++;
+    }
+  }
+  return upgraded;
 }

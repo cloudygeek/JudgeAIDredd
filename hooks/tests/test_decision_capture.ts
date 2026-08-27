@@ -177,6 +177,57 @@ async function main() {
     }
 
     // ---------------------------------------------------------------------
+    section("Allow-always: snapshot-diff upgrade helper");
+    {
+      const { InMemoryApprovalStore, upgradeRecentApprovalsToAlways, ruleToolOf } = await import(
+        "../../src/approval-store.js"
+      );
+
+      ruleToolOf("Bash(curl:*)") === "Bash" ? pass("ruleToolOf Bash(curl:*) → Bash") : fail(`got ${ruleToolOf("Bash(curl:*)")}`);
+      ruleToolOf("Read") === "Read" ? pass("ruleToolOf bare Read → Read") : fail(`got ${ruleToolOf("Read")}`);
+      ruleToolOf("mcp__slack__send") === "mcp__slack__send" ? pass("MCP names pass through whole") : fail("mcp name mangled");
+
+      const store = new InMemoryApprovalStore();
+      const scope = { ownerSub: "u1", projectRoot: "/p" };
+      const base = {
+        scope,
+        ownerEmail: null,
+        fingerprintJson: "{}",
+        summary: "s",
+        intentSnapshot: "i",
+        goalEmbedding: [],
+        inputEmbedding: [],
+        source: "explicit" as const,
+        decision: "allow-once" as const,
+        decidedVia: "posttooluse" as const,
+      };
+      await store.recordApproval({ ...base, fingerprintHash: "fp-bash", tool: "Bash" });
+      await store.recordApproval({ ...base, fingerprintHash: "fp-read", tool: "Read" });
+      // An old approval outside the window: fake by rewinding grantedAt.
+      const old = await store.recordApproval({ ...base, fingerprintHash: "fp-old", tool: "Bash" });
+      (old as any).grantedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+      const n = await upgradeRecentApprovalsToAlways(store, scope, ["Bash(curl:*)", "Edit"]);
+      n === 1 ? pass("exactly the in-window Bash approval upgraded") : fail(`upgraded=${n}`);
+
+      const rows = await store.listForScope(scope);
+      const bash = rows.find((r: any) => r.fingerprintHash === "fp-bash");
+      const read = rows.find((r: any) => r.fingerprintHash === "fp-read");
+      const oldR = rows.find((r: any) => r.fingerprintHash === "fp-old");
+      bash?.decision === "allow-always" && bash?.decidedVia === "snapshot-diff"
+        ? pass("upgraded row labelled allow-always/snapshot-diff")
+        : fail(`bash=${bash?.decision}/${bash?.decidedVia}`);
+      read?.decision === "allow-once" ? pass("tool-mismatch row untouched") : fail(`read=${read?.decision}`);
+      oldR?.decision === "allow-once" ? pass("out-of-window row untouched") : fail(`old=${oldR?.decision}`);
+
+      const n2 = await upgradeRecentApprovalsToAlways(store, scope, ["Bash(git:*)"]);
+      n2 === 0 ? pass("already-always rows not re-upgraded") : fail(`second pass upgraded=${n2}`);
+
+      const n3 = await upgradeRecentApprovalsToAlways(store, scope, []);
+      n3 === 0 ? pass("empty added-rules is a no-op") : fail(`empty upgraded=${n3}`);
+    }
+
+    // ---------------------------------------------------------------------
     section("Flag OFF (child process): deny branch is a complete no-op");
     {
       const self = fileURLToPath(import.meta.url);

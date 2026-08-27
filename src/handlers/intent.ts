@@ -40,8 +40,11 @@ import {
   NEW_TASK_DRIFT_MIN,
   CONFIG,
   credentialProvider,
+  approvals,
+  DECISION_CAPTURE_ENABLED,
   type TrustMode,
 } from "../server-core.js";
+import { upgradeRecentApprovalsToAlways } from "../approval-store.js";
 import type { ImageBlock } from "../session-store.js";
 import {
   scanClaudeMd,
@@ -266,6 +269,21 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
         const allow = sanitizeList(userPermissionsBody.allow);
         const deny = sanitizeList(userPermissionsBody.deny);
         const ask = sanitizeList(userPermissionsBody.ask);
+        // Decision capture — allow-always detection. A full payload only
+        // ships on hash change (or heartbeat), so reading the previous
+        // snapshot before overwriting is a rare extra get, not hot-path
+        // cost. Rules the user just ADDED to their allow list are the
+        // "yes, don't ask again" trail: any approval promoted in the
+        // recent window for the same tool gets upgraded to allow-always.
+        let addedAllowRules: string[] = [];
+        if (DECISION_CAPTURE_ENABLED) {
+          try {
+            const prev = await userPermissionsStore.get(ownerSubForPerms, cwd);
+            if (prev) addedAllowRules = allow.filter((r) => !prev.allow.includes(r));
+          } catch {
+            /* best-effort — a miss just skips the upgrade */
+          }
+        }
         await userPermissionsStore.upsert({
           ownerSub: ownerSubForPerms,
           projectRoot: cwd,
@@ -274,6 +292,25 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
           deny,
           ask,
         });
+        if (DECISION_CAPTURE_ENABLED && addedAllowRules.length > 0) {
+          try {
+            const upgraded = await upgradeRecentApprovalsToAlways(
+              approvals,
+              { ownerSub: ownerSubForPerms, projectRoot: cwd },
+              addedAllowRules,
+            );
+            if (upgraded > 0) {
+              console.log(
+                `  [${session_id.substring(0, 8)}] [DECISION] ${upgraded} approval(s) upgraded to allow-always ` +
+                  `(new rule(s): ${addedAllowRules.slice(0, 3).join(", ")}${addedAllowRules.length > 3 ? ", …" : ""})`,
+              );
+            }
+          } catch (err) {
+            console.warn(
+              `  [${session_id.substring(0, 8)}] [DECISION] allow-always upgrade failed: ${(err as Error)?.message ?? err}`,
+            );
+          }
+        }
         await tracker.setUserPermissions(session_id, {
           hash: userPermissionsHashBody,
           allow,

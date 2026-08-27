@@ -139,4 +139,16 @@ export class CachedApprovalStore implements ApprovalStore {
     this.cache.delete(cacheKey(scope, fingerprintHash));
     return ok;
   }
+
+  async updateDecision(
+    scope: ApprovalScope,
+    fingerprintHash: string,
+    decision: "allow-once" | "allow-tacit" | "allow-always",
+    decidedVia: "posttooluse" | "snapshot-diff",
+  ): Promise<boolean> {
+    const ok = await this.backend.updateDecision(scope, fingerprintHash, decision, decidedVia);
+    // Labels are telemetry, but keep the cached copy honest anyway.
+    this.cache.delete(cacheKey(scope, fingerprintHash));
+    return ok;
+  }
 }

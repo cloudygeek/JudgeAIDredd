@@ -351,4 +351,28 @@ export class DynamoApprovalStore implements ApprovalStore {
       throw err;
     }
   }
+
+  async updateDecision(
+    scope: ApprovalScope,
+    fingerprintHash: string,
+    decision: "allow-once" | "allow-tacit" | "allow-always",
+    decidedVia: "posttooluse" | "snapshot-diff",
+  ): Promise<boolean> {
+    try {
+      await this.client.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: { pk: pk(scope), sk: sk(fingerprintHash) },
+          UpdateExpression: "SET decision = :d, decidedVia = :v",
+          // Live rows only — a revoked row keeps its final labels.
+          ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(revokedAt)",
+          ExpressionAttributeValues: { ":d": decision, ":v": decidedVia },
+        }),
+      );
+      return true;
+    } catch (err: any) {
+      if (err?.name === "ConditionalCheckFailedException") return false;
+      throw err;
+    }
+  }
 }
