@@ -523,7 +523,7 @@ for f in hooks/tests/test_*.sh; do bash   "$f" || echo "FAILED: $f"; done
 # --- policy engine -------------------------------------------------------
 test_policy_allowlist.ts            # ALLOWED/DENIED/REVIEW bash patterns          (64)
 test_policy_rm_sandbox.ts           # /tmp + /private/tmp scratch carve-out        (49)
-test_policy_credential_probe.ts     # keychain presence-probe allowlist            (39)
+test_policy_credential_probe.ts     # keychain + presence-probe carve-outs         (61)
 test_policy_heredoc.ts              # heredoc bodies are data, not commands        (33)
 test_policy_devtool_kill.ts         # force-kill pre-deny carve-out, both sites    (22)
 test_policy_vcs_rm.ts               # git rm / vcs delete handling                 (16)
