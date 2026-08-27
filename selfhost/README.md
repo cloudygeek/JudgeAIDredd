@@ -42,7 +42,7 @@ judge will start fine without it and drift detection will fail on every call.
 
 ```bash
 brew install ollama          # or the .app
-ollama pull qwen3.6          # judge
+ollama pull qwen3.6:35b-coding  # judge
 ollama pull nomic-embed-text # drift embeddings
 ```
 
