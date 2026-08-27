@@ -642,8 +642,11 @@ export class DynamoSessionStore implements SessionStore {
     const oldestLoadedToolTurn = tools.length > 0 ? (tools[0].turnNumber as number) : null;
     let staleFailuresSkipped = 0;
     for (const f of failItems) {
+      // outcomeStatus distinguishes runtime failures from user permission
+      // denials (decision capture). Absent on pre-existing items = "error".
+      const denied = f.outcomeStatus === "user-denied";
       const outcome = {
-        status: "error" as const,
+        status: (denied ? "user-denied" : "error") as "error" | "user-denied",
         error: String(f.error ?? "").slice(0, 2000),
         at: f.at ?? f.timestamp ?? "",
       };
@@ -671,11 +674,12 @@ export class DynamoSessionStore implements SessionStore {
           turnNumber: f.turnNumber ?? 0,
           tool: f.tool ?? "(unknown)",
           input: f.input ?? {},
-          decision: "allow",
+          // A failure ran (allow); a user denial never did (deny).
+          decision: denied ? "deny" : "allow",
           similarity: null,
           timestamp: outcome.at,
           toolUseId: tuid,
-          stage: "post-tool-failure",
+          stage: denied ? "user-denied" : "post-tool-failure",
           outcome,
         });
       }
@@ -2013,6 +2017,30 @@ export class DynamoSessionStore implements SessionStore {
     toolUseId: string | null,
     error: string,
   ): Promise<void> {
+    await this.writeOutcomeItem(sessionId, tool, input, toolUseId, error, "error");
+  }
+
+  /** Decision capture — user refused the permission prompt. Same FAIL#
+   *  append-only mechanism; `outcomeStatus` distinguishes the kinds at
+   *  loadSession merge time (absent = "error", for pre-existing items). */
+  async recordUserDeny(
+    sessionId: string,
+    tool: string,
+    input: Record<string, unknown>,
+    toolUseId: string | null,
+    reason: string,
+  ): Promise<void> {
+    await this.writeOutcomeItem(sessionId, tool, input, toolUseId, reason, "user-denied");
+  }
+
+  private async writeOutcomeItem(
+    sessionId: string,
+    tool: string,
+    input: Record<string, unknown>,
+    toolUseId: string | null,
+    detail: string,
+    outcomeStatus: "error" | "user-denied",
+  ): Promise<void> {
     try {
       const meta = await this.getMeta(sessionId);
       const turnNumber = meta?.currentTurn ?? 0;
@@ -2027,7 +2055,8 @@ export class DynamoSessionStore implements SessionStore {
             tool,
             input: truncToolInput(input),
             toolUseId: toolUseId ?? null,
-            error: String(error ?? "").slice(0, 2000),
+            error: String(detail ?? "").slice(0, 2000),
+            outcomeStatus,
             at: new Date().toISOString(),
             ttl: ttl(),
           },
@@ -2035,7 +2064,7 @@ export class DynamoSessionStore implements SessionStore {
       );
     } catch (err) {
       console.warn(
-        `  [${sessionId.substring(0, 8)}] [FAIL] recordToolFailure write failed: ${(err as Error)?.message ?? err}`,
+        `  [${sessionId.substring(0, 8)}] [FAIL] ${outcomeStatus} outcome write failed: ${(err as Error)?.message ?? err}`,
       );
     }
   }

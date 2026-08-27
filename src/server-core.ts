@@ -783,6 +783,16 @@ export const CREDENTIAL_CONSENT_ENABLED =
   (process.env.DREDD_CREDENTIAL_CONSENT_ENABLED ?? "true").toLowerCase() === "true";
 console.log(`  [CONSENT] Credential→host consent: ${CREDENTIAL_CONSENT_ENABLED ? "ON" : "OFF"}`);
 
+// Decision capture (plan-consent-completion phase 1): record the user's
+// actual permission decision instead of inferring everything from
+// PostToolUse arrival. Gates the /track PermissionDenied branch and the
+// decision labels stamped onto ApprovalRecords. Telemetry only — no
+// enforcement behaviour changes with this flag. Default off; soak on the
+// selfhost stack first.
+export const DECISION_CAPTURE_ENABLED =
+  (process.env.DREDD_DECISION_CAPTURE_ENABLED ?? "false").toLowerCase() === "true";
+console.log(`  [CONSENT] Decision capture: ${DECISION_CAPTURE_ENABLED ? "ON" : "OFF"}`);
+
 // Periodically purge expired pending-approval candidates (the 60s
 // window between an "ask" and the user's accept/deny). Cheap, keeps
 // the in-process map from growing unbounded under abandoned prompts.

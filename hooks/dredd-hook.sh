@@ -43,8 +43,8 @@
 #     }
 #   }
 #
-# This script also handles PostToolUseFailure, InstructionsLoaded,
-# PreCompact, and Notification — see hooks/settings.json.example for the
+# This script also handles PostToolUseFailure, PermissionDenied,
+# InstructionsLoaded, PreCompact, and Notification — see hooks/settings.json.example for the
 # full, copy-pasteable hook block wiring every event.
 # =============================================================================
 
@@ -890,6 +890,48 @@ case "$HOOK_EVENT" in
         --data-binary "@$FAIL_REQ_FILE" \
         --connect-timeout 2 --max-time 5 > /dev/null 2>&1
       rm -f "$FAIL_REQ_FILE" 2>/dev/null || true
+    ) &
+
+    echo '{}'
+    ;;
+
+  "PermissionDenied")
+    # Decision capture: the USER refused a permission prompt, so the tool
+    # never ran. Without this branch a refusal is invisible to Dredd —
+    # indistinguishable from a call that was never asked about. POST to
+    # /track with user_decision=deny: the server records the refusal as
+    # the call's outcome (paired by tool_use_id) and drops the pending
+    # approval candidate WITHOUT promoting it. Server-side this is gated
+    # on DREDD_DECISION_CAPTURE_ENABLED; with the flag off the POST is a
+    # no-op, so this branch is always safe to ship. Fire-and-forget.
+    TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
+    TOOL_INPUT=$(echo "$INPUT" | jq '.tool_input // {}')
+    TOOL_USE_ID=$(echo "$INPUT" | jq -r '.tool_use_id // empty')
+    # Denial detail across CC versions/sources; first non-empty, capped.
+    DENY_REASON=$(echo "$INPUT" | jq -r '.reason // .denial_reason // .message // empty' | head -c 2000)
+
+    DENY_REQ_FILE=$(mktemp -t dredd-deny.XXXXXX)
+    jq -n \
+      --arg sid "$SESSION_ID" \
+      --arg tn "$TOOL_NAME" \
+      --argjson ti "$TOOL_INPUT" \
+      --arg tuid "$TOOL_USE_ID" \
+      --arg dr "$DENY_REASON" \
+      '{
+        session_id: $sid,
+        tool_name: $tn,
+        tool_input: $ti,
+        tool_use_id: (if $tuid == "" then null else $tuid end),
+        user_decision: "deny",
+        deny_reason: $dr
+      }' >"$DENY_REQ_FILE"
+
+    ( curl -s -X POST "$DREDD_URL/track" \
+        "${DREDD_CURL_ARGS[@]}" \
+        -H "Content-Type: application/json" \
+        --data-binary "@$DENY_REQ_FILE" \
+        --connect-timeout 2 --max-time 5 > /dev/null 2>&1
+      rm -f "$DENY_REQ_FILE" 2>/dev/null || true
     ) &
 
     echo '{}'

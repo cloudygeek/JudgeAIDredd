@@ -342,6 +342,21 @@ export interface SessionStore {
     error: string,
   ): Promise<void>;
 
+  /**
+   * Record that the USER refused the permission prompt for a tool call
+   * (PermissionDenied hook → decision capture). Same pairing/fallback
+   * contract as recordToolFailure, but the outcome status is
+   * "user-denied" and — unlike a runtime failure — the call never ran.
+   * Standalone fallback rows carry decision="deny", stage="user-denied".
+   * Best-effort: implementations must not throw on the /track path. */
+  recordUserDeny(
+    sessionId: string,
+    tool: string,
+    input: Record<string, unknown>,
+    toolUseId: string | null,
+    reason: string,
+  ): Promise<void>;
+
   recordHijackStrike(
     sessionId: string,
     threshold: number,

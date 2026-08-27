@@ -92,6 +92,18 @@ export interface ApprovalRecord {
    *  recorded approvals before Phase 9). */
   source?: "explicit" | "tacit";
 
+  /** Decision capture (plan-consent-completion phase 1) — the user's
+   *  actual choice, when DREDD_DECISION_CAPTURE_ENABLED was on at
+   *  promotion time. "allow-once" = accepted a Dredd ask; "allow-tacit"
+   *  = accepted a native prompt (Phase 9 correlation); "allow-always"
+   *  = a matching rule appeared in the user's permissions snapshot
+   *  shortly after promotion (upgraded post-hoc). Absent on legacy rows
+   *  and while the flag is off. Telemetry only — no lookup semantics. */
+  decision?: "allow-once" | "allow-tacit" | "allow-always";
+  /** How `decision` was determined: the promotion path itself, or the
+   *  later user-permissions snapshot diff that upgraded it. */
+  decidedVia?: "posttooluse" | "snapshot-diff";
+
   /** Set when revoked from the dashboard. Active records have null. */
   revokedAt: string | null;
   revokedBy: string | null;
@@ -115,6 +127,10 @@ export interface RecordApprovalInput {
   /** Phase 9 — see ApprovalRecord.source. Defaults to "explicit" when
    *  omitted to keep existing callers working unchanged. */
   source?: "explicit" | "tacit";
+  /** Decision capture — see ApprovalRecord.decision/decidedVia. Omitted
+   *  (flag off / legacy callers) stores nothing. */
+  decision?: "allow-once" | "allow-tacit" | "allow-always";
+  decidedVia?: "posttooluse" | "snapshot-diff";
 }
 
 export interface ApprovalStore {
@@ -202,6 +218,7 @@ export class InMemoryApprovalStore implements ApprovalStore {
       goalEmbedding: input.goalEmbedding,
       inputEmbedding: input.inputEmbedding ?? [],
       source: input.source ?? "explicit",
+      ...(input.decision ? { decision: input.decision, decidedVia: input.decidedVia } : {}),
       revokedAt: null,
       revokedBy: null,
     };

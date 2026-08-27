@@ -501,6 +501,46 @@ export class InMemorySessionStore implements SessionStore {
   }
 
   /**
+   * Decision capture: the user refused the permission prompt
+   * (PermissionDenied hook). Pairs with the PreToolUse decision by
+   * toolUseId and decorates its `outcome`; the standalone fallback
+   * carries decision="deny" because the call never ran.
+   */
+  async recordUserDeny(
+    sessionId: string,
+    tool: string,
+    input: Record<string, unknown>,
+    toolUseId: string | null,
+    reason: string,
+  ): Promise<void> {
+    const session = this.getSession(sessionId);
+    const outcome = {
+      status: "user-denied" as const,
+      error: reason.slice(0, 2000),
+      at: new Date().toISOString(),
+    };
+    if (toolUseId) {
+      for (let i = session.toolHistory.length - 1; i >= 0; i--) {
+        if (session.toolHistory[i].toolUseId === toolUseId) {
+          session.toolHistory[i].outcome = outcome;
+          return;
+        }
+      }
+    }
+    session.toolHistory.push({
+      turnNumber: session.currentTurn,
+      tool,
+      input,
+      decision: "deny",
+      similarity: null,
+      timestamp: outcome.at,
+      toolUseId: toolUseId ?? null,
+      stage: "user-denied",
+      outcome,
+    });
+  }
+
+  /**
    * Record an instruction file (CLAUDE.md / rules) entering context.
    * Append-only, bounded by MAX_INSTRUCTION_LOADS (most-recent kept).
    */

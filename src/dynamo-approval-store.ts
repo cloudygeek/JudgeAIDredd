@@ -122,6 +122,7 @@ function itemToRecord(item: Record<string, any>): ApprovalRecord {
     // path recorded approvals before Phase 9, so all legacy rows are
     // explicit by construction.
     source: item.source === "tacit" ? "tacit" : "explicit",
+    ...(item.decision ? { decision: item.decision, decidedVia: item.decidedVia } : {}),
     revokedAt: item.revokedAt ?? null,
     revokedBy: item.revokedBy ?? null,
   };
@@ -165,6 +166,9 @@ export class DynamoApprovalStore implements ApprovalStore {
           "lastUsedAt = :now, expiresAt = :exp, #ttl = :ttl, " +
           "intentSnapshot = :is, goalEmbedding = :ge, inputEmbedding = :ie, " +
           "#src = :src, " +
+          // Decision capture: only written when the caller supplies one
+          // (flag on). Existing rows keep whatever they have.
+          (input.decision ? "decision = :dec, decidedVia = :dvia, " : "") +
           "gsi1pk = :gpk, gsi1sk = :gsk, " +
           "useCount = if_not_exists(useCount, :zero) + :one, " +
           "grantedAt = if_not_exists(grantedAt, :now) " +
@@ -185,6 +189,9 @@ export class DynamoApprovalStore implements ApprovalStore {
           ":ge": input.goalEmbedding,
           ":ie": input.inputEmbedding ?? [],
           ":src": input.source ?? "explicit",
+          ...(input.decision
+            ? { ":dec": input.decision, ":dvia": input.decidedVia ?? "posttooluse" }
+            : {}),
           ":gpk": userGsiPk(input.scope.ownerSub),
           ":gsk": userGsiSk(grantedAt, input.fingerprintHash),
           ":zero": 0,
@@ -209,6 +216,7 @@ export class DynamoApprovalStore implements ApprovalStore {
       goalEmbedding: input.goalEmbedding,
       inputEmbedding: input.inputEmbedding ?? [],
       source: input.source ?? "explicit",
+      ...(input.decision ? { decision: input.decision, decidedVia: input.decidedVia } : {}),
       revokedAt: null,
       revokedBy: null,
     };

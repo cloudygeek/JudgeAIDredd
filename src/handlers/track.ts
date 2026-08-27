@@ -23,6 +23,7 @@ import {
 } from "../server-core.js";
 import { consumePendingApproval } from "../pending-approvals.js";
 import { embedAny } from "../ollama-client.js";
+import { DECISION_CAPTURE_ENABLED } from "../server-core.js";
 
 export async function handleTrack(req: IncomingMessage, res: ServerResponse) {
   const identity = await authenticateHookRequest(req, res);
@@ -39,6 +40,33 @@ export async function handleTrack(req: IncomingMessage, res: ServerResponse) {
   if (rejectInvalidSessionId(res, session_id)) return;
   if (!tool_name) {
     return json(res, 400, { error: "Missing tool_name" });
+  }
+
+  // Decision-capture path (PermissionDenied hook). The USER refused the
+  // permission prompt, so the tool never ran. Record the refusal as the
+  // call's outcome (paired by tool_use_id like the failure path) and drop
+  // the pending approval WITHOUT promoting — a refusal is anti-consent.
+  // Refusals never become ApprovalRecords: the approvals table feeds
+  // trust signals and a "no" must not enter that pool. Flag-off is a
+  // complete no-op so behaviour is byte-identical to pre-feature.
+  if (body.user_decision === "deny") {
+    if (!DECISION_CAPTURE_ENABLED) return json(res, 200, {});
+    try {
+      await tracker.recordUserDeny(
+        session_id,
+        tool_name,
+        (tool_input ?? {}) as Record<string, unknown>,
+        tool_use_id,
+        String(body.deny_reason ?? ""),
+      );
+    } catch (err) {
+      console.warn(
+        `  [${session_id.substring(0, 8)}] [DECISION] recordUserDeny failed:`,
+        (err as Error)?.message ?? err,
+      );
+    }
+    if (tool_use_id) consumePendingApproval(session_id, tool_use_id);
+    return json(res, 200, {});
   }
 
   // PostToolUseFailure path. The tool was allowed at PreToolUse but failed
@@ -160,6 +188,18 @@ export async function handleTrack(req: IncomingMessage, res: ServerResponse) {
               goalEmbedding: pending.goalEmbedding,
               inputEmbedding,
               source,
+              // Decision capture — label the consent kind. Tacit = the
+              // user accepted a native prompt; explicit = accepted a
+              // Dredd ask. "allow-always" arrives later via the
+              // snapshot-diff upgrade, never from this path.
+              ...(DECISION_CAPTURE_ENABLED
+                ? {
+                    decision: (source === "tacit" ? "allow-tacit" : "allow-once") as
+                      | "allow-tacit"
+                      | "allow-once",
+                    decidedVia: "posttooluse" as const,
+                  }
+                : {}),
             });
             console.log(
               `  [${session_id.substring(0, 8)}] [APPRV] learned (${source}): ${pending.summary}` +

@@ -647,6 +647,42 @@ export class CachedSessionStore implements SessionStore {
     });
   }
 
+  async recordUserDeny(
+    sessionId: string,
+    tool: string,
+    input: Record<string, unknown>,
+    toolUseId: string | null,
+    reason: string,
+  ): Promise<void> {
+    await this.backend.recordUserDeny(sessionId, tool, input, toolUseId, reason);
+    // Same cached-copy mirroring as recordToolFailure.
+    const s = await this.getOrLoad(sessionId);
+    const outcome = {
+      status: "user-denied" as const,
+      error: reason.slice(0, 2000),
+      at: new Date().toISOString(),
+    };
+    if (toolUseId) {
+      for (let i = s.toolHistory.length - 1; i >= 0; i--) {
+        if (s.toolHistory[i].toolUseId === toolUseId) {
+          s.toolHistory[i].outcome = outcome;
+          return;
+        }
+      }
+    }
+    s.toolHistory.push({
+      turnNumber: s.currentTurn,
+      tool,
+      input,
+      decision: "deny",
+      similarity: null,
+      timestamp: outcome.at,
+      toolUseId: toolUseId ?? null,
+      stage: "user-denied",
+      outcome,
+    });
+  }
+
   async recordHijackStrike(
     sessionId: string,
     threshold: number,

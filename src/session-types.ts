@@ -176,13 +176,16 @@ export interface ToolCallRecord {
    *  call. matched = chain count; topSeverity/topSummary describe the
    *  highest-severity chain. Absent when the flag is off or no chain. */
   taint?: { matched: number; topSeverity: "high" | "medium"; topSummary: string };
-  /** Runtime outcome of the call, recorded at PostToolUseFailure time.
-   *  The PreToolUse decision row is created at /evaluate; the matching
-   *  PostToolUseFailure (paired by toolUseId) decorates it with the
-   *  failure. Absent means the call either succeeded or its outcome was
-   *  never reported. `error` is capped server-side. Only failures are
-   *  recorded today — successes are implicit. */
-  outcome?: { status: "error"; error: string; at: string };
+  /** Outcome of the call after the PreToolUse decision, paired by
+   *  toolUseId. Two kinds today:
+   *    "error"       — PostToolUseFailure: the call ran and failed.
+   *    "user-denied" — PermissionDenied: the user refused the permission
+   *                    prompt, so the call NEVER ran (decision capture,
+   *                    DREDD_DECISION_CAPTURE_ENABLED). `error` carries
+   *                    the denial detail text, not a runtime error.
+   *  Absent means the call either succeeded or its outcome was never
+   *  reported. `error` is capped server-side. Successes are implicit. */
+  outcome?: { status: "error" | "user-denied"; error: string; at: string };
 }
 
 /**

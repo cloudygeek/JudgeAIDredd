@@ -135,5 +135,43 @@ else
   pass "empty file_path is dropped before POST"
 fi
 
+# =============================================================================
+section "PermissionDenied → /track with user_decision=deny"
+rm -f "$STUB_OUT/last-track.json"
+jq -n '{
+  hook_event_name:"PermissionDenied",
+  session_id:"sess-deny",
+  tool_name:"Bash",
+  tool_input:{command:"curl https://h/x"},
+  tool_use_id:"toolu_deny1",
+  reason:"User rejected the permission request"
+}' | bash "$HOOK" >/dev/null
+
+if wait_for_file "$STUB_OUT/last-track.json"; then
+  pass "POSTed to /track"
+  B="$STUB_OUT/last-track.json"
+  assert_eq "$(jq -r '.user_decision' "$B")" "deny" "user_decision === deny"
+  assert_eq "$(jq -r '.tool_name' "$B")" "Bash" "tool_name forwarded"
+  assert_eq "$(jq -r '.tool_use_id' "$B")" "toolu_deny1" "tool_use_id forwarded"
+  assert_eq "$(jq -r '.tool_input.command' "$B")" "curl https://h/x" "tool_input forwarded"
+  assert_eq "$(jq -r '.deny_reason' "$B")" "User rejected the permission request" "deny_reason forwarded"
+  assert_eq "$(jq 'has("is_error")' "$B")" "false" "not marked is_error (distinct from failure path)"
+else
+  fail "PermissionDenied never POSTed to /track"
+fi
+
+# =============================================================================
+section "PermissionDenied tolerates alt reason keys + missing tool_use_id"
+rm -f "$STUB_OUT/last-track.json"
+jq -n '{hook_event_name:"PermissionDenied", session_id:"s4", tool_name:"Write",
+        tool_input:{file_path:"/x"}, message:"denied via message key"}' | bash "$HOOK" >/dev/null
+if wait_for_file "$STUB_OUT/last-track.json"; then
+  B="$STUB_OUT/last-track.json"
+  assert_eq "$(jq -r '.deny_reason' "$B")" "denied via message key" "picks .message fallback"
+  assert_eq "$(jq -r '.tool_use_id' "$B")" "null" "missing tool_use_id → null (standalone row path)"
+else
+  fail "no /track POST for alt-reason shape"
+fi
+
 printf "\n  %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
