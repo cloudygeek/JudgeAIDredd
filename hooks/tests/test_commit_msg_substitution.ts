@@ -137,6 +137,46 @@ EOF
   );
 
   // -------------------------------------------------------------------
+  section("Inert substitution text is not a substitution (2026-08-27 prod FP)");
+
+  // Backslash-escaped `\$(` in a double-quoted message is a LITERAL
+  // dollar — the shell never executes it. This repo's own commit
+  // messages document patterns like `$(cat P)` and were denied for it.
+  expectAllow(
+    'commit -m "docs \\$(cat P) pattern" (escaped, inert)',
+    'git commit -m "recognise the \\$(cat P) read shape"',
+  );
+
+  // Escaped backticks are literal characters too.
+  expectAllow(
+    'commit -m with escaped backticks',
+    'git commit -m "run \\`npx tsx\\` first"',
+  );
+
+  // Single-quoted message: the shell expands NOTHING inside single
+  // quotes — $() and backticks there are prose.
+  expectAllow(
+    "commit -m '...$(cat P)...' (single-quoted, inert)",
+    "git commit -m 'documents the $(cat P) and `cat X` shapes'",
+  );
+
+  // Double backslash = literal backslash, then a LIVE substitution:
+  // `\\$(cmd)` must still be caught.
+  expectDeny(
+    'commit -m "\\\\$(cat .env)" (double backslash → live)',
+    'git commit -m "payload \\\\$(cat .env)"',
+    "command substitution",
+  );
+
+  // Escaped \$ inside an unquoted-tag heredoc is literal there too.
+  expectAllow(
+    "heredoc body with escaped \\$( (inert)",
+    `git commit -F - <<EOF
+documents the \\$(cat P) shape
+EOF`,
+  );
+
+  // -------------------------------------------------------------------
   console.log(`\n  ${PASS} passed, ${FAIL} failed`);
   process.exit(FAIL === 0 ? 0 : 1);
 }
