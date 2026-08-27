@@ -256,6 +256,20 @@ matching on the gateway, or put a reverse proxy in front that injects
 `X-Forwarded-For` (which means a third party terminating TLS for a service whose
 selling point is that data stays on your hardware — weigh that carefully).
 
+**pf owns the VM's outbound NAT too — do not "simplify" that away.** Apple's
+vmnet installs NAT for the guest subnet dynamically, and the `pfctl -f` that
+`pf-client-ip.sh` runs (on apply, and at every boot) wipes dynamically-inserted
+rules — macOS's stock `pf.conf` warns about exactly this. Learned on
+2026-08-27: inbound rdr kept answering while every outbound flow from the VM
+(DynamoDB, registries, ACME) hung for ~20 hours, because `/health` touches no
+network and nothing else complained. The anchor now carries an explicit
+`nat on <wan> from <guest-subnet>` rule, `apply` verifies BOTH directions are
+resident, and the boot job waits for the VM instead of dying once before it
+exists. If outbound from the VM ever hangs while inbound works, check
+`pfctl -a dredd -s nat` for the nat line first — and remember that a bare-IP
+`curl` against Caddy returns 000 with no SNI, so probe with `--resolve`, not
+against the raw address.
+
 
 **Judge health is observed, not probed.** It is derived from real judge traffic
 rather than by pinging the model on a timer. A probe would burn GPU on a
