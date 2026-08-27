@@ -590,6 +590,7 @@ test_phase7d_cleanup_cli.sh         # hooks/dredd-cleanup.sh CLI                
 test_new_hook_events.sh             # PostToolUseFailure/PermissionDenied/Instr.   (22)
 test_decision_capture.ts            # user-deny + labels + allow-always upgrade    (28)
 test_sinks_v2.ts                    # aws/inline-http consent + curl-hash stability (29)
+test_resolver_gaps.ts               # URL-query/indirect-read principals, stability  (15)
 test_hook_bundle_selfcontained.ts   # baked hook has no external `source`           (8)
 test_transcript_summary_bounded.sh  # build_transcript_summary is O(1) in size      (6)
 test_integration_bundle_skill.ts    # bundle contents                               (3)

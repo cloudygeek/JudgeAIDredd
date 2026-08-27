@@ -99,11 +99,28 @@ export function tokenize(cmd: string): Statement[] {
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i];
 
-    if (quote) { if (ch === quote) quote = null; else buf += ch; continue; }
-    if (btick) { buf += ch; if (ch === "`") btick = false; continue; }
+    // Substitution consumption runs FIRST: a `$(…)` opened inside double
+    // quotes must keep paren-counting until it closes — if the quote
+    // branch ran first it would eat the closing paren as plain string
+    // content and the substitution would never terminate.
     if (subst > 0) { buf += ch; if (ch === "(") subst++; else if (ch === ")") subst--; continue; }
+    if (quote) {
+      // Inside DOUBLE quotes, `$(…)` opens its own quoting context in
+      // bash — `"X: $(python -c 'print(open("/k").read())')"` is one
+      // string whose inner double quotes belong to the substitution.
+      // Group it with paren counting (quote survives; when the subst
+      // closes we fall back into the same double-quoted string).
+      if (quote === '"' && ch === "$" && cmd[i + 1] === "(") { buf += "$("; subst = 1; i++; continue; }
+      if (ch === quote) quote = null; else buf += ch;
+      continue;
+    }
+    if (btick) { buf += ch; if (ch === "`") btick = false; continue; }
 
     if (ch === "$" && cmd[i + 1] === "(") { buf += "$("; subst = 1; i++; continue; }
+    // Process substitution `<(cmd)` groups like `$(cmd)` — without this,
+    // whitespace splits `<(cat P)` into `<(cat` + `P)` and no pattern can
+    // see the read (phase 3, resolver gaps).
+    if (ch === "<" && cmd[i + 1] === "(") { buf += "<("; subst = 1; i++; continue; }
     if (ch === "`") { buf += "`"; btick = true; continue; }
     if (ch === '"' || ch === "'") { quote = ch; continue; }
     if (ch === "\\" && i + 1 < cmd.length) { buf += cmd[++i]; continue; }
@@ -122,15 +139,25 @@ export function tokenize(cmd: string): Statement[] {
 
 // ---- source extraction -----------------------------------------------------
 
-/** A file path read as a secret via `$(cat P)`, `$(< P)`, `` `cat P` ``.
- *  Returns the path token(s) found in an arbitrary string. */
+/** A file path read as a secret via `$(cat P)`, `$(< P)` / `$(<P)`,
+ *  `` `cat P` ``, `<(cat P)` process substitution, or an interpreter
+ *  one-liner's `open("P").read()`. Returns the path token(s) found in an
+ *  arbitrary string.
+ *
+ *  The `open(…).read()` form is deliberately narrow (phase 3): a literal
+ *  quoted path immediately `.read()` — write-mode opens and computed
+ *  paths stay unmatched and fail safe. */
 function fileSubstPaths(s: string): string[] {
   const out: string[] = [];
-  const re = /(?:\$\(\s*(?:cat|<)\s+([^\s)]+)|`\s*cat\s+([^\s`]+))/g;
+  const re = /(?:[$<]\(\s*(?:cat\s+|<\s*)([^\s)]+)|`\s*cat\s+([^\s`]+))/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(s))) {
     const p = (m[1] ?? m[2] ?? "").replace(/^["']|["']$/g, "");
     if (p) out.push(p);
+  }
+  const openRe = /open\(\s*["']([^"']+)["']\s*\)\s*\.\s*read\s*\(/g;
+  while ((m = openRe.exec(s))) {
+    if (m[1]) out.push(m[1]);
   }
   return out;
 }
@@ -343,8 +370,14 @@ function principalsForCurl(
       out.push(...sourcesFromValue(body, varSource));
       // `@-` consumes stdin; the upstream cat (handled above) is the source.
     } else {
-      // A bare token may itself carry a substitution, e.g. `"$(cat p)"`.
+      // A bare token may itself carry a substitution, e.g. `"$(cat p)"` —
+      // including the URL itself: `curl "https://h/api?key=$(cat P)"`.
       for (const p of fileSubstPaths(t)) out.push({ kind: "file", id: p });
+      // …or reference a credential-assigned variable in the URL query
+      // (`KEY=$(cat P); curl "https://h/x?key=$KEY"`). Previously only
+      // header/body args resolved var refs, so a credential smuggled via
+      // the query string produced a principal-less pair (phase 3 gap).
+      out.push(...sourcesFromValue(t, varSource));
     }
   }
   return out;
