@@ -79,10 +79,10 @@ export interface ApprovalFingerprint {
 export function computeApprovalFingerprint(
   tool: string,
   input: Record<string, unknown>,
-  opts: { credentialConsent: boolean },
+  opts: { credentialConsent: boolean; sinksV2?: boolean },
 ): ApprovalFingerprint | null {
   if (opts.credentialConsent && tool === "Bash") {
-    const nf = fingerprintNetwork(String(input.command ?? ""));
+    const nf = fingerprintNetwork(String(input.command ?? ""), { sinksV2: opts.sinksV2 === true });
     if (nf) {
       return {
         hash: nf.hash,

@@ -783,6 +783,15 @@ export const CREDENTIAL_CONSENT_ENABLED =
   (process.env.DREDD_CREDENTIAL_CONSENT_ENABLED ?? "true").toLowerCase() === "true";
 console.log(`  [CONSENT] Credential→host consent: ${CREDENTIAL_CONSENT_ENABLED ? "ON" : "OFF"}`);
 
+// Sinks v2 (plan-consent-completion phase 2): extend the (principal,
+// target) consent resolver to aws-CLI calls (ambient identity →
+// service:region[:bucket]) and inline python/node/ruby HTTP one-liners
+// (literal host). Additive only — curl fingerprints are byte-identical
+// with the flag on or off, so existing approvals keep matching.
+export const CONSENT_SINKS_V2_ENABLED =
+  (process.env.DREDD_CONSENT_SINKS_V2_ENABLED ?? "false").toLowerCase() === "true";
+console.log(`  [CONSENT] Sinks v2 (aws + inline-http): ${CONSENT_SINKS_V2_ENABLED ? "ON" : "OFF"}`);
+
 // Decision capture (plan-consent-completion phase 1): record the user's
 // actual permission decision instead of inferring everything from
 // PostToolUse arrival. Gates the /track PermissionDenied branch and the

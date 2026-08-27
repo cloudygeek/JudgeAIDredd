@@ -32,6 +32,7 @@ import {
   PROVENANCE_TAINT_ENABLED,
   INSTRUCTIONS_EVIDENCE_ENABLED,
   CREDENTIAL_CONSENT_ENABLED,
+  CONSENT_SINKS_V2_ENABLED,
   credentialProvider,
   byotStore,
   TRUST_MODE_ENABLED,
@@ -354,6 +355,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     if (mode !== "interactive") return null; // only the consent mode uses approvals
     const fp = computeApprovalFingerprint(tool_name, tool_input ?? {}, {
       credentialConsent: CREDENTIAL_CONSENT_ENABLED,
+      sinksV2: CONSENT_SINKS_V2_ENABLED,
     });
     if (!fp) return null;
     const scope = {
@@ -678,6 +680,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       // from a denied prompt.
       const fp = computeApprovalFingerprint(tool_name, tool_input ?? {}, {
         credentialConsent: CREDENTIAL_CONSENT_ENABLED,
+        sinksV2: CONSENT_SINKS_V2_ENABLED,
       });
       let learningNote = "";
       if (fp && tool_use_id) {
@@ -764,6 +767,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
     ) {
       const fp = computeApprovalFingerprint(tool_name, tool_input ?? {}, {
         credentialConsent: CREDENTIAL_CONSENT_ENABLED,
+        sinksV2: CONSENT_SINKS_V2_ENABLED,
       });
       if (fp) {
         const freshest = activeIntents && activeIntents.length > 0

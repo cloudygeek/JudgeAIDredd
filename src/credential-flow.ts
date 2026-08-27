@@ -35,12 +35,19 @@ export type CredentialSource =
   | { kind: "file"; id: string }
   | { kind: "cookie"; id: string }
   | { kind: "basic"; id: string }
-  | { kind: "value"; id: string };
+  | { kind: "value"; id: string }
+  /** Sinks v2: the ambient AWS identity an `aws` CLI call runs as —
+   *  `profile:<name>` (from --profile / AWS_PROFILE) or `env:default`.
+   *  Resolved syntactically; no file is read and none is claimed. A
+   *  distinct kind so it can never merge with file-source principals. */
+  | { kind: "aws"; id: string };
 
 export interface NetworkAccess {
   /** curl and wget both normalise to "curl" — the transport doesn't
-   *  change the (principal, target) identity. */
-  verb: "curl";
+   *  change the (principal, target) identity. Sinks v2 adds "aws"
+   *  (target = service:region[:bucket], not a hostname) and
+   *  "inline-http" (an HTTPS literal inside `python -c` / `node -e`). */
+  verb: "curl" | "aws" | "inline-http";
   host: string | null;
   /** Sorted + deduped credential sources reaching this sink. */
   principals: CredentialSource[];
@@ -349,7 +356,115 @@ function dedupeSort(sources: CredentialSource[]): CredentialSource[] {
   return [...seen.values()].sort((a, b) => sourceKey(a).localeCompare(sourceKey(b)));
 }
 
-export function analyzeCommand(command: string): CommandFlow {
+// ---- sinks v2: aws CLI -----------------------------------------------------
+
+/** Global aws-CLI flags whose value is the NEXT token — skipped when
+ *  looking for the positional service/operation. */
+const AWS_VALUE_FLAGS = new Set([
+  "--profile", "--region", "--endpoint-url", "--output", "--query",
+  "--cli-connect-timeout", "--cli-read-timeout", "--color", "--ca-bundle",
+]);
+
+/** (principal, target) of an `aws <service> <op>` segment, sinks v2.
+ *
+ *  Principal = the ambient AWS identity, resolved syntactically:
+ *  `profile:<name>` from --profile (or an AWS_PROFILE assignment in the
+ *  command), else `env:default`. Target = `<service>:<region>` — region
+ *  from --region, else an AWS_REGION/AWS_DEFAULT_REGION assignment, else
+ *  "default" — plus the bucket for S3 (`s3:<region>:<bucket>`): bucket is
+ *  the blast-radius unit there. Other services deliberately get NO
+ *  per-resource component — per-resource splintering is the re-ask
+ *  disease this feature treats. */
+function awsAccess(
+  argv: string[],
+  varValue: Map<string, string>,
+): NetworkAccess | null {
+  let profile: string | null = null;
+  let region: string | null = null;
+  let service: string | null = null;
+  let bucket: string | null = null;
+
+  for (let i = 1; i < argv.length; i++) {
+    const t = argv[i];
+    if (t === "--profile" && i + 1 < argv.length) { profile = expandLiteral(argv[++i], varValue); continue; }
+    if (t === "--region" && i + 1 < argv.length) { region = expandLiteral(argv[++i], varValue); continue; }
+    if (t === "--bucket" && i + 1 < argv.length) { bucket = expandLiteral(argv[++i], varValue); continue; }
+    if (AWS_VALUE_FLAGS.has(t)) { i++; continue; }
+    if (t.startsWith("-")) continue;
+    if (service === null) { service = t.toLowerCase(); continue; }
+    // s3 URIs anywhere in the args pin the bucket.
+    const e = expandLiteral(t, varValue);
+    const s3m = /^s3:\/\/([^/\s]+)/.exec(e);
+    if (s3m && !bucket) bucket = s3m[1];
+  }
+  if (!service) return null;
+
+  profile = profile ?? varValue.get("AWS_PROFILE") ?? null;
+  region = region ?? varValue.get("AWS_REGION") ?? varValue.get("AWS_DEFAULT_REGION") ?? null;
+
+  // An unresolved `$` in any identity component is refused for the same
+  // reason hostOf refuses `$` hostnames: a template is not a target.
+  const dirty = (v: string | null) => v !== null && /[$`]/.test(v);
+  if (dirty(profile) || dirty(region) || dirty(bucket) || /[$`]/.test(service)) return null;
+
+  const isS3 = service === "s3" || service === "s3api";
+  const target = isS3 && bucket
+    ? `s3:${region ?? "default"}:${bucket}`
+    : `${service}:${region ?? "default"}`;
+  const principal: CredentialSource = {
+    kind: "aws",
+    id: profile ? `profile:${profile}` : "env:default",
+  };
+  return { verb: "aws", host: target, principals: [principal] };
+}
+
+// ---- sinks v2: inline HTTP (python -c / node -e / ruby -e) -----------------
+
+const INLINE_INTERPRETERS = new Set(["python", "python3", "node", "ruby"]);
+const INLINE_CODE_FLAGS = new Set(["-c", "-e"]);
+const HTTPS_LITERAL_RE = /https?:\/\/[^\s"'`\\)>,;]+/g;
+
+/** First pinnable HTTPS-literal host inside an interpreter one-liner's
+ *  program text. Literal extraction only — the program is never parsed;
+ *  a host we cannot see fails safe to the legacy fingerprint (re-ask). */
+function inlineHttpAccess(
+  argv: string[],
+  upstreamCatPaths: string[],
+  varSource: Map<string, CredentialSource>,
+): NetworkAccess | null {
+  let program: string | null = null;
+  for (let i = 1; i < argv.length; i++) {
+    if (INLINE_CODE_FLAGS.has(argv[i]) && i + 1 < argv.length) { program = argv[i + 1]; break; }
+  }
+  if (!program) return null;
+
+  let host: string | null = null;
+  let m: RegExpExecArray | null;
+  HTTPS_LITERAL_RE.lastIndex = 0;
+  while ((m = HTTPS_LITERAL_RE.exec(program))) {
+    const h = hostOf(m[0]);
+    // hostOf refuses `$`-contaminated hostnames, but interpreter string
+    // templates use other markers — a Python f-string `https://{host}/x`
+    // parses to hostname "{host}". Only a plain DNS-charset hostname is
+    // a literal we can pin; anything else fails safe to the legacy path.
+    if (h && /^[a-z0-9.-]+$/.test(h)) { host = h; break; }
+  }
+  if (!host) return null;
+
+  const principals: CredentialSource[] = [];
+  for (const p of upstreamCatPaths) principals.push({ kind: "file", id: p });
+  for (const p of fileSubstPaths(program)) principals.push({ kind: "file", id: p });
+  principals.push(...sourcesFromValue(program, varSource));
+  return { verb: "inline-http", host, principals: dedupeSort(principals) };
+}
+
+export interface AnalyzeOpts {
+  /** DREDD_CONSENT_SINKS_V2_ENABLED — aws CLI + inline-HTTP sinks. Off
+   *  (default) is byte-identical to the curl-only analysis. */
+  sinksV2?: boolean;
+}
+
+export function analyzeCommand(command: string, opts: AnalyzeOpts = {}): CommandFlow {
   const statements = tokenize(String(command ?? ""));
   const { varSource, varValue } = collectAssignments(statements);
   const network: NetworkAccess[] = [];
@@ -373,6 +488,12 @@ export function analyzeCommand(command: string): CommandFlow {
         // `$`, so `url` is a fully-resolved literal by this point.
         const host = url ? hostOf(url) : null;
         network.push({ verb: "curl", host, principals: dedupeSort(principals) });
+      } else if (opts.sinksV2 && verb === "aws") {
+        const a = awsAccess(argv, varValue);
+        if (a) network.push(a);
+      } else if (opts.sinksV2 && INLINE_INTERPRETERS.has(verb)) {
+        const a = inlineHttpAccess(argv, upstreamCatPaths, varSource);
+        if (a) network.push(a);
       } else if (verb === "cat") {
         for (let j = 1; j < argv.length; j++) {
           if (!argv[j].startsWith("-")) upstreamCatPaths.push(argv[j]);
@@ -393,6 +514,10 @@ export const CREDENTIAL_FP_VERSION = 2;
 export interface NetworkFingerprint {
   shape:
     | { verb: "curl"; host: string; principals: string[] }
+    /** Sinks v2. ADDITIVE verbs only — the curl shape above is
+     *  byte-identical with the flag on or off, so every pre-existing
+     *  curl approval keeps matching (no CREDENTIAL_FP_VERSION bump). */
+    | { verb: "aws" | "inline-http"; host: string; principals: string[] }
     | { verb: "ssh" | "scp" | "rsync"; host: string; cmd: string };
   summary: string;
   /** Stable pre-image of the hash — stored as the approval's
@@ -412,18 +537,24 @@ function stableStringify(v: unknown): string {
  *  call that carries credentials (the one transmitting a principal);
  *  falls back to the first call that resolves a host. Returns null when
  *  no host resolves (caller treats as "no network approval to record"). */
-export function fingerprintNetwork(command: string): NetworkFingerprint | null {
-  const { network } = analyzeCommand(command);
+export function fingerprintNetwork(
+  command: string,
+  opts: AnalyzeOpts = {},
+): NetworkFingerprint | null {
+  const { network } = analyzeCommand(command, opts);
   const access =
     network.find((n) => n.host && n.principals.length > 0) ??
     network.find((n) => n.host) ??
     null;
   if (access && access.host) {
     const principals = access.principals.map(sourceKey);
-    const shape = { verb: "curl" as const, host: access.host, principals };
-    const summary = principals.length
-      ? `curl to ${access.host} with credential ${principals.join(", ")}`
-      : `curl to ${access.host} (no credential)`;
+    const shape = { verb: access.verb, host: access.host, principals };
+    const summary =
+      access.verb === "aws"
+        ? `aws ${access.host} as ${principals.join(", ") || "env:default"}`
+        : principals.length
+          ? `${access.verb} to ${access.host} with credential ${principals.join(", ")}`
+          : `${access.verb} to ${access.host} (no credential)`;
     return finalizeNetworkFingerprint(shape, summary);
   }
 
