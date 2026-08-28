@@ -350,6 +350,46 @@ export class DynamoSessionStore implements SessionStore {
    * META writers on the same session is rare (it requires failover);
    * 5 retries handles bursts without unbounded looping.
    */
+  /**
+   * SET fragments that self-heal a META created by a bare UpdateItem
+   * upsert with the listing keys `putMeta` would have stamped.
+   *
+   * putMeta is the ONLY writer of gsi1pk/gsi1sk/startedAt, and it only
+   * runs when META does not exist. When a session's FIRST server contact
+   * is /evaluate (hooks enabled mid-session, container restart, adopted
+   * session), the first META write is an aggregate ADD — which upserts a
+   * KEYLESS META; putMeta's attribute_not_exists conditional then never
+   * fires and the session is invisible to the GSI listing forever.
+   * Found live 2026-08-28: a session with 561 judged tool calls absent
+   * from /api/sessions.
+   *
+   * `if_not_exists` means an existing value always wins — a correctly
+   * created session is untouched, and the clauses are idempotent and
+   * free (they ride writes that were happening anyway). A repaired
+   * session lists under its first post-fix write time; its true start
+   * was never recorded, and approximately-now beats invisible.
+   */
+  private listingRepair(
+    sessionId: string,
+    skip?: Set<string>,
+  ): { sets: string[]; values: Record<string, any> } {
+    const now = new Date().toISOString();
+    const all: Array<[string, string, any]> = [
+      ["gsi1pk", ":rGpk", GSI_PK],
+      ["gsi1sk", ":rNow", now],
+      ["startedAt", ":rNow", now],
+      ["sessionId", ":rSid", sessionId],
+    ];
+    const sets: string[] = [];
+    const values: Record<string, any> = {};
+    for (const [attr, placeholder, v] of all) {
+      if (skip?.has(attr)) continue;
+      sets.push(`${attr} = if_not_exists(${attr}, ${placeholder})`);
+      values[placeholder] = v;
+    }
+    return { sets, values };
+  }
+
   private async updateMeta(
     sessionId: string,
     update: Record<string, any>,
@@ -377,6 +417,12 @@ export class DynamoSessionStore implements SessionStore {
         values[nv] = v;
         sets.push(`${nk} = ${nv}`);
       }
+      // Listing-key self-heal — see listingRepair. Skipped for any
+      // attribute this update already assigns (double assignment is a
+      // Dynamo error; putMeta's conflict-fallback passes startedAt).
+      const repair = this.listingRepair(sessionId, new Set(Object.keys(update)));
+      sets.push(...repair.sets);
+      Object.assign(values, repair.values);
 
       try {
         await this.client.send(
@@ -1871,12 +1917,17 @@ export class DynamoSessionStore implements SessionStore {
           const addExpr = decision === "deny"
             ? "ADD aggToolCalls :one, aggDenied :one"
             : "ADD aggToolCalls :one";
+          // Listing-key self-heal: THIS is the write that creates a
+          // keyless META when /evaluate precedes /intent (see
+          // listingRepair). The clauses make even a pure-evaluate
+          // session appear in the dashboard list immediately.
+          const repair = this.listingRepair(sessionId);
           await this.client.send(
             new UpdateCommand({
               TableName: this.tableName,
               Key: { pk: pk(sessionId), sk: "META" },
-              UpdateExpression: addExpr,
-              ExpressionAttributeValues: { ":one": 1 },
+              UpdateExpression: `${addExpr} SET ${repair.sets.join(", ")}`,
+              ExpressionAttributeValues: { ":one": 1, ...repair.values },
             }),
           );
         } catch (err) {
@@ -1942,13 +1993,16 @@ export class DynamoSessionStore implements SessionStore {
     //   1. Atomic increment (always wins)
     //   2. If we just crossed the threshold, set lockedHijacked=true
     //      conditionally so we don't overwrite an existing lock.
+    const hijackRepair = this.listingRepair(sessionId);
     const inc = await this.client.send(
       new UpdateCommand({
         TableName: this.tableName,
         Key: { pk: pk(sessionId), sk: "META" },
-        UpdateExpression: "ADD hijackStrikes :one SET #ttl = :ttl",
+        // hijack strikes can also be the first META write (a deny on an
+        // adopted session) — carry the listing-key self-heal.
+        UpdateExpression: `ADD hijackStrikes :one SET #ttl = :ttl, ${hijackRepair.sets.join(", ")}`,
         ExpressionAttributeNames: { "#ttl": "ttl" },
-        ExpressionAttributeValues: { ":one": 1, ":ttl": ttl() },
+        ExpressionAttributeValues: { ":one": 1, ":ttl": ttl(), ...hijackRepair.values },
         ReturnValues: "ALL_NEW",
       }),
     );
@@ -2180,12 +2234,13 @@ export class DynamoSessionStore implements SessionStore {
       // same path (both could ADD once) — acceptable inflation for a dashboard
       // hint; the distinct-file count is not a security invariant.
       try {
+        const fileRepair = this.listingRepair(sessionId);
         await this.client.send(
           new UpdateCommand({
             TableName: this.tableName,
             Key: { pk: pk(sessionId), sk: "META" },
-            UpdateExpression: "ADD aggFiles :one",
-            ExpressionAttributeValues: { ":one": 1 },
+            UpdateExpression: `ADD aggFiles :one SET ${fileRepair.sets.join(", ")}`,
+            ExpressionAttributeValues: { ":one": 1, ...fileRepair.values },
           }),
         );
       } catch (err) {
@@ -2369,12 +2424,13 @@ export class DynamoSessionStore implements SessionStore {
     // Mirror the latest classification onto META so the dashboard list
     // can show the badge without reading the METRIC# items. Best-effort.
     try {
+      const clsRepair = this.listingRepair(sessionId);
       await this.client.send(
         new UpdateCommand({
           TableName: this.tableName,
           Key: { pk: pk(sessionId), sk: "META" },
-          UpdateExpression: "SET lastClassification = :c",
-          ExpressionAttributeValues: { ":c": classification },
+          UpdateExpression: `SET lastClassification = :c, ${clsRepair.sets.join(", ")}`,
+          ExpressionAttributeValues: { ":c": classification, ...clsRepair.values },
         }),
       );
     } catch (err) {

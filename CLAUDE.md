@@ -557,6 +557,7 @@ test_lightweight_sessions.ts        # list-aggregate maintenance on META        
 test_phase2b_intent.ts              # store + tracker round-trip                   (17)
 test_posttoolfailure.ts             # recordToolFailure decorate/fallback/cap      (16)
 test_backfill_coordination.ts       # transcript backfill of coordination turns    (12)
+test_listing_repair.ts              # META listing-key self-heal (GSI visibility)   (9)
 test_taint_field.ts                 # provenance field round-trip                   (4)
 
 # --- approvals + trust ----------------------------------------------------
