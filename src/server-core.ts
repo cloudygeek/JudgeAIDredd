@@ -987,6 +987,60 @@ export async function authenticateHookRequest(
   };
 }
 
+/**
+ * Non-writing key check for OPTIONAL-auth endpoints (health-payload
+ * redaction). True only when a presented Bearer key validates (or
+ * AUTH_MODE=off — local dev trusts everything). Unlike
+ * authenticateHookRequest it NEVER writes a 401: health must answer 200
+ * to the load balancer and the dashboard badge regardless of auth.
+ */
+export async function requestHasValidApiKey(req: IncomingMessage): Promise<boolean> {
+  if (AUTH_MODE === "off") return true;
+  const token = extractBearer(req);
+  if (!token) return false;
+  const validated = await apiKeys.validateKey(token).catch(() => null);
+  return !!validated;
+}
+
+/**
+ * Health payload with information-disclosure control (2026-08-28).
+ *
+ * The full payload carries the judge model, backend, and every pipeline
+ * threshold — the exact tuning an attacker needs to calibrate evasion
+ * offline. Unauthenticated callers (the LB check, the dashboard badge,
+ * anonymous curl) now get the minimal shape: liveness, version,
+ * `config.mode` + `activeSessions` (the badge reads exactly those), and
+ * `judge.status` (what operators alert on) — never the model name,
+ * thresholds, or full CONFIG. A valid Bearer key restores the full
+ * payload, which is what the documented operator curls already send.
+ */
+export function redactHealthPayload(
+  full: boolean,
+  p: {
+    version: string;
+    role: string;
+    config: Record<string, unknown>;
+    judge: { status?: string } & object;
+    activeSessions: number;
+    uptimeSeconds?: number;
+    intentMode?: unknown;
+    intentClassifierLlmEnabled?: unknown;
+  },
+): Record<string, unknown> {
+  const degraded = p.judge?.status === "down" || p.judge?.status === "degraded";
+  if (full) return { status: "ok", degraded, ...p };
+  return {
+    status: "ok",
+    degraded,
+    version: p.version,
+    role: p.role,
+    activeSessions: p.activeSessions,
+    ...(p.uptimeSeconds !== undefined ? { uptimeSeconds: p.uptimeSeconds } : {}),
+    judge: { status: p.judge?.status ?? "unknown" },
+    config: { mode: p.config?.mode },
+  };
+}
+
 export function authStageForFeed(identity: RequestIdentity): string | null {
   if (!identity.keyPresented) return "unauthenticated";
   if (!identity.keyValid) return "bad-key";

@@ -32,6 +32,8 @@ import {
   flushLogs,
   AUTH_MODE,
   authenticateHookRequest,
+  requestHasValidApiKey,
+  redactHealthPayload,
   getClientIp,
   type TrustMode,
 } from "./server-core.js";
@@ -372,15 +374,13 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
       // turn a degraded service into no service at all. Report it in the body
       // and let monitoring decide what to do about it.
       const jh = getJudgeHealth();
-      return json(res, 200, {
-        status: "ok",
-        degraded: jh.status === "down" || jh.status === "degraded",
+      return json(res, 200, redactHealthPayload(await requestHasValidApiKey(req), {
         version: pkg.version,
         role: "hook",
-        config: CONFIG,
-        activeSessions: registeredSessions.size,
+        config: CONFIG as unknown as Record<string, unknown>,
         judge: jh,
-      });
+        activeSessions: registeredSessions.size,
+      }));
     }
 
     // /api/health — same payload, but the dashboard browser polls this
@@ -391,18 +391,16 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
       if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
       const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
       const jhApi = getJudgeHealth();
-      return json(res, 200, {
-        status: "ok",
-        degraded: jhApi.status === "down" || jhApi.status === "degraded",
+      return json(res, 200, redactHealthPayload(await requestHasValidApiKey(req), {
         version: pkg.version,
         role: "hook",
-        config: CONFIG,
+        config: CONFIG as unknown as Record<string, unknown>,
         judge: jhApi,
         activeSessions: registeredSessions.size,
         uptimeSeconds: Math.floor(process.uptime()),
         intentMode: INTENT_HISTORY_MODE,
         intentClassifierLlmEnabled: INTENT_CLASSIFIER_LLM_ENABLED,
-      });
+      }));
     }
 
     // /api/bedrock-metrics — in-process cost & cache-hit visibility.
