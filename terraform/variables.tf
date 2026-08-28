@@ -332,13 +332,6 @@ locals {
   // principal alone (correct for post-Aug-2022 regions).
   elb_account_id = var.elb_account_id_override != "" ? var.elb_account_id_override : lookup(local.elb_account_ids, var.primary_region, null)
 
-  // Public subnets the ALB uses when internet-facing: the existing ones
-  // plus the one we add (for the second AZ ALB needs).
-  alb_public_subnet_ids = var.alb_internet_facing ? concat(
-    var.existing_public_subnet_ids,
-    [aws_subnet.alb_extra[0].id]
-  ) : []
-
-  // ALB subnets: public when internet-facing, private when internal.
-  alb_subnet_ids = var.alb_internet_facing ? local.alb_public_subnet_ids : var.existing_private_subnet_ids
+  // (alb_public_subnet_ids / alb_subnet_ids removed 2026-08-28 with the
+  // compute-tier decommission — see decommissioned-2026-08-28/.)
 }

@@ -8,6 +8,17 @@ Judge AI Dredd is a PreToolUse defence system that intercepts tool calls from Cl
 
 ## Production endpoints
 
+> **DECOMMISSIONED 2026-08-28.** The AWS compute tier (ALB, ECS services,
+> ECR, task IAM, Clerk secrets, the `dredd-*.acta.io` DNS records + ACM
+> cert) was destroyed via targeted `tofu destroy` — Dredd runs on the
+> self-hosted Studio stack (`hook.soteriacyber.com` /
+> `dredd.soteriacyber.com`, see `selfhost/`). KEPT and still in active
+> use by the Studio stack: the five `jaid-*` DynamoDB tables, the BYOT
+> KMS key, the CloudWatch log groups, and the ALB access-log S3 bucket.
+> The destroyed resources' `.tf` files live in
+> `terraform/decommissioned-2026-08-28/` — move them back and re-apply
+> to resurrect. The table below describes the DECOMMISSIONED stack.
+
 The deployed prod stack lives in AWS account `110745800154` (eu-west-1) and the `acta.io` Route53 zone (`Z3ASY8UIU7J3MV`):
 
 | Role | URL | Purpose |
