@@ -108,6 +108,7 @@ export class InMemorySessionStore implements SessionStore {
           : null,
         clientIp: s.clientIp ?? null,
         userPermissions: s.userPermissions ?? null,
+        projectRoot: s.projectRoot ?? null,
       });
     }
     // Newest-first by startedAt

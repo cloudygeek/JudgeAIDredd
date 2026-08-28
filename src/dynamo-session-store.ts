@@ -489,6 +489,7 @@ export class DynamoSessionStore implements SessionStore {
       lastClassification: m.lastClassification ?? null,
       clientIp: m.clientIp ?? null,
       userPermissions: m.userPermissions ?? null,
+      projectRoot: m.projectRoot ?? null,
     }));
   }
 

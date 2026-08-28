@@ -135,6 +135,7 @@ async function main() {
   ok("entry.summary.turns = currentTurn", entry.summary.turns === 4);
   ok("entry.turnMetrics carries last classification", entry.turnMetrics[0].classification === "scope-creep");
   ok("entry.clientIp + userPermissions preserved", entry.clientIp === "9.9.9.9" && entry.userPermissions.allow.length === 1);
+  ok("entry.projectRoot preserved for the list row", "projectRoot" in entry);
   ok("entry has NO full toolCalls/filesWritten arrays", entry.toolCalls === undefined && entry.filesWritten === undefined);
 
   console.log(`\n${FAIL === 0 ? c.green + "ALL PASS" : c.red + FAIL + " FAILED"}${c.off} (${PASS}/${PASS + FAIL})`);

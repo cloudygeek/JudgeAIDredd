@@ -83,6 +83,7 @@ export function sessionListEntry(s: SessionSummary): Record<string, unknown> {
     userPermissions: s.userPermissions ?? null,
     ownerSub: s.ownerSub ?? null,
     ownerEmail: s.ownerEmail ?? null,
+    projectRoot: s.projectRoot ?? null,
   };
 }
 

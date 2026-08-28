@@ -62,6 +62,9 @@ export interface SessionSummary {
   ownerSub?: string | null;
   /** Display convenience — same source as ownerSub. */
   ownerEmail?: string | null;
+  /** Working directory the session runs in (from /intent cwd). Shown
+   *  under the task in the dashboard session list. */
+  projectRoot?: string | null;
   /** Running aggregates maintained on the session META row so the
    *  dashboard list view renders without a full per-session
    *  reconstruction. Optional + default-0 for back-compat with rows
