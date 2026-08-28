@@ -423,6 +423,10 @@ export class DynamoSessionStore implements SessionStore {
       const repair = this.listingRepair(sessionId, new Set(Object.keys(update)));
       sets.push(...repair.sets);
       Object.assign(values, repair.values);
+      if (!("lastActivityAt" in update)) {
+        sets.push("lastActivityAt = :actNow");
+        values[":actNow"] = new Date().toISOString();
+      }
 
       try {
         await this.client.send(
@@ -490,6 +494,7 @@ export class DynamoSessionStore implements SessionStore {
       clientIp: m.clientIp ?? null,
       userPermissions: m.userPermissions ?? null,
       projectRoot: m.projectRoot ?? null,
+      lastActivityAt: m.lastActivityAt ?? null,
     }));
   }
 
@@ -1927,8 +1932,10 @@ export class DynamoSessionStore implements SessionStore {
             new UpdateCommand({
               TableName: this.tableName,
               Key: { pk: pk(sessionId), sk: "META" },
-              UpdateExpression: `${addExpr} SET ${repair.sets.join(", ")}`,
-              ExpressionAttributeValues: { ":one": 1, ...repair.values },
+              // lastActivityAt is a plain SET (not if_not_exists): every
+              // judged tool call refreshes it — the liveness signal.
+              UpdateExpression: `${addExpr} SET lastActivityAt = :actNow, ${repair.sets.join(", ")}`,
+              ExpressionAttributeValues: { ":one": 1, ":actNow": new Date().toISOString(), ...repair.values },
             }),
           );
         } catch (err) {

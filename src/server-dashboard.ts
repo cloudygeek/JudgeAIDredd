@@ -84,7 +84,25 @@ export function sessionListEntry(s: SessionSummary): Record<string, unknown> {
     ownerSub: s.ownerSub ?? null,
     ownerEmail: s.ownerEmail ?? null,
     projectRoot: s.projectRoot ?? null,
+    lastActivityAt: s.lastActivityAt ?? null,
   };
+}
+
+/** Activity-based liveness (2026-08-28). endedAt is a one-shot
+ *  fire-and-forget that frequently never lands (crashed terminal, server
+ *  down at exit, the AWS-era cutover), so sessions haunted the live view
+ *  for weeks. Live = no endedAt AND activity (lastActivityAt, falling
+ *  back to startedAt for pre-field rows) within the window. Stale
+ *  never-ended sessions fold into the "Include ended" view instead. */
+export const STALE_SESSION_MS = 48 * 60 * 60 * 1000;
+export function sessionIsLive(
+  s: { endedAt?: string | null; lastActivityAt?: string | null; startedAt?: string | null },
+  nowMs: number = Date.now(),
+): boolean {
+  if (s.endedAt) return false;
+  const last = s.lastActivityAt ?? s.startedAt;
+  if (!last) return false;
+  return nowMs - new Date(last).getTime() < STALE_SESSION_MS;
 }
 
 // Short-TTL cache for GET /api/sessions. The dashboard UI polls this every
@@ -211,7 +229,7 @@ const server = createServer(async (req, res) => {
       const visible = principal.isAdmin
         ? all
         : all.filter((s) => s.ownerSub === principal.userId);
-      const selected = liveOnly ? visible.filter((s) => !s.endedAt) : visible;
+      const selected = liveOnly ? visible.filter((s) => sessionIsLive(s)) : visible;
 
       const liveLogs: Record<string, unknown>[] = selected.map(sessionListEntry);
       const liveIds = new Set(liveLogs.map((s) => s.sessionId as string));

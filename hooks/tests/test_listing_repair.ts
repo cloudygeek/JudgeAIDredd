@@ -191,6 +191,38 @@ async function main() {
     m?.aggToolCalls === 562 ? pass("existing aggregates preserved (561→562)") : fail(`agg=${m?.aggToolCalls}`);
   }
 
+  // =======================================================================
+  section("lastActivityAt refreshes on every judged call");
+  {
+    const doc = new FakeDoc();
+    const store = new DynamoSessionStore({ tableName: "t", client: doc as any });
+    await store.recordToolCall("s-act", "Bash", { command: "a" }, "allow", 0.9, "toolu_a1", {});
+    const t1 = META(doc, "s-act")?.lastActivityAt;
+    t1 ? pass("stamped on first call") : fail("missing after first call");
+    await new Promise((r) => setTimeout(r, 5));
+    await store.recordToolCall("s-act", "Bash", { command: "b" }, "allow", 0.9, "toolu_a2", {});
+    const t2 = META(doc, "s-act")?.lastActivityAt;
+    t2 && t2 > t1 ? pass("REFRESHED on the next call (plain SET, not if_not_exists)") : fail(`t1=${t1} t2=${t2}`);
+  }
+
+  // =======================================================================
+  section("sessionIsLive: activity-based liveness");
+  {
+    const { sessionIsLive, STALE_SESSION_MS } = await import("../../src/server-dashboard.js");
+    const now = Date.now();
+    const iso = (msAgo: number) => new Date(now - msAgo).toISOString();
+    sessionIsLive({ endedAt: null, lastActivityAt: iso(60_000) }, now)
+      ? pass("recent activity → live") : fail("recent marked stale");
+    !sessionIsLive({ endedAt: iso(60_000), lastActivityAt: iso(30_000) }, now)
+      ? pass("endedAt always wins → not live") : fail("ended shown live");
+    !sessionIsLive({ endedAt: null, lastActivityAt: iso(STALE_SESSION_MS + 1000) }, now)
+      ? pass("stale never-ended → folds out of live view") : fail("stale shown live");
+    sessionIsLive({ endedAt: null, lastActivityAt: null, startedAt: iso(60_000) }, now)
+      ? pass("pre-field row falls back to startedAt") : fail("startedAt fallback broken");
+    !sessionIsLive({ endedAt: null, lastActivityAt: null, startedAt: null }, now)
+      ? pass("no timestamps at all → not live") : fail("timestampless shown live");
+  }
+
   console.log(`\n  ${PASS} passed, ${FAIL} failed`);
   process.exit(FAIL === 0 ? 0 : 1);
 }

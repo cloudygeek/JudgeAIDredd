@@ -65,6 +65,11 @@ export interface SessionSummary {
   /** Working directory the session runs in (from /intent cwd). Shown
    *  under the task in the dashboard session list. */
   projectRoot?: string | null;
+  /** Refreshed on every judged tool call (agg-fold) and every META
+   *  update. Basis for activity-based liveness: endedAt is a one-shot
+   *  fire-and-forget that frequently never arrives (crashed terminals,
+   *  server down at exit), so "live" = no endedAt AND recent activity. */
+  lastActivityAt?: string | null;
   /** Running aggregates maintained on the session META row so the
    *  dashboard list view renders without a full per-session
    *  reconstruction. Optional + default-0 for back-compat with rows
