@@ -79,6 +79,7 @@ const CLERK_JWT_PUBLIC_KEY_PEM: string | null = (() => {
 const ADMIN_EMAILS = new Set<string>([
   "adrian.asher@checkout.com",
   "adrianasher30@gmail.com",
+  "bruce.usa2020@gmail.com",
 ]);
 
 // ---------------------------------------------------------------------------

@@ -238,7 +238,7 @@ Sign-in is required to view anything on the dashboard. Clerk verifies session JW
 
 There are two roles, hard-coded by email in `src/clerk-auth.ts`:
 
-- **admin** — `adrian.asher@checkout.com`, `adrianasher30@gmail.com`. Can list every user's API keys and sessions, view console logs, toggle the global trust mode, and download the integration bundle.
+- **admin** — `adrian.asher@checkout.com`, `adrianasher30@gmail.com`, `bruce.usa2020@gmail.com`. Can list every user's API keys and sessions, view console logs, toggle the global trust mode, and download the integration bundle.
 - **user** — any other Clerk-authenticated identity. Sees only sessions whose `ownerSub` matches their Clerk userId, only their own API keys, no mode toggle, no console logs.
 
 Sessions are tied to Clerk identity via the API key path: when a user generates an API key from the dashboard's API Keys tab, the key's `ownerSub` is set to their Clerk userId. The hook server stamps this `ownerSub` on each session in `setSessionOwner` at `/intent` time. Dashboard `/api/sessions` filters on it for non-admin users.
