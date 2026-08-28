@@ -186,8 +186,8 @@ async function main() {
     );
     eq(
       shouldUpdateSessionGoal(TASK_NOTIFICATION, false),
-      true,
-      "coordination + NO existing goal → still register (never leave a session anchorless)",
+      false,
+      "coordination + NO existing goal → still refused (2026-08-27: mid-session hook enablement made a wake-up the first /intent and polluted the ORIGINAL goal)",
     );
     eq(
       shouldUpdateSessionGoal("run the full test suite", true),
@@ -257,6 +257,22 @@ async function main() {
       false,
       "original turn is never flagged as coordination",
     );
+  // -------------------------------------------------------------------
+  console.log("\n--- anchorless coordination never becomes the ORIGINAL (2026-08-27 incident) ---");
+  {
+    const { InMemorySessionStore } = await import("../../src/session-tracker.js");
+    const store = new InMemorySessionStore();
+    const sid = "s-anchorless-coord";
+    const r1 = await store.registerIntent(sid, TASK_NOTIFICATION, true, undefined, false, true);
+    eq(r1.isOriginal, false, "notification-first turn is NOT the original");
+    const ctx1 = await store.getSessionContext(sid);
+    eq(ctx1.originalTask ?? null, null, "session stays anchorless");
+    const r2 = await store.registerIntent(sid, "fix the login bug in auth.ts", true, undefined, false, false);
+    eq(r2.isOriginal, true, "next REAL prompt becomes the original");
+    const ctx2 = await store.getSessionContext(sid);
+    eq(ctx2.originalTask, "fix the login bug in auth.ts", "goal anchored on the human prompt, not the envelope");
+  }
+
   } finally {
     stub.close();
   }

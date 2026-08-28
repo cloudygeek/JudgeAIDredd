@@ -107,15 +107,17 @@ export function isCoordinationPrompt(text: string): boolean {
  * Whether this prompt is allowed to mutate the session's goal (intent
  * stack + the interceptor's registered anchor).
  *
- * A coordination envelope never is — with one deliberate exception:
- * when the session has no goal at all, registering *something* beats
- * leaving the judge anchorless, so we keep the pre-existing behaviour.
- * In practice this cannot happen live (a task-notification requires a
- * prior Task call, which requires a prior human prompt); it only
- * arises on a cold container whose transcript backfill also came up
- * empty.
+ * A coordination envelope never is — INCLUDING on a session with no
+ * goal yet. An earlier exception registered anchorless coordination
+ * anyway, reasoning it "cannot happen live"; production disproved that
+ * on 2026-08-27 (hooks enabled mid-session → a monitor wake-up was the
+ * session's first /intent → a <task-notification> blob anchored a
+ * 780-call session). The judge explicitly supports an undefined intent
+ * (test_judge_undefined_intent); the session stays anchorless until the
+ * next real prompt, which becomes the ORIGINAL. The transcript-backfill
+ * path keeps its own last-resort anchor logic (it scans many turns and
+ * only ever anchors on coordination when EVERY turn is coordination).
  */
-export function shouldUpdateSessionGoal(prompt: string, hasExistingGoal: boolean): boolean {
-  if (!hasExistingGoal) return true;
+export function shouldUpdateSessionGoal(prompt: string, _hasExistingGoal: boolean): boolean {
   return !isCoordinationPrompt(prompt);
 }

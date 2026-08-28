@@ -406,11 +406,11 @@ async function handleIntent(req: IncomingMessage, res: ServerResponse) {
   const contextualGoal = buildContextualIntent(prompt, priorAssistant);
 
   // Whether this prompt may mutate the session's goal (the intent stack
-  // and the interceptor's registered anchor). Evaluated against the
-  // state AFTER registerIntent so `result.isOriginal` tells us whether
-  // a goal already existed: a coordination envelope on a session with
-  // no goal at all still registers, because leaving the judge
-  // anchorless is worse than anchoring on coordination noise.
+  // and the interceptor's registered anchor). A coordination envelope
+  // never mutates the goal — anchorless sessions included; registerIntent
+  // records it as a muted turn and the session waits for the next real
+  // prompt (see coordination-prompt.ts for the 2026-08-27 pollution
+  // incident that removed the old anchorless exception).
   const mayUpdateGoal = shouldUpdateSessionGoal(prompt, !result.isOriginal);
   if (!mayUpdateGoal) {
     console.log(

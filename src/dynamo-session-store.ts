@@ -1648,7 +1648,13 @@ export class DynamoSessionStore implements SessionStore {
     driftFromPrevious: number | null;
   }> {
     const meta = await this.getMeta(sessionId);
-    const isFirst = !meta?.originalIntent;
+    // A coordination envelope never becomes the goal, even on an
+    // anchorless session (the "cannot happen live" assumption failed
+    // 2026-08-27: hooks enabled mid-session → a monitor wake-up was the
+    // first /intent and anchored the session to a <task-notification>
+    // blob). It takes the subsequent-turn path instead; the next real
+    // prompt becomes the ORIGINAL.
+    const isFirst = !meta?.originalIntent && !isCoordination;
 
     const promptEmbedding =
       skipDrift && !isFirst ? null : (await embedAny(prompt, this.embeddingModel))[0];
@@ -1701,8 +1707,11 @@ export class DynamoSessionStore implements SessionStore {
       };
     }
 
-    // Subsequent turn
-    const nextTurn = (meta!.currentTurn ?? 0) + 1;
+    // Subsequent turn (or an anchorless coordination envelope — META may
+    // not exist yet in that case; treat missing as turn 0 and let the
+    // turn write's updateMeta upsert-create it, listing keys included
+    // via the repair clauses).
+    const nextTurn = (meta?.currentTurn ?? 0) + 1;
     const intent: TurnIntent = {
       turnNumber: nextTurn,
       timestamp,
@@ -1717,7 +1726,8 @@ export class DynamoSessionStore implements SessionStore {
     let driftFromPrevious: number | null = null;
 
     if (!skipDrift && promptEmbedding) {
-      const origEmb = meta!.originalEmbedding as number[] | undefined;
+      // meta can be null here on the anchorless-coordination path.
+      const origEmb = meta?.originalEmbedding as number[] | undefined;
       if (origEmb && origEmb.length > 0) {
         driftFromOriginal = 1 - cosineSimilarity(origEmb, promptEmbedding);
       }

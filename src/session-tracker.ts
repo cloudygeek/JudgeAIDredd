@@ -319,6 +319,27 @@ export class InMemorySessionStore implements SessionStore {
     let driftFromOriginal: number | null = null;
     let driftFromPrevious: number | null = null;
 
+    if (session.originalIntent === null && isCoordination) {
+      // A coordination envelope must NEVER become the session's goal —
+      // including on an anchorless session. The old exception assumed
+      // "cannot happen live"; 2026-08-27 disproved it: hooks enabled
+      // mid-session made a monitor wake-up this session's FIRST /intent,
+      // and it anchored a 780-call session to a <task-notification>
+      // blob. Anchorless-until-the-next-real-prompt is a supported judge
+      // state (test_judge_undefined_intent); pollution is not.
+      session.turnIntents.push({ ...intent, isCoordination: true });
+      session.currentTurn++;
+      console.log(
+        `  [SESSION ${sessionId.substring(0, 8)}] TURN ${session.currentTurn} coordination envelope — session stays anchorless`
+      );
+      return {
+        isOriginal: false,
+        turnNumber: session.currentTurn,
+        driftFromOriginal: null,
+        driftFromPrevious: null,
+      };
+    }
+
     if (session.originalIntent === null) {
       // First prompt — this is the original task
       session.originalIntent = intent;
