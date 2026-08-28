@@ -81,6 +81,62 @@ const ADMIN_EMAILS = new Set<string>([
   "adrianasher30@gmail.com",
 ]);
 
+// ---------------------------------------------------------------------------
+// Status-surface allowlist (DREDD_STATUS_ALLOWED_EMAILS)
+//
+// Optional operator-configured restriction on WHO may view the Clerk-gated
+// status surfaces (dashboard /api/*, hook landing/status, and the hook's
+// Clerk-authenticated endpoints). Without it, any Clerk-authenticated
+// account — i.e. anyone with a Google login — can see container status.
+//
+// Semantics:
+//  - unset or empty (or only separators/whitespace) → no restriction;
+//    behaviour identical to before the allowlist existed.
+//  - set → only the listed emails plus ADMIN_EMAILS pass. Comparison is
+//    case-insensitive; entries are trimmed.
+//
+// This gates VIEWING only. The hook's Bearer-API-key machine auth
+// (/intent, /evaluate, /track, …) is deliberately untouched.
+// ---------------------------------------------------------------------------
+
+/** Parse a raw DREDD_STATUS_ALLOWED_EMAILS value into a lowercase set,
+ *  or null when the value imposes no restriction (unset/empty/blank). */
+export function parseStatusAllowlist(raw: string | null | undefined): Set<string> | null {
+  if (!raw) return null;
+  const entries = raw
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  return entries.length > 0 ? new Set(entries) : null;
+}
+
+const STATUS_ALLOWLIST = parseStatusAllowlist(process.env.DREDD_STATUS_ALLOWED_EMAILS);
+
+/** True when the operator has configured a status allowlist on this
+ *  process. Surfaced via /api/whoami so UIs can distinguish "refused by
+ *  allowlist" from "no allowlist configured". */
+export const STATUS_ALLOWLIST_ACTIVE = STATUS_ALLOWLIST !== null;
+
+/**
+ * May this authenticated email view the status surfaces?
+ *
+ * Pure: pass `allowlist` explicitly in tests; production call sites use
+ * the module-level default parsed from DREDD_STATUS_ALLOWED_EMAILS.
+ * Admins always pass regardless of the list. With no allowlist,
+ * everyone passes (the pre-allowlist behaviour). With one, a missing /
+ * empty email fails closed — an account whose email claim didn't
+ * surface can't be matched, so it isn't allowed.
+ */
+export function isStatusViewer(
+  email: string | null | undefined,
+  allowlist: Set<string> | null = STATUS_ALLOWLIST,
+): boolean {
+  if (!allowlist) return true;
+  if (isAdminEmail(email)) return true;
+  if (!email) return false;
+  return allowlist.has(email.trim().toLowerCase());
+}
+
 export interface ClerkPrincipal {
   /** Clerk userId (sub claim) — stable across sessions; used as ownerSub
    *  when minting API keys. */
@@ -327,6 +383,19 @@ export async function requireClerkAuth(
       return null;
     }
     const email = extractEmail(claims as Record<string, unknown>);
+    // Status allowlist: an authenticated-but-unlisted account gets a
+    // clear 403, not a 401 — a 401 would send the browser back into the
+    // Clerk sign-in flow it just completed. No-op when the allowlist is
+    // unset; admins always pass.
+    if (!isStatusViewer(email)) {
+      json(res, 403, {
+        error: "account not on the status allowlist",
+        detail:
+          `${email || "This account"} authenticated successfully but is not in ` +
+          "DREDD_STATUS_ALLOWED_EMAILS on this deployment. Ask the operator to add it.",
+      });
+      return null;
+    }
     return {
       userId,
       email,

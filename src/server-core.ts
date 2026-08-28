@@ -1030,10 +1030,17 @@ export async function authenticateHookOrDashboard(
   //    on this process (CLERK_SECRET_KEY or CLERK_JWT_PUBLIC_KEY set).
   //    `tryVerifyClerk` never writes to `res`, so we can fall through
   //    on failure and try the API-key path next.
-  const { tryVerifyClerk, isAdminEmail, CLERK_ENABLED } = await import("./clerk-auth.js");
+  const { tryVerifyClerk, isAdminEmail, isStatusViewer, CLERK_ENABLED } =
+    await import("./clerk-auth.js");
   if (CLERK_ENABLED) {
     const result = await tryVerifyClerk(req);
     if (result.ok) {
+      // Status allowlist applies to Clerk-authenticated viewers only —
+      // the API-key path below is machine auth and stays untouched.
+      if (!isStatusViewer(result.principal.email)) {
+        json(res, 403, { error: "account not on the status allowlist" });
+        return null;
+      }
       return {
         ownerSub: result.principal.userId,
         ownerEmail: result.principal.email,

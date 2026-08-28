@@ -35,7 +35,14 @@ import {
   getClientIp,
   type TrustMode,
 } from "./server-core.js";
-import { CLERK_PUBLISHABLE_KEY, isAdminEmail } from "./clerk-auth.js";
+import {
+  CLERK_PUBLISHABLE_KEY,
+  CLERK_ENABLED,
+  isAdminEmail,
+  isStatusViewer,
+  tryVerifyClerk,
+  STATUS_ALLOWLIST_ACTIVE,
+} from "./clerk-auth.js";
 import { getJudgeHealth } from "./judge-health.js";
 import {
   INTENT_HISTORY_MODE,
@@ -275,13 +282,37 @@ async function bootstrapAuth() {
   }
 }
 
-function onSignedIn(Clerk) {
+async function onSignedIn(Clerk) {
   const user = Clerk.user;
   const email =
     (user && user.primaryEmailAddress && user.primaryEmailAddress.emailAddress) ||
     (user && user.emailAddresses && user.emailAddresses[0] && user.emailAddresses[0].emailAddress) ||
     (user && user.id) ||
     'signed in';
+  // Status allowlist: ask the server for a verdict on this identity so
+  // the decision is made server-side (DREDD_STATUS_ALLOWED_EMAILS is
+  // checked against the VERIFIED token, not the client's claims). Only
+  // an explicit refusal blocks the reveal — statusViewer null means this
+  // container can't verify Clerk tokens, and the gate stays
+  // presentation-only exactly as before.
+  try {
+    const token = Clerk.session ? await Clerk.session.getToken() : null;
+    if (token) {
+      const r = await fetch('/api/whoami', { headers: { Authorization: 'Bearer ' + token } });
+      const who = await r.json();
+      if (who && who.clerk && who.clerk.statusViewer === false) {
+        document.getElementById('signin-msg').textContent =
+          email + ' is not on the status allowlist for this deployment. ' +
+          'Ask the operator to add it to DREDD_STATUS_ALLOWED_EMAILS, ' +
+          'or sign in with a listed account.';
+        const btn = document.getElementById('signin-btn');
+        btn.disabled = false;
+        btn.textContent = 'Sign out';
+        btn.onclick = dreddSignOut;
+        return;
+      }
+    }
+  } catch { /* verdict unavailable — behave as before the allowlist */ }
   document.getElementById('signed-in-as').textContent = email;
   document.getElementById('signin-overlay').style.display = 'none';
   document.getElementById('main-page').style.display = 'block';
@@ -467,6 +498,17 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
         }
       }
 
+      // Clerk verdict for the landing page's status-allowlist gate. The
+      // page sends its Clerk session token here so the allow/refuse
+      // decision is made SERVER-side (the reveal in the page JS is just
+      // rendering this verdict). statusViewer is null when this container
+      // can't verify Clerk tokens (no CLERK_SECRET_KEY /
+      // CLERK_JWT_PUBLIC_KEY — the prod hook task ships neither) or no
+      // token was sent — in that case the gate stays presentation-only,
+      // exactly as before the allowlist existed.
+      const clerkResult = await tryVerifyClerk(req);
+      const clerkOk = clerkResult.ok;
+
       return json(res, 200, {
         role: "hook",
         authWired: !!oidcData,
@@ -474,6 +516,14 @@ document.getElementById('mode-select').dataset.current = ${JSON.stringify(CONFIG
         hasAccessToken,
         claims,
         decodeError,
+        clerk: {
+          enabled: CLERK_ENABLED,
+          authWired: clerkOk,
+          email: clerkOk ? clerkResult.principal.email : null,
+          isAdmin: clerkOk ? clerkResult.principal.isAdmin : false,
+          statusViewer: clerkOk ? isStatusViewer(clerkResult.principal.email) : null,
+          statusAllowlistActive: STATUS_ALLOWLIST_ACTIVE,
+        },
         seenHeaders: Object.keys(req.headers)
           .filter((h) => h.toLowerCase().startsWith("x-amzn-"))
           .sort(),

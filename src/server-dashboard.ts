@@ -51,6 +51,8 @@ import {
   requireClerkAuth,
   tryVerifyClerk,
   probeClerkConnectivity,
+  isStatusViewer,
+  STATUS_ALLOWLIST_ACTIVE,
   CLERK_PUBLISHABLE_KEY,
 } from "./clerk-auth.js";
 import { resolveByotTarget, isKnownKeyOwner } from "./byot/admin-target.js";
@@ -140,6 +142,12 @@ const server = createServer(async (req, res) => {
         identity: ok ? result.principal.userId : null,
         email: ok ? result.principal.email : null,
         isAdmin: ok ? result.principal.isAdmin : false,
+        // Server-side status-allowlist verdict. false = authenticated but
+        // refused (every requireClerkAuth route will 403); null = unknown
+        // (no verified identity to judge). The UI keys its refusal
+        // message off this rather than discovering 403s piecemeal.
+        statusViewer: ok ? isStatusViewer(result.principal.email) : null,
+        statusAllowlistActive: STATUS_ALLOWLIST_ACTIVE,
         clerkConfigured: !!CLERK_PUBLISHABLE_KEY,
         authFailureReason: ok ? null : result.reason,
         authFailureError: ok ? null : (result.error ?? null),
