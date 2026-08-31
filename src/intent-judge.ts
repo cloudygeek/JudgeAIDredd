@@ -515,6 +515,31 @@ export function systemPromptFor(variant: PromptVariant, hardened = true): string
 
 export type EffortLevel = "none" | "low" | "medium" | "high" | "max";
 
+/**
+ * Ollama structured-output schema for a judge verdict.
+ *
+ * Constrains the sampler so the three contract fields cannot be mistyped.
+ * Added 2026-08-31 after qwen3.6:35b-coding returned
+ *   {"verged": "consistent", ...}
+ * — valid JSON, correct judgement, one wrong key — which parseVerdict could
+ * only read as "no verdict" and therefore denied as hijacked.
+ *
+ * Belt AND braces, deliberately: this prevents the malformed-output class on
+ * the Ollama path, while parseVerdict's fail-closed ladder still handles the
+ * adversarial class (a compromised judge emits a schema-valid
+ * {"verdict":"consistent"} quite happily) and the Bedrock path, which has no
+ * equivalent constraint.
+ */
+export const JUDGE_VERDICT_SCHEMA = {
+  type: "object",
+  properties: {
+    verdict: { type: "string", enum: ["consistent", "drifting", "hijacked"] },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    reasoning: { type: "string" },
+  },
+  required: ["verdict", "confidence", "reasoning"],
+} as const;
+
 export class IntentJudge {
   private chatModel: string;
   private backend: JudgeBackend;
@@ -826,7 +851,7 @@ ${lines}
           { role: "system", content: systemPrompt },
           { role: "user", content: finalUserPrompt, images: ollamaImages?.length ? ollamaImages : undefined },
         ];
-        const response = await chat(messages, this.chatModel);
+        const response = await chat(messages, this.chatModel, JUDGE_VERDICT_SCHEMA);
         content = response.content;
         durationMs = response.durationMs;
       }
@@ -895,6 +920,11 @@ ${lines}
     raw: string
   ): Omit<JudgeVerdict, "durationMs"> {
     const VALID = new Set(["consistent", "drifting", "hijacked"]);
+    // Set when the model returned parseable JSON that simply did not carry a
+    // usable `verdict` (wrong key, or a value outside the valid set). Tracked
+    // so a recovery is logged rather than silently papering over a model that
+    // has stopped honouring the output contract.
+    let schemaDrift = false;
     const failClosed = (reason: string): Omit<JudgeVerdict, "durationMs"> => ({
       verdict: "hijacked",
       confidence: 0.5,
@@ -919,8 +949,64 @@ ${lines}
               : "No reasoning provided",
           };
         }
-        // JSON parsed but verdict missing or outside the valid set — fail closed.
-        return failClosed("JSON parsed but verdict invalid or missing");
+        // JSON parsed, but no usable `verdict`. Do NOT return here: fall
+        // through to the looser layers below.
+        //
+        // Historically this returned failClosed immediately, which meant
+        // well-formed JSON with a mistyped KEY got *less* leniency than
+        // malformed JSON — Layers 2 and 3 were unreachable for it. Observed
+        // live 2026-08-31 on qwen3.6:35b-coding, which emitted
+        //   {"verged": "consistent", "confidence": 0.95, "reasoning": "..."}
+        // — valid JSON, correct judgement, one wrong key — and Dredd denied
+        // the call as hijacked. Layer 3 would have recovered it.
+        //
+        // This is not a loosening of the security property. An attacker who
+        // controls the judge's output does not need this path: they would
+        // emit a valid {"verdict": "consistent"} and be trusted at Layer 1
+        // above. The layers below keep their own guards (Layer 3 still
+        // refuses a bare "consistent" without judge-shaped reasoning), and
+        // anything that reaches the end still fails closed.
+        // Layer 1b: KEY DRIFT. The JSON parsed and is shaped like a verdict,
+        // but the verdict key itself is mangled ("verged", "verdictt",
+        // "Verdict"). Recover from STRUCTURE rather than prose: if exactly one
+        // top-level value is *exactly* a valid verdict, that is the verdict.
+        //
+        // Free-text inference (Layer 3) is the wrong instrument here and
+        // demonstrably misses: it requires the reasoning to contain one of
+        // plausible|appropriate|aligned|matches, and the response that
+        // prompted this fix said "directly serves the stated task" — so it
+        // fell through to fail-closed anyway.
+        //
+        // Two guards keep this tight:
+        //  - EXACT value match, not substring, so a reasoning string that
+        //    merely discusses consistency is not mistaken for a verdict.
+        //  - The object must also carry `reasoning` or `confidence`, i.e. it
+        //    must actually be judge-SHAPED. {"note":"consistent"} is not, and
+        //    is still refused. A real attacker does not need this path anyway
+        //    — they would emit {"verdict":"consistent"} and win at Layer 1.
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const judgeShaped =
+            typeof (parsed as Record<string, unknown>).reasoning === "string" ||
+            typeof (parsed as Record<string, unknown>).confidence === "number";
+          const verdictValued = Object.entries(parsed as Record<string, unknown>)
+            .filter(([, val]) => typeof val === "string" && VALID.has((val as string).trim().toLowerCase()));
+          if (judgeShaped && verdictValued.length === 1) {
+            const [driftedKey, val] = verdictValued[0];
+            const recovered = (val as string).trim().toLowerCase();
+            console.warn(`[intent-judge] schema drift: verdict arrived under key "${driftedKey}" instead of "verdict"; recovered "${recovered}"`);
+            return {
+              verdict: recovered as "consistent" | "drifting" | "hijacked",
+              confidence:
+                typeof (parsed as Record<string, unknown>).confidence === "number"
+                  ? Math.max(0, Math.min(1, (parsed as Record<string, number>).confidence))
+                  : 0.5,
+              reasoning: typeof (parsed as Record<string, unknown>).reasoning === "string" && (parsed as Record<string, string>).reasoning
+                ? (parsed as Record<string, string>).reasoning
+                : "No reasoning provided",
+            };
+          }
+        }
+        schemaDrift = true;
       } catch {
         // Fall through to truncated-JSON recovery.
       }
@@ -929,6 +1015,9 @@ ${lines}
     // Layer 2: truncated JSON. Look for a verdict key-value pair anywhere.
     const verdictMatch = raw.match(/"verdict"\s*:\s*"(\w+)"/);
     if (verdictMatch && VALID.has(verdictMatch[1])) {
+      if (schemaDrift) {
+        console.warn(`[intent-judge] schema drift: JSON lacked a usable "verdict"; recovered "${verdictMatch[1]}" from the raw text`);
+      }
       const confMatch = raw.match(/"confidence"\s*:\s*([\d.]+)/);
       const reasonMatch = raw.match(/"reasoning"\s*:\s*"([^"]*)/);
       return {
@@ -951,6 +1040,9 @@ ${lines}
     const hits = [hasHijacked, hasDrifting, hasConsistent].filter(Boolean).length;
 
     if (hits === 1) {
+      if (schemaDrift) {
+        console.warn(`[intent-judge] schema drift: JSON lacked a usable "verdict"; inferring from free text: ${raw.substring(0, 120).replace(/\s+/g, " ")}`);
+      }
       if (hasHijacked) return { verdict: "hijacked", confidence: 0.6, reasoning: `Free-text inference: ${raw.substring(0, 100)}` };
       if (hasDrifting) return { verdict: "drifting", confidence: 0.5, reasoning: `Free-text inference: ${raw.substring(0, 100)}` };
       // hasConsistent — be more sceptical here than the others, since
@@ -964,6 +1056,10 @@ ${lines}
       return failClosed("Bare 'consistent' without supporting reasoning — possible injection");
     }
 
-    return failClosed("Unparseable judge response — treating as adversarial");
+    return failClosed(
+      schemaDrift
+        ? "JSON parsed but verdict invalid or missing, and unrecoverable from the raw text"
+        : "Unparseable judge response — treating as adversarial",
+    );
   }
 }

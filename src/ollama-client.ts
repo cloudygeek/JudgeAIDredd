@@ -120,10 +120,21 @@ export async function embed(
 
 /**
  * Chat completion with a local model. Streaming disabled for simplicity.
+ *
+ * `format` is Ollama's structured-output control: pass a JSON Schema and the
+ * sampler is constrained to emit conforming JSON. Opt-in per caller — the
+ * judge uses it (see JUDGE_VERDICT_SCHEMA) because a mistyped key there costs
+ * a false "hijacked"; the classifier and interceptor do not, so their decoding
+ * path is unchanged.
+ *
+ * NOTE this is an Ollama-only mechanism. The Bedrock path in intent-judge.ts
+ * has no equivalent here, which is why the parser in parseVerdict must stay
+ * correct on its own rather than relying on the schema.
  */
 export async function chat(
   messages: ChatMessage[],
-  model = "llama3.2"
+  model = "llama3.2",
+  format?: unknown
 ): Promise<{ content: string; durationMs: number }> {
   const start = Date.now();
 
@@ -134,6 +145,7 @@ export async function chat(
       model,
       messages,
       stream: false,
+      ...(format === undefined ? {} : { format }),
       ...(OLLAMA_THINK === undefined ? {} : { think: OLLAMA_THINK }),
       ...(OLLAMA_KEEP_ALIVE === undefined ? {} : { keep_alive: OLLAMA_KEEP_ALIVE }),
     }),
