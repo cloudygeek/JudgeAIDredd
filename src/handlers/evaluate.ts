@@ -89,6 +89,47 @@ async function recordByotFallbackThrottled(ownerSub: string, reason: string): Pr
 const LOCKED_MESSAGE =
   "this session has been classified as hijacked and further tool calls will not be allowed.";
 
+// ── User-facing wording ───────────────────────────────────────────────────
+//
+// The verdict vocabulary (consistent / drifting / hijacked) is Dredd's
+// INTERNAL contract: it drives enforcement, the hijack-strike counter, the
+// feed, the session log and the dashboard, and every one of those keeps the
+// literal word. But "hijacked" is the wrong word to put in front of a person
+// mid-task. It reads as an accusation and as a statement of fact, when what
+// the prompt actually means is "this warrants a look before you approve it" —
+// and the judge is wrong often enough (a mistyped verdict key denied a
+// legitimate Neptune query on 2026-08-31) that the confident phrasing is not
+// earned. Users who are told they were hijacked and repeatedly were not learn
+// to click through the prompt, which is the failure mode the prompt exists to
+// prevent.
+//
+// So: soften the PRESENTATION only. Nothing below changes a decision, a
+// stored value, or a log line.
+export const USER_FACING_VERDICT: Record<string, string> = {
+  hijacked: "Concerning — this needs extra scrutiny",
+  drifting: "Off-task — worth a check",
+  consistent: "On-task",
+};
+
+/** How a judge verdict is described to a person. Falls back to the raw
+ *  reason for stages that never ran the judge (policy, deny-list, drift). */
+export function userFacingReason(
+  judgeVerdict: { verdict: string; reasoning: string } | null | undefined,
+  fallbackReason: string,
+): string {
+  if (!judgeVerdict) return fallbackReason;
+  const label = USER_FACING_VERDICT[judgeVerdict.verdict];
+  if (!label) return fallbackReason;
+  return `${label} (${judgeVerdict.reasoning})`;
+}
+
+// Same reasoning as above, for the session-lock path. The internal
+// LOCKED_MESSAGE is kept verbatim for the feed, _meta and the benchmark
+// rationale so nothing downstream has to change.
+export const LOCKED_MESSAGE_USER =
+  "this session has repeatedly raised concerns, so further tool calls are " +
+  "being held. Review the session in the dashboard to resume.";
+
 async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   const identity = await authenticateHookRequest(req, res);
   if (!identity) return;
@@ -256,9 +297,9 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: `${DREDD_TAG}: ${LOCKED_MESSAGE}`,
+        permissionDecisionReason: `${DREDD_TAG}: ${LOCKED_MESSAGE_USER}`,
       },
-      systemMessage: LOCKED_MESSAGE,
+      systemMessage: LOCKED_MESSAGE_USER,
       _meta: {
         allowed: false,
         stage: "session-locked",
@@ -636,9 +677,9 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       hookResponse.hookSpecificOutput = {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: `${DREDD_TAG}: ${LOCKED_MESSAGE}`,
+        permissionDecisionReason: `${DREDD_TAG}: ${LOCKED_MESSAGE_USER}`,
       };
-      hookResponse.systemMessage = LOCKED_MESSAGE;
+      hookResponse.systemMessage = LOCKED_MESSAGE_USER;
     } else if (result.stage === "user-deny") {
       // User-deny is authoritative — the user has explicitly listed this
       // pattern in their .permissions.deny. Even in interactive mode we
@@ -712,8 +753,9 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       }
 
       const askReason =
-        `${DREDD_TAG}: this tool call looks suspicious. ${result.reason}. ` +
-        `Review and approve only if this matches your intent.${learningNote}`;
+        `${DREDD_TAG}: this tool call needs review. ` +
+        `${userFacingReason(result.judgeVerdict, result.reason)}. ` +
+        `Approve only if this matches your intent.${learningNote}`;
       hookResponse.hookSpecificOutput = {
         hookEventName: "PreToolUse",
         permissionDecision: "ask",
