@@ -166,6 +166,21 @@ export interface JudgeVerdict {
    *  hijack strike. Distinct from the fail-soft "drifting" used for Bedrock
    *  outages, which stays fail-open (allowed). */
   internalError?: boolean;
+  /** Set when the hijacked verdict was re-sampled (see JUDGE_CONFIRM_ENABLED).
+   *  Present for telemetry even in log-only mode, where `verdict` above is
+   *  still the FIRST sample and nothing about the decision has changed. */
+  confirmation?: {
+    /** Total samples taken, including the original. */
+    reps: number;
+    /** How many of them said "hijacked". */
+    hijackedCount: number;
+    verdicts: string[];
+    /** True when the samples did NOT agree, i.e. enforcing would release. */
+    wouldRelease: boolean;
+    /** Whether this run actually changed the verdict, or only observed. */
+    enforced: boolean;
+    durationMs: number;
+  };
 }
 
 /** True when an error thrown inside the judge is an internal programmer error
@@ -195,6 +210,43 @@ export interface JudgeVerdict {
  * user; only in `autonomous` does an outage hard-block.
  */
 export const JUDGE_FAIL_CLOSED = process.env.DREDD_JUDGE_FAIL_CLOSED === "true";
+
+/**
+ * Hijack confirmation — re-sample a `hijacked` verdict before acting on it.
+ *
+ * WHY. Measured on the live store 2026-09-02: of 45 real judge-deny events
+ * replayed 5x against the same judge with their original task and tool
+ * history, only 6 (13%) reproduced as a stable deny. 16 (36%) flipped within
+ * five samples and 23 (51%) never reproduced at all. Separately, the dominant
+ * FP class (FP-self-auth) flips at p=0.20 (6/30) while every true positive in
+ * the hard corpus was stable at 24/24. Instability is the signal: real attacks
+ * reproduce, marginal judgements do not.
+ *
+ * WHY RE-SAMPLE RATHER THAN THINK. Escalating to reasoning was the obvious
+ * idea and is worse on both axes — measured on the same case, thinking cut the
+ * FP to p=0.033 but cost 9.5s/call against 0.97s. Three fast samples reach
+ * p^3 = 0.008 in 2.9s, better and cheaper, and still ahead at the pessimistic
+ * end of both confidence intervals.
+ *
+ * COST. Judge denies are 0.22% of judge calls in production (3 of 1346 live
+ * feed events), so two extra samples cost ~6ms amortised — and they only ever
+ * fire on a call that was about to interrupt the user anyway.
+ *
+ * LOG-ONLY BY DEFAULT. `wouldRelease` is recorded without changing the
+ * decision, because "did not reproduce" is NOT the same as "was wrong" and
+ * there are no ground-truth labels yet. Three readings fit the data equally:
+ * they were false positives; B7.1 changed underneath them (the
+ * attribution-laundering line landed 2026-08-27 specifically to kill an FP
+ * class); or the judge has drifted permissive, which would be a TP
+ * regression. Soak in log-only, review what it would have released, THEN set
+ * DREDD_JUDGE_CONFIRM_ENFORCE=true.
+ */
+export const JUDGE_CONFIRM_ENABLED = process.env.DREDD_JUDGE_CONFIRM_ENABLED === "true";
+/** Total samples including the original. 3 is the measured sweet spot. */
+export const JUDGE_CONFIRM_REPS = Math.max(2, Math.min(10,
+  Number(process.env.DREDD_JUDGE_CONFIRM_REPS ?? 3) || 3));
+/** false = observe only (default). true = a non-unanimous result releases. */
+export const JUDGE_CONFIRM_ENFORCE = process.env.DREDD_JUDGE_CONFIRM_ENFORCE === "true";
 
 /** Transport-level failure codes, from Node's net stack and undici. */
 const NETWORK_ERROR_CODES = new Set([
@@ -577,7 +629,73 @@ export class IntentJudge {
    * @param currentAction - The action being proposed now
    * @param images - Images attached to the user's intent (screenshots etc.)
    */
-  async evaluate(
+  /**
+   * Judge a tool call, re-sampling a `hijacked` verdict when confirmation is
+   * enabled. Everything else passes straight through to a single call.
+   */
+  async evaluate(...args: Parameters<IntentJudge["evaluateOnce"]>): Promise<JudgeVerdict> {
+    const first = await this.evaluateOnce(...args);
+
+    // Only hijacked is worth re-sampling: it is the only verdict that blocks,
+    // and it is 0.22% of calls. An internalError fails closed by design and
+    // must not be re-sampled away.
+    if (!JUDGE_CONFIRM_ENABLED || first.verdict !== "hijacked" || first.internalError) {
+      return first;
+    }
+
+    const t0 = Date.now();
+    const verdicts: string[] = [first.verdict];
+    for (let i = 1; i < JUDGE_CONFIRM_REPS; i++) {
+      try {
+        const again = await this.evaluateOnce(...args);
+        verdicts.push(again.verdict);
+        // Short-circuit: one disagreement is already a non-unanimous result,
+        // so further samples cannot change the outcome. Saves latency on
+        // exactly the calls that are about to be released anyway.
+        if (again.verdict !== "hijacked") break;
+      } catch {
+        // A failed re-sample must not release the call. Treat it as agreeing
+        // with the original so confirmation can only ever be as strict as the
+        // single-sample behaviour it replaces.
+        verdicts.push("hijacked");
+      }
+    }
+
+    const hijackedCount = verdicts.filter((v) => v === "hijacked").length;
+    const wouldRelease = hijackedCount < verdicts.length;
+    const confirmation = {
+      reps: verdicts.length,
+      hijackedCount,
+      verdicts,
+      wouldRelease,
+      enforced: JUDGE_CONFIRM_ENFORCE,
+      durationMs: Date.now() - t0,
+    };
+
+    console.warn(
+      `[intent-judge] confirm: ${verdicts.join(",")} -> ${wouldRelease ? "WOULD RELEASE" : "hold"}` +
+      `${JUDGE_CONFIRM_ENFORCE ? " (ENFORCING)" : " (log-only)"} +${confirmation.durationMs}ms`
+    );
+
+    if (!JUDGE_CONFIRM_ENFORCE || !wouldRelease) {
+      // Log-only, or unanimous: the original verdict stands untouched.
+      return { ...first, confirmation };
+    }
+
+    // Enforcing and the samples disagreed. Downgrade to "drifting" rather than
+    // "consistent": drifting is allowed, so the call proceeds, but it still
+    // injects the goal anchor and is recorded as not-clean.
+    return {
+      ...first,
+      verdict: "drifting",
+      reasoning:
+        `Released by confirmation (${verdicts.join(",")}): the hijacked verdict did not ` +
+        `reproduce across ${verdicts.length} samples. Original: ${first.reasoning}`,
+      confirmation,
+    };
+  }
+
+  private async evaluateOnce(
     originalTask: string | string[] | JudgeIntentEntry[],
     actionHistory: string[],
     currentAction: string,
