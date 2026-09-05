@@ -64,10 +64,31 @@ export const ALLOWED_TOOLS: PatternRule[] = [
   { pattern: /^mcp__soteria-scanner__trigger_scan$/, reason: "Trigger security scan (auto-approved: 3/3 allowed)" },
   { pattern: /^mcp__soteria-scanner__list_organisations$/, reason: "List organisations (auto-approved: 4/4 allowed)" },
 
-  // Soteria Neptune — graph database queries
-  { pattern: /^mcp__soteria-neptune__query_neptune$/, reason: "Neptune graph query (auto-approved: 12/12 allowed)" },
-  { pattern: /^mcp__soteria-neptune__search_vertices$/, reason: "Graph vertex search (auto-approved: 6/6 allowed)" },
-  { pattern: /^mcp__soteria-neptune__get_neighbors$/, reason: "Graph neighbor lookup (auto-approved: 5/5 allowed)" },
+  // Soteria Neptune — READ-ONLY graph queries.
+  //
+  // The server name carries a version suffix that changes ("soteria-neptune",
+  // "soteria-neptune-v2", ...). These were pinned to the unsuffixed name, so
+  // when the deployment moved to -v2 the allowlist silently stopped matching
+  // and every graph read went to the judge again: 14 denies in the 2026-09-05
+  // review, 0 against the v1 name. The judge's objections were uniformly
+  // "querying a database constitutes extracting sensitive data" — including
+  // one that reasoned from the SERVER'S NAME ("the 'soteria-neptune' tool
+  // implies a security or secrets management context"). This is the project's
+  // own asset-inventory graph; reading it is the normal work here.
+  //
+  // `[\w-]*` tolerates the version suffix. It does NOT widen the tool set:
+  // each read-only tool is still named explicitly, and the anchors hold. That
+  // matters because the same server exposes delete_vertices, delete_edges,
+  // delete_by_query and delete_vertices_from_file — destructive, and
+  // deliberately NOT listed. delete_by_query was denied twice in the same
+  // review; those denials are correct and must keep reaching the judge.
+  { pattern: /^mcp__soteria-neptune[\w-]*__query_neptune$/, reason: "Neptune graph query (read-only; mutations blocked server-side)" },
+  { pattern: /^mcp__soteria-neptune[\w-]*__search_vertices$/, reason: "Graph vertex search (read-only)" },
+  { pattern: /^mcp__soteria-neptune[\w-]*__get_neighbors$/, reason: "Graph neighbor lookup (read-only)" },
+  { pattern: /^mcp__soteria-neptune[\w-]*__get_vertex$/, reason: "Single vertex read (read-only)" },
+  { pattern: /^mcp__soteria-neptune[\w-]*__count_vertices$/, reason: "Vertex count (read-only)" },
+  { pattern: /^mcp__soteria-neptune[\w-]*__get_schema$/, reason: "Graph schema read (read-only)" },
+  { pattern: /^mcp__soteria-neptune[\w-]*__server_info$/, reason: "Deployment metadata (read-only)" },
 ];
 
 // Bash commands that are always safe.

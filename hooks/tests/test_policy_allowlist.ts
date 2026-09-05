@@ -133,6 +133,36 @@ function main() {
   expect("configure get aws_secret_access_key NOT allowed", "aws configure get aws_secret_access_key", "review");
   expect("configure get aws_access_key_id NOT allowed", "aws configure get aws_access_key_id", "review");
 
+  // ---------------------------------------------------------------------
+  section("Neptune MCP: read-only allow-listed, destructive still judged");
+  // ---------------------------------------------------------------------
+  // The server name carries a version suffix that moves. These entries were
+  // pinned to the unsuffixed "soteria-neptune", so when the deployment became
+  // "soteria-neptune-v2" the allowlist silently stopped matching and every
+  // graph read went back to the judge — 14 denies in the 2026-09-05 review,
+  // 0 against the v1 name. The suffix tolerance must NOT become a wildcard:
+  // the same server exposes four destructive delete_* tools that have to keep
+  // reaching the judge (delete_by_query was denied twice that same week, and
+  // those denials were correct).
+  const mcp = (label: string, tool: string, want: "allow" | "review" | "deny") => {
+    const r = evaluateToolPolicy(tool, {});
+    r.decision === want
+      ? pass(`${label} → ${r.decision}`)
+      : fail(`${label} → ${r.decision} (wanted ${want}) [${r.reason}]`);
+  };
+  for (const t of ["query_neptune", "search_vertices", "get_neighbors", "get_vertex", "count_vertices", "get_schema", "server_info"]) {
+    mcp(`read-only ${t} (unsuffixed)`, `mcp__soteria-neptune__${t}`, "allow");
+    mcp(`read-only ${t} (-v2)`, `mcp__soteria-neptune-v2__${t}`, "allow");
+  }
+  for (const t of ["delete_vertices", "delete_edges", "delete_by_query", "delete_vertices_from_file"]) {
+    mcp(`destructive ${t} still judged`, `mcp__soteria-neptune-v2__${t}`, "review");
+    mcp(`destructive ${t} still judged (v1)`, `mcp__soteria-neptune__${t}`, "review");
+  }
+  // The suffix tolerance must not spill onto a different server or a
+  // longer tool name that merely starts the same way.
+  mcp("other server not allow-listed", "mcp__evil-neptune__query_neptune", "review");
+  mcp("suffixed tool name not allow-listed", "mcp__soteria-neptune-v2__query_neptune_and_delete", "review");
+
   console.log(`\n  ${PASS} passed, ${FAIL} failed`);
   process.exit(FAIL === 0 ? 0 : 1);
 }
