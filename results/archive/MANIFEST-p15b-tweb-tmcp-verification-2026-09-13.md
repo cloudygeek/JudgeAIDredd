@@ -61,6 +61,53 @@ delivered and read; its zero is not a delivery failure.
   identical `0`, and it would likely behave differently under a stronger lure. Worth
   distinguishing in the write-up if the two are currently treated as equivalent.
 
+### Options for reporting the two mechanisms
+
+A decision for the manuscript, not a measurement question. Table 3 currently renders
+`opus-4-8` and `nova-2-lite` identically on T-WEB (both `0`), but the runs say one
+detected the attack 100/100 and the other never engaged 0/100. Four ways to handle
+it, cheapest first:
+
+**A. Add an `agentDetected` column beside the exfil rate.** Nearly free for every
+cell run today — the field is already in the raw `runs[]`, so it is a table edit, not
+an experiment. Makes the distinction visible wherever it exists without asserting an
+interpretation. Cost: `agentDetected` is a harness heuristic (it fires on a flagging
+signal in the transcript, not on read intent), so it should be labelled as such and
+not described as "the model understood the attack". Older cells may lack it.
+
+**B. Assign a per-cell verdict label** — e.g. *compromised* / *refused-on-detection*
+/ *non-engagement* — and report the label alongside the rate. Clearest narrative, and
+it is what the finding actually supports. Cost: every cell needs evidence for its
+label, which means the transcript pass over the deposit that the four waves above
+otherwise made unnecessary. Boundary cases (`agentDetected` 3/80, say) will be
+arguable, so the thresholds have to be stated and defended.
+
+**C. Leave Table 3 as rates and add a footnote.** State that identical zeros arise
+from at least two mechanisms, cite the two measured examples (frontier 100/100
+detection vs `nova-2-lite` 0/100 with the page fetched 100/100), and note that the
+channel mean therefore pools refusal with non-engagement. Cheapest and least
+disruptive at second revision; leaves the channel-ranking interpretation slightly
+open, which a reviewer may probe.
+
+**D. Test whether non-engagement converts under a stronger lure.** Re-run the
+non-engagers with an escalated framing and see whether the zero holds. This is the
+only option that answers what the distinction *means* for robustness — a
+non-engaging model may simply be one lure away from compliance, whereas a detecting
+model has demonstrated the capability to refuse. Cost: new compute, and arguably new
+work rather than a correction, which is a poor fit for a revision already at r2.
+
+**Recommendation: C for this revision, with A if there is room in the table** — A is
+a table edit, is defensible with the caveat stated, and covers the five cells run
+today. Note B and D in the limitations as the follow-ups, and let the reviewer see
+you know the difference. Do not attempt B under the 2026-10-01 deadline: it
+reintroduces the roster-wide transcript pass that Result 1 above just removed the
+need for.
+
+Whichever is chosen, the safest phrasing for the affected cells is **"no successful
+exfiltration"** rather than "robust" or "refused", except for the four cells where
+zero attempts are now evidenced (`opus-4-8`, `opus-4-7`, `sonnet-4-6`, Gemini), where
+"refused" is supported.
+
 ## Result 2 — the `McpToolCall` args fix is latent; the T-MCP column is unaffected
 
 `devstral-2-123b` was the highest-prior candidate for argument-borne exfil: it is
