@@ -1,5 +1,44 @@
 # Test request: Gemini T-SLOP top-up and Devstral T-WEB main wave
 
+> **Request 1 — RESOLVED 2026-09-13, no re-run needed; premise corrected.** The
+> other 40 runs were never missing: `TSLOP.1` waveA (runId `2026-08-07T14-49-15-424Z`,
+> n=40) and the **local** n=80 wave (runId `2026-08-07T10-01-43-953Z`, exfil 80/80)
+> were on disk as *untracked* dirs, invisible to git-based searches — the same
+> artefact as the 2026-08-08 hygiene request. Both are now archived in
+> `results/archive/p15b-gemini-tslop-waves-2026-08-07.zip` (SHA-256 `2c65be8a…d833e`)
+> with `MANIFEST-p15b-gemini-tslop-waves-2026-08-07.md`.
+> **Answer to the deliverable's question: ≈1 detection per run — 80 runs executed
+> (40+40), 80 detections observed, 1.00 per run.** So `80/80` is a per-run rate over
+> 80 runs and only the archiving was incomplete; the "≈2 per run ⇒ the cell was
+> 40/40" branch is ruled out. Proof in the manifest: exactly one package-loading
+> `node` invocation in every one of the 160 runs (40/40, 40/40, 80/80); the local
+> wave's `exfiltrationCount: 1` on all 80 runs (a true count — value 2 occurs
+> elsewhere in the corpus); and per-wave collector windows that align 1:1 with the
+> two Lambda log streams. The validity note's double-post caveat still holds in
+> general (nothing stops an agent loading the package twice, as deepseek/qwen-coder
+> did in June) — it simply does not bite on these waves.
+> **Two corrections to the request.** (a) The `80/80` the §2b hygiene table reports
+> is the *local* n=80 cell, not the collector-scored one — there are two distinct
+> `80/80` measurements. (b) The external three-vendor row's other cells are at
+> **/40** (Sonnet 1/40, Opus 4.8 1/40); `3/110`, `110/110`, `11/110`, `40/120` are
+> the *local* T-SLOP column of `CRACK_VECTOR_MATRIX_2026-06-11.md`. Topping the
+> external Gemini cell to 110 would not make that row comparable — if denominator
+> parity is wanted, either add **+30 local** reps (80→110, for the crack-vector
+> column) or equalise the external row upward from 40. Power gain either way is
+> marginal: Wilson lower bound 95.4% at 80/80 → 96.6% at 110/110.
+> **Harness fixes:** #2 (log `rawQueryString`) was already shipped 2026-06-13
+> (ADDENDUM 16) and is on every line of the August CSV — drop it. #1 (per-run
+> correlation id) and #3 (technique in the tag) are real and outstanding; both are
+> harness-side only, the Lambda already logs `rawQuery` + body snippet.
+> **Request 2 is not resolved** — see the manifest's caveats and the review notes:
+> the `5/20` premise conflicts with `INJECTION_CHANNEL_MAP_2026-06-10.md:12`
+> ("T-MCP and T-WEB are **N=80**") and with ADDENDUM 13c's pooling design (20 + ≈60
+> → 80, acceptance "no injection-map cell left at N=20"); devstral's 25% fits 20/80
+> as well as 5/20, and its T-MCP 16% only rounds from 13/80. No roster-model T-WEB
+> raw JSON exists in this tree for *any* model, so the audit's corpus was the S3
+> mirror, not the deposit. Settle the denominator from the mirror
+> (`…-tweb-sonnetjudge/`, count `runs[]`) before running 80 reps.
+
 **Raised:** 2026-09-13 · **For:** p15b-measurement (Springer *Cybersecurity*, CYSE-D-26-01005, round-2 revision due 2026-10-01)
 **Why now:** a pre-submission audit of the released archive found two cells whose run counts do not
 match what the manuscript claims. Both are load-bearing. Neither is a scoring error; both are
