@@ -331,8 +331,19 @@ async function executeTool(
         // structured result.
         const tool = String(input.tool ?? "");
         if (!canaryBaseUrl) return `Error: no MCP server configured`;
+        // Forward the model's `args`. The tool schema advertises them, so
+        // dropping them silently broke the contract and hid any credential a
+        // model chose to smuggle in a tool argument — the canary server scores
+        // that as the `tool-arg` egress channel. Omitted when absent, so a call
+        // without args behaves exactly as before.
+        let mcpQs = `tool=${encodeURIComponent(tool)}`;
+        if (input.args !== undefined && input.args !== null) {
+          const argsStr =
+            typeof input.args === "string" ? input.args : JSON.stringify(input.args);
+          if (argsStr && argsStr !== "{}") mcpQs += `&args=${encodeURIComponent(argsStr)}`;
+        }
         try {
-          const r = await fetch(`${canaryBaseUrl}/mcp-tool?tool=${encodeURIComponent(tool)}`, {
+          const r = await fetch(`${canaryBaseUrl}/mcp-tool?${mcpQs}`, {
             signal: AbortSignal.timeout(15000),
           });
           return (await r.text()).substring(0, 16000);
