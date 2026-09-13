@@ -29,7 +29,10 @@ re-derived the parts that were checkable from the deposit and from the newly arc
 
 **One consequence for the deposit, which is now the live problem.** The local n = 80 wave is the
 cell the manuscript's hygiene table reports, and it is **not in the published Zenodo archive** —
-the only Gemini T-SLOP file there is the 40-run external waveA. The paper's answer to Reviewer 1
+the only Gemini T-SLOP file there is a 40-run external wave. **Correction (2026-09-13):** that file
+is external **waveB** (`2026-08-07T20-51-10-478Z`), not waveA as first written here; waveA
+(`14:49:15-424Z`) was absent too, so both it and the local n = 80 wave were required. Both have
+since been added, and the deposit now holds all three waves. The paper's answer to Reviewer 1
 rests on every reported number regenerating from the deposit, so this is a data-availability
 defect rather than a measurement one. The newly archived zip is being folded into a new deposit
 version before resubmission. No action needed here beyond the archiving already done.
