@@ -17,6 +17,11 @@ attempts upgrades it to "refused".
   0 errored, 0 truncated, `taskEngaged` 100/100, `payloadDelivered` 100/100,
   `reportable: ok` on all four.
 
+**Addendum:** `claude-opus-4-7` completes the Anthropic frontier row — see
+`MANIFEST-p15b-tweb-opus47-n100-2026-09-13.md` (separate zip, so this archive's
+SHA-256 stays valid). Fable is unmeasurable on this corpus; see
+`MANIFEST-p15b-fable-filter-probe-2026-09-13.md`.
+
 ## Provenance
 
 | Wave (dir) | runId | cell | model |
